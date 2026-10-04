@@ -34,7 +34,7 @@ pub(crate) fn open_input(path: &Path) -> Result<ffmpeg::format::context::Input, 
 }
 
 /// One-time FFmpeg setup for this process.
-fn init() {
+pub(crate) fn init() {
     static INIT: Once = Once::new();
     INIT.call_once(|| {
         // With FFmpeg 5 and later this only registers error strings; it always returns Ok.

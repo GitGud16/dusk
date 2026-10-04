@@ -6,6 +6,7 @@
 
 mod audio;
 mod decode;
+mod encode;
 mod error;
 #[allow(unsafe_code)]
 mod ffi;
@@ -14,5 +15,6 @@ mod probe;
 
 pub use audio::AudioDecoder;
 pub use decode::{Acceleration, DecodedFrame, Following, VideoDecoder};
+pub use encode::{AudioSettings, Mp4Writer, VideoSettings};
 pub use error::MediaError;
 pub use probe::{ProbeInfo, StreamDetail, StreamKind, StreamSummary, probe};

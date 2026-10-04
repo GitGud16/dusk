@@ -45,6 +45,30 @@ pub enum MediaError {
         #[source]
         source: ffmpeg_next::Error,
     },
+    /// The output file could not be created.
+    #[error("{} could not be created: {source}. Check that the folder exists and that you can write to it", path.display())]
+    Create {
+        /// The path as given.
+        path: PathBuf,
+        /// FFmpeg's error.
+        #[source]
+        source: ffmpeg_next::Error,
+    },
+    /// No H.264 encoder could be opened.
+    #[error("no H.264 encoder could be opened ({tried}); update the graphics driver and try again")]
+    NoEncoder {
+        /// Each encoder tried, with why it failed.
+        tried: String,
+    },
+    /// FFmpeg failed while encoding or writing the file.
+    #[error("FFmpeg could not write {}: {source}. Check that the disk has room and try again", path.display())]
+    Encode {
+        /// The path as given.
+        path: PathBuf,
+        /// FFmpeg's error.
+        #[source]
+        source: ffmpeg_next::Error,
+    },
     /// The video uses a pixel format Dusk cannot show yet.
     #[error("{} stores its pictures as {format}, which Dusk cannot show yet; convert it to a common format such as H.264 and try again", path.display())]
     UnsupportedPixelFormat {
