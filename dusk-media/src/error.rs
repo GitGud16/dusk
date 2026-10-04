@@ -15,6 +15,12 @@ pub enum MediaError {
         /// The path as given.
         path: PathBuf,
     },
+    /// The file has no video stream to decode.
+    #[error("{} has no video; pick a video file", path.display())]
+    NoVideo {
+        /// The path as given.
+        path: PathBuf,
+    },
     /// FFmpeg could not open or read the file.
     #[error("FFmpeg could not read {}: {source}. The file may be damaged or in a format FFmpeg cannot read", path.display())]
     Open {
@@ -23,5 +29,22 @@ pub enum MediaError {
         /// FFmpeg's error.
         #[source]
         source: ffmpeg_next::Error,
+    },
+    /// FFmpeg failed while decoding the file.
+    #[error("FFmpeg could not decode {}: {source}. The file may be damaged; try another copy of it", path.display())]
+    Decode {
+        /// The path as given.
+        path: PathBuf,
+        /// FFmpeg's error.
+        #[source]
+        source: ffmpeg_next::Error,
+    },
+    /// The video uses a pixel format Dusk cannot show yet.
+    #[error("{} stores its pictures as {format}, which Dusk cannot show yet; convert it to a common format such as H.264 and try again", path.display())]
+    UnsupportedPixelFormat {
+        /// The path as given.
+        path: PathBuf,
+        /// FFmpeg's name for the pixel format.
+        format: String,
     },
 }

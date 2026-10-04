@@ -1095,6 +1095,7 @@ dependencies = [
 name = "dusk-media"
 version = "0.0.0"
 dependencies = [
+ "dusk-core",
  "ffmpeg-next",
  "thiserror 2.0.21",
 ]

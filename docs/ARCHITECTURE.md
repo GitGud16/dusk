@@ -27,7 +27,7 @@ Dependencies point downward only: `dusk-app` → `dusk-engine` → {`dusk-media`
 
 | Crate | Responsibility | Must not |
 |-------|----------------|----------|
-| `dusk-core` | Project model: `Project`, `Sequence`, `Track`, `Clip`, `MediaRef`, edits. Commands with apply/revert. Serialization. Enforcement of timeline invariants. | Touch FFmpeg, wgpu, Slint, or the filesystem beyond serde. |
+| `dusk-core` | Project model: `Project`, `Sequence`, `Track`, `Clip`, `MediaRef`, edits. Commands with apply/revert. Serialization. Enforcement of timeline invariants. Also the plain data the leaf crates hand each other through `dusk-engine`, since they cannot share types directly: decoded pictures (`Picture`, NV12 or P010 with their color tags). | Touch FFmpeg, wgpu, Slint, or the filesystem beyond serde. |
 | `dusk-media` | FFmpeg wrapper: probe files (rotation, VFR, HDR flags, attached pictures), decode video to frames (hardware when possible) and audio to PCM, seek, thumbnails, waveform peaks, encode and mux, enumerate encoders. | Know about the UI, the project model, or other leaf crates. |
 | `dusk-render` | GPU compositor: given a `Sequence`, a frame index, and the already-decoded source frames it needs, produce a composited frame (fit, crop, rotate, tone-mapping) as a `wgpu::Texture`. Also readback for export. Creates the wgpu device that Slint renders with too (see Slint specifics). | Decode media or ask for frames; it receives them. |
 | `dusk-audio` | Mix already-decoded PCM for a frame range with volume and fades, resample, drive the output device, own the playback clock. | Decode media or know about the UI. |
