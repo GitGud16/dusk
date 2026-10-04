@@ -17,7 +17,7 @@ Milestones, not dates. Each one ends with something that runs. Memory and respon
 
 ## M1 — Vertical slice
 
-Import one file, see it as a linked video clip and audio clip on one video track and one audio track, play it with sound, scrub, trim, export.
+Import one file, see it as a linked video clip and audio clip on one video track and one audio track, play it with sound, scrub, trim, export. In M1 the file is opened from the command line (`dusk.exe clip.mp4`), which needs no new dependency; drag-and-drop import arrives with the media bin in M2.
 
 1. Startup: `dusk-render` creates the wgpu device and hands it to Slint (Vulkan first, DX12 fallback; see ARCHITECTURE.md, Slint specifics), to bring the first window under the 2 s cold-start target (about 3.0 s at M0).
 2. Decode one frame (D3D11VA, software fallback) and show it in the preview through a `wgpu` texture. If 60 fps texture updates don't hold on integrated graphics, switch to the pre-approved fallback (GPU readback of the composited RGBA texture into a Slint `SharedPixelBuffer`) and record the decision in ARCHITECTURE.md.
@@ -36,7 +36,7 @@ Import one file, see it as a linked video clip and audio clip on one video track
 - Decoder pool with the visibility rule and size budget; 4K single-decoder rule.
 - Per-clip volume, mute, fades; detach audio.
 - Undo/redo for everything. Project save/load (JSON). Autosave and crash recovery.
-- Media bin with thumbnails; drag and drop import; WhatsApp/Telegram audio formats verified.
+- Media bin with thumbnails; drag and drop import; WhatsApp/Telegram audio formats verified. Slint 1.18's winit backend does not pass files dropped from Explorer to the app; receiving them needs Slint's `unstable-winit-030` window-event hook, a change to the pinned Slint features that is decided at M2.
 - Variable-speed playback (0.1x to 32x, both directions; slow reverse via GOP buffer, fast via keyframes).
 
 **Done when**: a three-clip edit with music survives save, quit, reopen, and undo history behaves.
