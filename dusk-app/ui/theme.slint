@@ -1,0 +1,63 @@
+// Dusk design tokens, defined once (docs/THEME.md). Components use these; they never
+// hardcode colors or sizes.
+
+export global Theme {
+    // Brand colors, in order of importance.
+    out property <color> primary: #5003C0;
+    out property <color> primary-hover: #5F04E7;
+    out property <color> primary-bright: #A468FD;
+    out property <color> primary-dim: #371F5C;
+    out property <color> secondary: #AB03A9;
+    out property <color> secondary-bright: #F547F2;
+    out property <color> alert: #FF467A;
+    out property <color> signal: #FFD51E;
+    // Text on primary and secondary fills; text on alert and signal fills is bg-0.
+    out property <color> on-brand: #FFFFFF;
+
+    // Neutrals (violet-tinted grays).
+    out property <color> bg-0: #0E0D12;
+    out property <color> bg-1: #15141A;
+    out property <color> bg-2: #1D1B23;
+    out property <color> bg-3: #26242E;
+    out property <color> border: #302D39;
+    out property <color> text-1: #EAE9ED;
+    out property <color> text-2: #A39FAD;
+    out property <color> text-3: #706B7B;
+
+    // Typography. Inter for UI text, JetBrains Mono for timecodes and numbers; until the
+    // fonts are bundled, Slint falls back to the system font (Segoe UI on Windows).
+    out property <string> font-ui: "Inter";
+    out property <string> font-numeric: "JetBrains Mono";
+    out property <length> font-tiny: 11px;
+    out property <length> font-body: 12px;
+    out property <length> font-title: 13px;
+    out property <length> font-dialog: 15px;
+    out property <length> font-heading: 20px;
+    out property <int> weight-regular: 400;
+    out property <int> weight-medium: 500;
+    out property <int> weight-semibold: 600;
+
+    // Spacing, on a 4px grid.
+    out property <length> space-1: 4px;
+    out property <length> space-2: 8px;
+    out property <length> space-3: 12px;
+    out property <length> space-4: 16px;
+    out property <length> space-6: 24px;
+
+    // Sizes.
+    out property <length> control-height: 28px;
+    out property <length> toolbar-height: 36px;
+    out property <length> panel-padding: 12px;
+    out property <length> radius-control: 4px;
+    out property <length> radius-panel: 6px;
+    out property <length> radius-clip: 3px;
+    out property <length> border-width: 1px;
+    out property <length> focus-width: 2px;
+
+    // Timeline.
+    out property <length> ruler-height: 24px;
+    out property <length> video-track-height: 56px;
+    out property <length> audio-track-height: 36px;
+    out property <length> clip-gap: 2px;
+    out property <length> playhead-width: 2px;
+}

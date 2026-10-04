@@ -1,0 +1,93 @@
+import { AboutSlint } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+
+export component MainWindow inherits Window {
+    title: "Dusk";
+    preferred-width: 1280px;
+    preferred-height: 800px;
+    min-width: 800px;
+    min-height: 500px;
+    background: Theme.bg-0;
+    default-font-family: Theme.font-ui;
+    default-font-size: Theme.font-body;
+
+    MenuBar {
+        Menu {
+            title: "Help";
+            MenuItem {
+                title: "About Dusk";
+                activated => {
+                    about.show();
+                }
+            }
+        }
+    }
+
+    VerticalLayout {
+        // Toolbar: bg-1 with a 1px border below (elevation by background step, no shadow).
+        Rectangle {
+            height: Theme.toolbar-height;
+            background: Theme.bg-1;
+
+            HorizontalLayout {
+                padding-left: Theme.panel-padding;
+                padding-right: Theme.panel-padding;
+                alignment: start;
+
+                Text {
+                    text: "Dusk";
+                    color: Theme.text-1;
+                    font-size: Theme.font-title;
+                    font-weight: Theme.weight-semibold;
+                    vertical-alignment: center;
+                }
+            }
+
+            Rectangle {
+                y: parent.height - self.height;
+                height: Theme.border-width;
+                background: Theme.border;
+            }
+        }
+
+        // The empty workspace; the media bin, preview and timeline arrive in M1 and M2.
+        Rectangle {
+            background: Theme.bg-0;
+        }
+    }
+
+    // About dialog stub. The AboutSlint widget is the attribution the Slint Royalty-free
+    // License 2.0 requires; it must stay reachable from the top-level menu.
+    about := PopupWindow {
+        width: 360px;
+        x: (root.width - self.width) / 2;
+        y: (root.height - self.height) / 2;
+
+        Rectangle {
+            background: Theme.bg-2;
+            border-color: Theme.border;
+            border-width: Theme.border-width;
+            border-radius: Theme.radius-panel;
+
+            VerticalLayout {
+                padding: Theme.panel-padding;
+                spacing: Theme.space-2;
+
+                Text {
+                    text: "Dusk";
+                    color: Theme.text-1;
+                    font-size: Theme.font-dialog;
+                    font-weight: Theme.weight-semibold;
+                }
+
+                Text {
+                    text: "A free, open-source video editor. MIT licensed.";
+                    color: Theme.text-2;
+                    wrap: word-wrap;
+                }
+
+                AboutSlint { }
+            }
+        }
+    }
+}
