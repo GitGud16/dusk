@@ -73,7 +73,7 @@ Import one file, see it as a linked video clip and audio clip on one video track
 
 - Theme and icon polish against THEME.md; app icon and logo. About dialog with `AboutSlint`, license notices, and a link to the releases page.
 - Missing-media relink dialog. Error messages that say what to do.
-- Installer (NSIS or Inno Setup with LZMA, or a 7z self-extracting archive; not MSI) containing `dusk.exe`, `dusq.exe` and the five FFmpeg DLLs; startup time, download and installed size measured against targets.
+- Installer (NSIS or Inno Setup with LZMA, or a 7z self-extracting archive; not MSI) containing `dusk.exe`, `dusq.exe`, the five FFmpeg DLLs and the third-party license files (the bundled fonts' OFL requires shipping theirs); startup time, download and installed size measured against targets.
 - Docs: README with screenshots, shortcuts reference, build instructions, contributing guide.
 
 **Done when**: a stranger can download Dusk, open a clip, cut it, and export it without asking a question.

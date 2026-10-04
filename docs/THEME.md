@@ -56,8 +56,8 @@ Never use pure black or pure white for surfaces or body text.
 
 ## Typography
 
-- UI font: **Inter**, bundled (OFL license, ~1 MB for regular / medium / semibold). Fallback: Segoe UI, system sans.
-- Numeric font: **JetBrains Mono** regular, bundled (OFL, ~100 KB), for timecodes, durations and numeric readouts. Slint cannot switch on Inter's tabular figures, so a monospaced font keeps digits from shifting width.
+- UI font: **Inter** 4.1, bundled as the static regular, medium and semibold files (OFL 1.1, 1.25 MB, in `dusk-app/ui/fonts/` with their source and checksums). Fallback: Segoe UI, system sans.
+- Numeric font: **JetBrains Mono** 2.304 regular, bundled (OFL 1.1, 274 KB), for timecodes, durations and numeric readouts. Slint cannot switch on Inter's tabular figures, so a monospaced font keeps digits from shifting width.
 - Weights: 400 regular, 500 medium, 600 semibold. Nothing heavier.
 - Timecodes and numbers: JetBrains Mono at the same pixel size as the surrounding text.
 - Sizes (dense editor scale):

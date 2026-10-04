@@ -1,6 +1,13 @@
 // Dusk design tokens, defined once (docs/THEME.md). Components use these; they never
 // hardcode colors or sizes.
 
+// Bundled fonts, embedded in the binary (OFL 1.1; see fonts/README.md). Fonts imported in
+// any .slint file are registered for every window.
+import "fonts/Inter/Inter-Regular.ttf";
+import "fonts/Inter/Inter-Medium.ttf";
+import "fonts/Inter/Inter-SemiBold.ttf";
+import "fonts/JetBrainsMono/JetBrainsMono-Regular.ttf";
+
 export global Theme {
     // Brand colors, in order of importance.
     out property <color> primary: #5003C0;
@@ -24,8 +31,8 @@ export global Theme {
     out property <color> text-2: #A39FAD;
     out property <color> text-3: #706B7B;
 
-    // Typography. Inter for UI text, JetBrains Mono for timecodes and numbers; until the
-    // fonts are bundled, Slint falls back to the system font (Segoe UI on Windows).
+    // Typography. Inter for UI text, JetBrains Mono for timecodes and numbers, both bundled
+    // (imported above).
     out property <string> font-ui: "Inter";
     out property <string> font-numeric: "JetBrains Mono";
     out property <length> font-tiny: 11px;
