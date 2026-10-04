@@ -1061,7 +1061,6 @@ dependencies = [
  "dusk-engine",
  "slint",
  "slint-build",
- "wgpu",
 ]
 
 [[package]]
@@ -1100,6 +1099,10 @@ dependencies = [
 [[package]]
 name = "dusk-render"
 version = "0.0.0"
+dependencies = [
+ "thiserror 2.0.21",
+ "wgpu",
+]
 
 [[package]]
 name = "either"
