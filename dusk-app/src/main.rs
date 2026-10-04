@@ -8,6 +8,7 @@ mod app;
 mod files;
 mod history;
 mod shortcuts;
+mod stats;
 mod timeline;
 
 use std::path::PathBuf;

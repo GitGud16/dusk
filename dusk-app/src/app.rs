@@ -6,6 +6,7 @@ use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex, PoisonError};
+use std::time::Instant;
 
 use dusk_core::time::STANDARD_RATES;
 use dusk_core::{ClipId, Command, Edge, Frame, MediaInfo, Project, TrimClips, import};
@@ -15,6 +16,7 @@ use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 use crate::files::export_path;
 use crate::history::History;
 use crate::shortcuts::Action;
+use crate::stats::Stats;
 use crate::timeline::{self, ClipRow};
 use crate::{ClipView, MainWindow, TickView};
 
@@ -86,6 +88,8 @@ pub struct App {
     timeline_width: f32,
     clips: Rc<VecModel<ClipView>>,
     ticks: Rc<VecModel<TickView>>,
+    /// Preview statistics, when `DUSK_STATS` is set.
+    stats: Option<Stats>,
 }
 
 impl App {
@@ -106,6 +110,7 @@ impl App {
             timeline_width: window.get_timeline_width(),
             clips,
             ticks,
+            stats: Stats::start(window),
         }
     }
 
@@ -369,6 +374,7 @@ impl App {
 
     /// The engine drew `frame`; while playing, the playhead follows it.
     fn show_frame(&mut self, frame: Frame, texture: Option<dusk_engine::wgpu::Texture>) {
+        let started = Instant::now();
         let Some(window) = self.window.upgrade() else {
             return;
         };
@@ -381,6 +387,9 @@ impl App {
         if self.engine.playing().is_some() {
             self.playhead = frame;
             self.refresh_transport();
+        }
+        if let Some(stats) = &self.stats {
+            stats.frame(started);
         }
     }
 
