@@ -318,6 +318,12 @@ export component MainWindow inherits Window {
     in property <bool> has-project;
     callback play-pause();
 
+    // The export: whether one runs, and how far it got, from 0 to 1.
+    in property <bool> exporting;
+    in property <float> export-progress;
+    callback export();
+    callback cancel-export();
+
     // The status line: what just happened, or what went wrong.
     in property <string> status;
     in property <bool> status-is-error;
@@ -451,6 +457,17 @@ export component MainWindow inherits Window {
                         text: root.end-timecode;
                         color: Theme.text-2;
                     }
+
+                    ToolButton {
+                        y: (parent.height - self.height) / 2;
+                        text: "Export";
+                        primary: true;
+                        enabled: root.has-project && !root.exporting;
+                        clicked => {
+                            root.export();
+                            keys.focus();
+                        }
+                    }
                 }
             }
 
@@ -495,6 +512,31 @@ export component MainWindow inherits Window {
                         vertical-alignment: center;
                         overflow: elide;
                         horizontal-stretch: 1;
+                    }
+
+                    if root.exporting: Rectangle {
+                        width: 160px;
+                        height: 6px;
+                        y: (parent.height - self.height) / 2;
+                        border-radius: 3px;
+                        background: Theme.bg-3;
+
+                        Rectangle {
+                            x: 0;
+                            width: parent.width * Math.clamp(root.export-progress, 0, 1);
+                            border-radius: parent.border-radius;
+                            background: Theme.primary;
+                        }
+                    }
+
+                    if root.exporting: ToolButton {
+                        y: (parent.height - self.height) / 2;
+                        height: Theme.control-height - Theme.space-1;
+                        text: "Cancel";
+                        clicked => {
+                            root.cancel-export();
+                            keys.focus();
+                        }
                     }
                 }
             }

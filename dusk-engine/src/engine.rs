@@ -3,8 +3,10 @@
 //! audio thread mixes sound, and both follow one playback clock. Results come back through
 //! the callback the engine was made with.
 
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use crossbeam_channel::Sender;
@@ -14,10 +16,11 @@ use dusk_core::time::{frame_at, frame_to_media};
 use dusk_core::{Frame, MediaTime, Project, Rational};
 use dusk_render::{Gpu, wgpu};
 
-use crate::EngineError;
 use crate::cache::DEFAULT_CAP;
+use crate::export::{self, ExportJob};
 use crate::sound::{self, SoundRequest};
 use crate::video::{self, VideoRequest};
+use crate::{EngineError, ExportEvent};
 
 /// How long a decoder may sit unused before it is closed (docs/ARCHITECTURE.md, "Decoder
 /// pool").
@@ -43,6 +46,8 @@ pub enum EngineEvent {
     },
     /// Something failed; the engine carries on where it can.
     Error(EngineError),
+    /// An export moved on.
+    Export(ExportEvent),
 }
 
 /// How an engine is set up.
@@ -90,12 +95,17 @@ pub(crate) fn lock(transport: &Mutex<Transport>) -> MutexGuard<'_, Transport> {
 /// How the engine's threads report.
 pub(crate) type Report = Arc<dyn Fn(EngineEvent) + Send + Sync>;
 
-/// Plays and scrubs the project it was last given.
+/// Plays, scrubs and exports the project it is given.
 pub struct Engine {
+    gpu: Gpu,
     video: Sender<VideoRequest>,
     sound: Sender<SoundRequest>,
     transport: SharedTransport,
+    report: Report,
     open_decoders: Arc<AtomicUsize>,
+    exporting: Arc<AtomicBool>,
+    /// The last export started, so dropping the engine can stop it and clean up after it.
+    export: Mutex<Option<(ExportJob, JoinHandle<()>)>>,
 }
 
 impl Engine {
@@ -115,19 +125,25 @@ impl Engine {
             end: Frame(0),
         }));
         let open_decoders = Arc::new(AtomicUsize::new(0));
+        let exporting = Arc::new(AtomicBool::new(false));
         let video = video::spawn(
             gpu,
             &options,
             Arc::clone(&transport),
             Arc::clone(&report),
             Arc::clone(&open_decoders),
+            Arc::clone(&exporting),
         )?;
-        let sound = sound::spawn(&options, Arc::clone(&transport), report)?;
+        let sound = sound::spawn(&options, Arc::clone(&transport), Arc::clone(&report))?;
         Ok(Engine {
+            gpu: gpu.clone(),
             video,
             sound,
             transport,
+            report,
             open_decoders,
+            exporting,
+            export: Mutex::new(None),
         })
     }
 
@@ -163,8 +179,12 @@ impl Engine {
     }
 
     /// Plays from `from` at `factor` times normal speed, backwards when negative. Sound plays
-    /// from 0.25x to 4x forwards; outside that, and backwards, playback is silent.
+    /// from 0.25x to 4x forwards; outside that, and backwards, playback is silent. Nothing
+    /// plays while an export runs.
     pub fn play(&self, from: Frame, factor: f64) {
+        if self.is_exporting() {
+            return;
+        }
         let (generation, from) = {
             let mut transport = lock(&self.transport);
             transport.generation += 1;
@@ -200,6 +220,35 @@ impl Engine {
         self.open_decoders.load(Ordering::Relaxed)
     }
 
+    /// Exports `project` to an MP4 file at `path` on its own thread; progress and the outcome
+    /// arrive as [`EngineEvent::Export`]. Playback stops, and until the export ends the
+    /// preview shows cached frames only (docs/ARCHITECTURE.md, "Export").
+    pub fn export(&self, project: Arc<Project>, path: PathBuf) -> Result<ExportJob, EngineError> {
+        let mut export = self.export.lock().unwrap_or_else(PoisonError::into_inner);
+        if self.is_exporting() {
+            return Err(EngineError::ExportRunning);
+        }
+        // The previous export has ended; its thread is only reporting or gone.
+        if let Some((_, thread)) = export.take() {
+            let _ = thread.join();
+        }
+        self.stop();
+        let (job, thread) = export::spawn(
+            &self.gpu,
+            project,
+            path,
+            Arc::clone(&self.exporting),
+            Arc::clone(&self.report),
+        )?;
+        *export = Some((job.clone(), thread));
+        Ok(job)
+    }
+
+    /// Whether an export is running.
+    pub fn is_exporting(&self) -> bool {
+        self.exporting.load(Ordering::Relaxed)
+    }
+
     /// Stops the clock and the sound, if playing, and returns the frame it stopped at.
     fn stop(&self) -> Option<Frame> {
         let frame = {
@@ -213,5 +262,21 @@ impl Engine {
         };
         let _ = self.sound.send(SoundRequest::Stop);
         Some(frame)
+    }
+}
+
+impl Drop for Engine {
+    /// Cancels a running export and waits for it to remove what it wrote, so quitting never
+    /// leaves a `.part` file behind.
+    fn drop(&mut self) {
+        let export = self
+            .export
+            .get_mut()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take();
+        if let Some((job, thread)) = export {
+            job.cancel();
+            let _ = thread.join();
+        }
     }
 }

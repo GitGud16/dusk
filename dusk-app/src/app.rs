@@ -9,9 +9,10 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use dusk_core::time::STANDARD_RATES;
 use dusk_core::{ClipId, Command, Edge, Frame, MediaInfo, Project, TrimClips, import};
-use dusk_engine::{Engine, EngineError, EngineEvent, media_info};
+use dusk_engine::{Engine, EngineError, EngineEvent, ExportEvent, ExportJob, media_info};
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 
+use crate::files::export_path;
 use crate::history::History;
 use crate::shortcuts::Action;
 use crate::timeline::{self, ClipRow};
@@ -75,8 +76,12 @@ pub struct App {
     window: slint::Weak<MainWindow>,
     engine: Engine,
     project: Option<Arc<Project>>,
+    /// The file the project was made from; exports are named after it.
+    source: Option<PathBuf>,
     history: History,
     playhead: Frame,
+    /// The export that is running, if one is.
+    export: Option<ExportJob>,
     /// The timeline's width in pixels, for the zoom.
     timeline_width: f32,
     clips: Rc<VecModel<ClipView>>,
@@ -94,8 +99,10 @@ impl App {
             window: window.as_weak(),
             engine,
             project: None,
+            source: None,
             history: History::default(),
             playhead: Frame(0),
+            export: None,
             timeline_width: window.get_timeline_width(),
             clips,
             ticks,
@@ -132,6 +139,7 @@ impl App {
         };
         let mut project = Project::new(rate, size);
         let name = file_name(&path);
+        self.source = Some(path.clone());
         let command = import(&project, path, info, Frame(0));
         self.history = History::default();
         if let Err(rejection) = self.history.apply(command, &mut project) {
@@ -226,8 +234,61 @@ impl App {
             Action::GoToEnd => self.seek(self.last_frame()),
             Action::Undo => self.undo(),
             Action::Redo => self.redo(),
-            Action::Export | Action::CancelExport => {}
+            Action::Export => self.export(),
+            Action::CancelExport => self.cancel_export(),
         }
+    }
+
+    /// Exports the timeline to an MP4 beside the source file.
+    pub fn export(&mut self) {
+        if self.export.is_some() {
+            return self.say("An export is already running.");
+        }
+        let (Some(project), Some(source)) = (&self.project, &self.source) else {
+            return self.fail("Open a clip before exporting.");
+        };
+        let path = export_path(source);
+        match self.engine.export(Arc::clone(project), path.clone()) {
+            Ok(job) => {
+                self.export = Some(job);
+                if let Some(window) = self.window.upgrade() {
+                    window.set_exporting(true);
+                    window.set_export_progress(0.0);
+                }
+                self.refresh_transport();
+                self.say(&format!("Exporting to {}…", path.display()));
+            }
+            Err(error) => self.fail(&error.to_string()),
+        }
+    }
+
+    pub fn cancel_export(&mut self) {
+        if let Some(job) = &self.export {
+            job.cancel();
+            self.say("Cancelling the export…");
+        }
+    }
+
+    fn export_event(&mut self, event: ExportEvent) {
+        let Some(window) = self.window.upgrade() else {
+            return;
+        };
+        if let ExportEvent::Progress { done, total } = event {
+            window.set_export_progress(done as f32 / total.max(1) as f32);
+            return;
+        }
+        self.export = None;
+        window.set_exporting(false);
+        match event {
+            ExportEvent::Finished { path, encoder } => {
+                self.say(&format!("Exported to {} ({encoder}).", path.display()));
+            }
+            ExportEvent::Cancelled => self.say("Export cancelled; nothing was written."),
+            ExportEvent::Failed(error) => self.fail(&error.to_string()),
+            ExportEvent::Progress { .. } => {}
+        }
+        // The preview showed cached frames only while exporting.
+        self.engine.show(self.playhead);
     }
 
     pub fn play_pause(&mut self) {
@@ -331,6 +392,7 @@ impl App {
             }
             EngineEvent::Error(error) => self.fail(&error.to_string()),
             EngineEvent::Frame { frame, texture } => self.show_frame(frame, texture),
+            EngineEvent::Export(event) => self.export_event(event),
         }
     }
 

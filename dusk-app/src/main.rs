@@ -5,6 +5,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod app;
+mod files;
 mod history;
 mod shortcuts;
 mod timeline;
@@ -78,6 +79,12 @@ fn connect(window: &MainWindow) {
     });
     window.on_play_pause(|| {
         with_app(App::play_pause);
+    });
+    window.on_export(|| {
+        with_app(App::export);
+    });
+    window.on_cancel_export(|| {
+        with_app(App::cancel_export);
     });
     let list: Vec<ShortcutView> = SHORTCUTS
         .iter()

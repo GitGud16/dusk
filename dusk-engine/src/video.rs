@@ -3,7 +3,7 @@
 //! at the preview size and reports it. While playing it follows the playback clock.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use crossbeam_channel::{Receiver, RecvTimeoutError, Sender};
@@ -41,6 +41,7 @@ pub(crate) fn spawn(
     transport: SharedTransport,
     report: Report,
     open_decoders: Arc<AtomicUsize>,
+    exporting: Arc<AtomicBool>,
 ) -> Result<Sender<VideoRequest>, EngineError> {
     let (sender, inbox) = crossbeam_channel::unbounded();
     let gpu = gpu.clone();
@@ -53,6 +54,7 @@ pub(crate) fn spawn(
                 transport,
                 report,
                 open_decoders,
+                exporting,
                 idle,
                 project: None,
                 size: (0, 0),
@@ -104,6 +106,8 @@ struct VideoThread {
     transport: SharedTransport,
     report: Report,
     open_decoders: Arc<AtomicUsize>,
+    /// While an export runs, the preview shows cached frames only.
+    exporting: Arc<AtomicBool>,
     idle: Duration,
     project: Option<Arc<Project>>,
     size: (u32, u32),
@@ -233,12 +237,19 @@ impl VideoThread {
         self.pending_scrub = Some(frame);
     }
 
-    /// Shows exactly `frame`, decoding it if needed.
+    /// Shows exactly `frame`, decoding it if needed; while an export runs, the nearest
+    /// cached frame instead.
     fn show_exact(&mut self, frame: Frame) {
         self.pending_scrub = None;
         self.last_exact = Some(Instant::now());
-        match self.shown_at(frame, Fetch::Decode) {
-            Ok(shown) => self.present(frame, shown, true),
+        let exporting = self.exporting.load(Ordering::Relaxed);
+        let fetch = if exporting {
+            Fetch::Nearest
+        } else {
+            Fetch::Decode
+        };
+        match self.shown_at(frame, fetch) {
+            Ok(shown) => self.present(frame, shown, !exporting),
             Err(error) => self.fail(error),
         }
     }

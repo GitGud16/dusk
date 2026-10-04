@@ -76,6 +76,7 @@ impl Running {
                 EngineEvent::Frame { frame, .. } => frames.push(frame),
                 EngineEvent::Stopped { frame } => return (frames, frame),
                 EngineEvent::Error(error) => panic!("{error}"),
+                EngineEvent::Export(event) => panic!("no export was started: {event:?}"),
             }
         }
     }
@@ -217,6 +218,7 @@ fn playback_with_sound_runs_to_the_end_in_real_time() {
             EngineEvent::Stopped { frame } => break frame,
             // No usable device here; playback carries on without sound.
             EngineEvent::Error(error) => eprintln!("{error}"),
+            EngineEvent::Export(event) => panic!("no export was started: {event:?}"),
         }
     };
     let took = started.elapsed();

@@ -25,6 +25,21 @@ pub enum EngineError {
     #[cfg(feature = "gpu")]
     #[error(transparent)]
     Audio(#[from] dusk_audio::AudioError),
+    /// An export is already running.
+    #[error("an export is already running; wait for it to finish or cancel it")]
+    ExportRunning,
+    /// There is nothing to export.
+    #[error("the timeline is empty; add a clip before exporting")]
+    Empty,
+    /// A file could not be renamed or removed.
+    #[error("Dusk could not finish {}: {source}. Check that you can write to that folder", path.display())]
+    Io {
+        /// The file.
+        path: PathBuf,
+        /// What the system said.
+        #[source]
+        source: std::io::Error,
+    },
     /// A worker thread could not start.
     #[error("Dusk could not start a worker thread ({0}); close some programs and try again")]
     Thread(std::io::Error),
