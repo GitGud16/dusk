@@ -11,7 +11,7 @@ publish.workspace = true
 default = ["gpu"]
 # Additive: adds dusk-render and the compositor-based export. Without it, only the CPU
 # transcode path is built (that is how dusq is built; see CLAUDE.md).
-gpu = ["dep:dusk-render", "dep:crossbeam-channel"]
+gpu = ["dep:dusk-render", "dep:crossbeam-channel", "dusk-audio/output"]
 
 [dependencies]
 dusk-core.workspace = true
