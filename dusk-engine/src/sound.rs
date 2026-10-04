@@ -1,4 +1,4 @@
-//! The audio thread (docs/ARCHITECTURE.md, "Playback"): while sound plays it keeps the output
+//! The mixer thread (docs/ARCHITECTURE.md, "Playback"): while sound plays it keeps the output
 //! device's buffer full from the mixer and starts the playback clock on the device, so video
 //! follows audio. When there is nothing to hear (silent speeds, playing backwards, no device)
 //! it starts the clock on the system clock instead.
@@ -14,7 +14,7 @@ use crate::EngineError;
 use crate::engine::{EngineEvent, EngineOptions, Report, SharedTransport, lock};
 use crate::mixer::Mixer;
 
-/// What the front asks of the audio thread.
+/// What the front asks of the mixer thread.
 pub(crate) enum SoundRequest {
     Project(Arc<Project>),
     Play {
@@ -32,7 +32,7 @@ const FEED_INTERVAL: Duration = Duration::from_millis(5);
 /// Sound plays at these playback factors, forwards only (docs/ARCHITECTURE.md, "Playback").
 const AUDIBLE: std::ops::RangeInclusive<f64> = 0.25..=4.0;
 
-/// Starts the audio thread.
+/// Starts the mixer thread.
 pub(crate) fn spawn(
     options: &EngineOptions,
     transport: SharedTransport,
@@ -41,7 +41,7 @@ pub(crate) fn spawn(
     let (sender, inbox) = crossbeam_channel::unbounded();
     let sound = options.sound;
     std::thread::Builder::new()
-        .name("dusk audio".to_owned())
+        .name("dusk mixer".to_owned())
         .spawn(move || {
             SoundThread {
                 sound,

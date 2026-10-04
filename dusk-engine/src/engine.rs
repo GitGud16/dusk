@@ -1,6 +1,6 @@
 //! The engine's front (docs/ARCHITECTURE.md, "Threading model" and "Data flow"). The UI
-//! thread calls it and never waits for decoding: a video thread decodes and draws frames, an
-//! audio thread mixes sound, and both follow one playback clock. Results come back through
+//! thread calls it and never waits for decoding: a video thread decodes and draws frames, a
+//! mixer thread mixes sound, and both follow one playback clock. Results come back through
 //! the callback the engine was made with.
 
 use std::path::PathBuf;
