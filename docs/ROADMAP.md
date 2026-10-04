@@ -19,12 +19,12 @@ Milestones, not dates. Each one ends with something that runs. Memory and respon
 
 Import one file, see it as a linked video clip and audio clip on one video track and one audio track, play it with sound, scrub, trim, export. In M1 the file is opened from the command line (`dusk.exe clip.mp4`), which needs no new dependency; drag-and-drop import arrives with the media bin in M2.
 
-1. Startup: `dusk-render` creates the wgpu device and hands it to Slint (Vulkan first, DX12 fallback; see ARCHITECTURE.md, Slint specifics), to bring the first window under the 2 s cold-start target (about 3.0 s at M0).
-2. Decode one frame (in software for 0.1; see ARCHITECTURE.md, "Decoder pool") and show it in the preview through a `wgpu` texture. If 60 fps texture updates don't hold on integrated graphics, switch to the pre-approved fallback (GPU readback of the composited RGBA texture into a Slint `SharedPixelBuffer`) and record the decision in ARCHITECTURE.md.
-3. Playback with audio as the clock; play/pause, scrub, frame-step; J/K/L.
-4. Timeline with a ruler, a playhead, one video track and one audio track, and one link group with draggable trim handles that move both clips.
-5. Export to MP4 (hardware encoder or software fallback) with a progress bar and cancel; `.part` file and rename.
-6. Measure: idle memory, memory during and 10 s after 5 minutes of playback, scrub latency on 1080p, download and installed size.
+1. Startup: `dusk-render` creates the wgpu device and hands it to Slint (Vulkan first, DX12 fallback; see ARCHITECTURE.md, Slint specifics), to bring the first window under the 2 s cold-start target (about 3.0 s at M0). Done: 0.76–0.88 s.
+2. Decode one frame (in software for 0.1; see ARCHITECTURE.md, "Decoder pool") and show it in the preview through a `wgpu` texture. If 60 fps texture updates don't hold on integrated graphics, switch to the pre-approved fallback (GPU readback of the composited RGBA texture into a Slint `SharedPixelBuffer`) and record the decision in ARCHITECTURE.md. Done: the texture path stays (57–60 fps of a 1080p60 clip on a discrete GPU); integrated graphics is measured with `DUSK_STATS` when one is available.
+3. Playback with audio as the clock; play/pause, scrub, frame-step; J/K/L. Done. L doubles the speed up to 8x (sound up to 4x); J plays backwards at 1x without sound, decoding each group of pictures into the frame cache. Faster and audible reverse, and keyframe stepping for long GOPs, come with the variable-speed playback of M2.
+4. Timeline with a ruler, a playhead, one video track and one audio track, and one link group with draggable trim handles that move both clips. Done, with undo and redo and a central shortcut table that the Help menu lists.
+5. Export to MP4 (hardware encoder or software fallback) with a progress bar and cancel; `.part` file and rename. Done. Until the export dialog of M4 the file goes beside the source as "<name> export.mp4" (numbered, never replacing a file) at the High quality preset, and the first H.264 encoder in the order that opens at the export's size is used (the 640×480 probe comes with M4). Closing Dusk mid-export cancels it and removes the part file.
+6. Measure: idle memory, memory during and 10 s after 5 minutes of playback, scrub latency on 1080p, download and installed size. Done; the figures are in REQUIREMENTS.md. The after-playback budget now counts the preview's working set, which graphics drivers make cheaper to keep than to free (REQUIREMENTS.md, "After playback stops").
 
 **Done when**: a 1080p clip plays smoothly with sound, can be trimmed, and exports to a playable MP4. Memory stays within the idle, during-playback and after-playback budgets in REQUIREMENTS.md.
 
