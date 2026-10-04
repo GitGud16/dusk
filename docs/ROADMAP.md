@@ -6,7 +6,7 @@ Milestones, not dates. Each one ends with something that runs. Memory and respon
 
 - Cargo workspace with `dusk-core`, `dusk-media`, `dusk-render`, `dusk-audio`, `dusk-engine`, `dusk-app`, `dusk-cli` (`dusq`).
 - FFmpeg (the pinned BtbN LGPL shared 8.1 build from `scripts/ffmpeg-pin.psd1`, installed by `scripts/setup-ffmpeg.ps1`) linked and loading on Windows; a smoke test prints a file's streams. Confirm the build has `lcms2` (hard requirement for photo color), `libopenh264`, `libkvazaar`, `libsvtav1` and `libvpx`. `docs/SETUP.md` records the steps (download, `FFMPEG_DIR`, LLVM) and the NVENC driver floor (570) that the pin implies. `crt-static` set.
-- Ship set is avcodec, avformat, avutil, swscale, swresample (measured 120–130 MB installed, 51–54 MB zipped); confirm with the pinned build, confirm `libkvazaar` is present, and pick NSIS or Inno Setup (picked: Inno Setup). SETUP.md covers `FFMPEG_DIR` and LLVM for `bindgen`.
+- Ship set is avcodec, avformat, avutil, swscale, swresample (measured 120–130 MB installed, 51–54 MB zipped); confirm with the pinned build (130.3 MB installed, 54.3 MB zipped at M0), confirm `libkvazaar` is present, and pick NSIS or Inno Setup (picked: Inno Setup). SETUP.md covers `FFMPEG_DIR` and LLVM for `bindgen`.
 - Slint used under the Royalty-free License 2.0; an About dialog stub with the `AboutSlint` widget exists from day one.
 - Git: `main` branch, first commit contains the docs and CLAUDE.md.
 - Slint window opens with the femtovg-wgpu renderer (Slint 1.18.1, `unstable-wgpu-30`); the Dusk dark theme tokens defined in `.slint`.
