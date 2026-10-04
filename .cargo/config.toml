@@ -1,0 +1,5 @@
+# Link the MSVC runtime statically so dusk.exe and dusq.exe need no VC++ redistributable
+# (docs/ARCHITECTURE.md, "FFmpeg (Windows)"). Never set RUSTFLAGS in the environment:
+# it would replace this setting silently.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]

@@ -1,0 +1,42 @@
+[workspace]
+resolver = "3"
+members = [
+    "dusk-core",
+    "dusk-media",
+    "dusk-render",
+    "dusk-audio",
+    "dusk-engine",
+    "dusk-app",
+    "dusk-cli",
+]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.92"
+license = "MIT"
+repository = "https://github.com/GitGud16/dusk"
+publish = false
+
+[workspace.dependencies]
+dusk-core = { path = "dusk-core" }
+dusk-media = { path = "dusk-media" }
+dusk-render = { path = "dusk-render" }
+dusk-audio = { path = "dusk-audio" }
+# The `gpu` feature is added explicitly by dusk-app; dusq builds without it (see CLAUDE.md).
+dusk-engine = { path = "dusk-engine", default-features = false }
+
+# Pinned exactly: see docs/ARCHITECTURE.md ("FFmpeg (Windows)", "Slint specifics").
+ffmpeg-next = { version = "=9.0.0", default-features = false, features = ["codec", "format", "software-resampling", "software-scaling"] }
+slint = { version = "=1.18.1", default-features = false, features = ["std", "compat-1-18", "backend-winit", "renderer-femtovg-wgpu", "unstable-wgpu-30", "accessibility"] }
+slint-build = "=1.18.1"
+# Must be the wgpu major that Slint's `unstable-wgpu-30` feature uses; no extra backends.
+wgpu = { version = "30", default-features = false }
+
+anyhow = "1"
+thiserror = "2"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true

@@ -1,0 +1,21 @@
+[package]
+name = "dusk-app"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "dusk"
+path = "src/main.rs"
+
+[dependencies]
+dusk-engine = { workspace = true, features = ["gpu"] }
+slint.workspace = true
+wgpu.workspace = true
+anyhow.workspace = true
+
+[build-dependencies]
+slint-build.workspace = true

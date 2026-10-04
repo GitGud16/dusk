@@ -1,0 +1,16 @@
+[package]
+name = "dusk-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "dusq"
+path = "src/main.rs"
+
+[dependencies]
+# No `gpu` feature: dusq transcodes on the CPU and never links wgpu or Slint.
+dusk-engine.workspace = true

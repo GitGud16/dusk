@@ -1,0 +1,5 @@
+# Pinned so a new stable release cannot break `cargo clippy -- -D warnings` overnight.
+# Slint 1.18 needs 1.92 or newer (workspace rust-version). Bump deliberately.
+[toolchain]
+channel = "1.99.0"
+components = ["clippy", "rustfmt"]
