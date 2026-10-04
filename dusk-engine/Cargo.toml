@@ -20,3 +20,7 @@ dusk-audio.workspace = true
 dusk-render = { workspace = true, optional = true }
 crossbeam-channel = { workspace = true, optional = true }
 thiserror.workspace = true
+
+[[example]]
+name = "memory_probe"
+required-features = ["gpu"]
