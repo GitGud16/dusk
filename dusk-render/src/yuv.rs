@@ -2,6 +2,7 @@
 //! limited-range BT.709 YUV 4:2:0 on the GPU, chroma downsampled with the same Catmull-Rom
 //! and sited left, and are read back, so encoders never see RGB.
 
+use std::cell::RefCell;
 use std::sync::mpsc;
 
 use dusk_core::{ColorMatrix, ColorRange, Picture, PictureLayout};
@@ -16,6 +17,18 @@ pub struct ToYuv {
     layout: wgpu::BindGroupLayout,
     luma: wgpu::RenderPipeline,
     chroma: wgpu::RenderPipeline,
+    /// The planes and readback buffers of the last frame size, kept for the next frame: an
+    /// export converts every frame at one size (see `Compositor`'s pool for why).
+    targets: RefCell<Option<Targets>>,
+}
+
+/// The textures one frame is converted into and the buffers they are read back through.
+struct Targets {
+    size: (u32, u32),
+    luma: wgpu::Texture,
+    chroma: wgpu::Texture,
+    luma_copy: Readback,
+    chroma_copy: Readback,
 }
 
 impl ToYuv {
@@ -88,6 +101,7 @@ impl ToYuv {
             luma: pipeline("to_luma", wgpu::TextureFormat::R8Unorm),
             chroma: pipeline("to_chroma", wgpu::TextureFormat::Rg8Unorm),
             layout,
+            targets: RefCell::new(None),
         }
     }
 
@@ -120,6 +134,46 @@ impl ToYuv {
                 },
             ],
         });
+        // Taken out while in use and put back only when the frame was read: after a failure
+        // the next frame starts with fresh ones.
+        let kept = self.targets.borrow_mut().take();
+        let targets = match kept {
+            Some(kept) if kept.size == (width, height) => kept,
+            _ => Targets::new(device, (width, height)),
+        };
+        let mut encoder = device.create_command_encoder(&Default::default());
+        draw(&mut encoder, &self.luma, &bind_group, &targets.luma);
+        draw(&mut encoder, &self.chroma, &bind_group, &targets.chroma);
+        targets.luma_copy.record(&mut encoder, &targets.luma);
+        targets.chroma_copy.record(&mut encoder, &targets.chroma);
+        self.gpu.queue.submit([encoder.finish()]);
+        let (luma_copy, chroma_copy) = (&targets.luma_copy, &targets.chroma_copy);
+        let mapped = [luma_copy.map(), chroma_copy.map()];
+        device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .map_err(|e| RenderError::Readback(e.to_string()))?;
+        for receiver in mapped {
+            receiver
+                .recv()
+                .map_err(|e| RenderError::Readback(e.to_string()))?
+                .map_err(|e| RenderError::Readback(e.to_string()))?;
+        }
+        let picture = Picture {
+            width,
+            height,
+            layout: PictureLayout::Nv12,
+            matrix: ColorMatrix::Bt709,
+            range: ColorRange::Limited,
+            luma: luma_copy.rows()?,
+            chroma: chroma_copy.rows()?,
+        };
+        *self.targets.borrow_mut() = Some(targets);
+        Ok(picture)
+    }
+}
+
+impl Targets {
+    fn new(device: &wgpu::Device, (width, height): (u32, u32)) -> Targets {
         let target = |(width, height), format| {
             device.create_texture(&wgpu::TextureDescriptor {
                 label: None,
@@ -141,35 +195,17 @@ impl ToYuv {
             (width.div_ceil(2), height.div_ceil(2)),
             wgpu::TextureFormat::Rg8Unorm,
         );
-        let mut encoder = device.create_command_encoder(&Default::default());
-        draw(&mut encoder, &self.luma, &bind_group, &luma);
-        draw(&mut encoder, &self.chroma, &bind_group, &chroma);
-        let luma_copy = Readback::new(&mut encoder, device, &luma, 1);
-        let chroma_copy = Readback::new(&mut encoder, device, &chroma, 2);
-        self.gpu.queue.submit([encoder.finish()]);
-        let mapped = [luma_copy.map(), chroma_copy.map()];
-        device
-            .poll(wgpu::PollType::wait_indefinitely())
-            .map_err(|e| RenderError::Readback(e.to_string()))?;
-        for receiver in mapped {
-            receiver
-                .recv()
-                .map_err(|e| RenderError::Readback(e.to_string()))?
-                .map_err(|e| RenderError::Readback(e.to_string()))?;
+        Targets {
+            size: (width, height),
+            luma_copy: Readback::new(device, &luma, 1),
+            chroma_copy: Readback::new(device, &chroma, 2),
+            luma,
+            chroma,
         }
-        Ok(Picture {
-            width,
-            height,
-            layout: PictureLayout::Nv12,
-            matrix: ColorMatrix::Bt709,
-            range: ColorRange::Limited,
-            luma: luma_copy.rows()?,
-            chroma: chroma_copy.rows()?,
-        })
     }
 }
 
-/// A texture copied into a buffer that can be mapped for reading.
+/// A buffer that a texture is copied into and mapped for reading.
 struct Readback {
     buffer: wgpu::Buffer,
     row: u32,
@@ -178,13 +214,8 @@ struct Readback {
 }
 
 impl Readback {
-    /// Records a copy of `texture`, whose texels are `bytes` wide.
-    fn new(
-        encoder: &mut wgpu::CommandEncoder,
-        device: &wgpu::Device,
-        texture: &wgpu::Texture,
-        bytes: u32,
-    ) -> Readback {
+    /// A buffer for `texture`, whose texels are `bytes` wide.
+    fn new(device: &wgpu::Device, texture: &wgpu::Texture, bytes: u32) -> Readback {
         let row = texture.width() * bytes;
         let padded = row.next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
         let height = texture.height();
@@ -194,24 +225,28 @@ impl Readback {
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
             mapped_at_creation: false,
         });
-        encoder.copy_texture_to_buffer(
-            texture.as_image_copy(),
-            wgpu::TexelCopyBufferInfo {
-                buffer: &buffer,
-                layout: wgpu::TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some(padded),
-                    rows_per_image: Some(height),
-                },
-            },
-            texture.size(),
-        );
         Readback {
             buffer,
             row,
             padded,
             height,
         }
+    }
+
+    /// Records the copy of `texture` into the buffer.
+    fn record(&self, encoder: &mut wgpu::CommandEncoder, texture: &wgpu::Texture) {
+        encoder.copy_texture_to_buffer(
+            texture.as_image_copy(),
+            wgpu::TexelCopyBufferInfo {
+                buffer: &self.buffer,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(self.padded),
+                    rows_per_image: Some(self.height),
+                },
+            },
+            texture.size(),
+        );
     }
 
     /// Asks for the buffer to be mapped; the receiver hears when it is.

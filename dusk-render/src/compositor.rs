@@ -3,7 +3,10 @@
 //! Catmull-Rom kernel, chroma at its sited position, then YUV becomes RGB with the picture's
 //! matrix and range, fitted into the frame between black bars.
 
-use std::sync::mpsc;
+use std::cell::RefCell;
+use std::collections::VecDeque;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, mpsc};
 
 use dusk_core::{ColorMatrix, ColorRange, Picture, PictureLayout};
 use wgpu::util::DeviceExt;
@@ -29,6 +32,11 @@ pub enum RenderError {
     /// The picture's planes hold fewer or more bytes than its size and layout need.
     #[error("the decoded picture is malformed; reopen the file and try again")]
     Malformed,
+    /// The GPU did not take a decoded picture.
+    #[error(
+        "the GPU did not take the decoded picture ({0}); update the graphics driver and try again"
+    )]
+    Upload(String),
     /// The GPU could not hand a rendered frame back.
     #[error(
         "the GPU did not return the rendered frame ({0}); update the graphics driver and try again"
@@ -47,7 +55,39 @@ pub struct Compositor {
     /// Resampling from 16-bit integer (P010) planes, into a luma and into a chroma intermediate.
     resample_uint: [wgpu::RenderPipeline; 2],
     convert: wgpu::RenderPipeline,
+    pool: Pool,
 }
+
+/// Textures and upload buffers kept from one frame to the next, so that playing allocates no
+/// GPU memory per frame. Graphics drivers keep memory that is freed and allocated again at
+/// that pace: at M1 fresh textures and upload buffers for every frame left 25 to 45 MB more
+/// after playback than before.
+struct Pool {
+    /// Two upload buffers used in turn: a frame's planes are written into one while the GPU
+    /// may still be copying out of the other.
+    uploads: RefCell<[Option<Upload>; 2]>,
+    /// The upload buffer the next frame uses.
+    next_upload: RefCell<usize>,
+    /// Upload and intermediate textures not in use.
+    spare: RefCell<Vec<wgpu::Texture>>,
+    /// The frames handed out last, oldest first; each is drawn into again once
+    /// [`FRAMES`] newer ones exist.
+    frames: RefCell<VecDeque<wgpu::Texture>>,
+}
+
+/// Spare textures kept for the next frame: two uploads and two intermediates make a frame.
+const SPARE: usize = 8;
+
+/// A buffer the CPU writes a picture into for the GPU to copy from.
+struct Upload {
+    buffer: wgpu::Buffer,
+    /// Set once the buffer is mapped again after the GPU has copied out of it.
+    ready: Arc<AtomicBool>,
+}
+/// Frames in rotation. A frame handed out stays as it was until two more have been drawn;
+/// the preview only ever shows the newest, and since the compositor and the UI share one
+/// queue, a frame drawn again is never shown half-drawn.
+const FRAMES: usize = 3;
 
 /// Indices into the pipeline pairs, and the intermediate format each one writes.
 const LUMA: usize = 0;
@@ -148,6 +188,12 @@ impl Compositor {
             resample_float,
             resample_uint,
             convert,
+            pool: Pool {
+                uploads: RefCell::default(),
+                next_upload: RefCell::default(),
+                spare: RefCell::default(),
+                frames: RefCell::default(),
+            },
         }
     }
 
@@ -186,38 +232,37 @@ impl Compositor {
         } else {
             (wgpu::TextureFormat::R8Unorm, wgpu::TextureFormat::Rg8Unorm)
         };
-        let luma = self.upload(&picture.luma, (picture.width, picture.height), luma_format);
-        let chroma = self.upload(
-            &picture.chroma,
-            (chroma_width, chroma_height),
-            chroma_format,
-        );
+        let mut encoder = self.gpu.device.create_command_encoder(&Default::default());
+        let planes = [
+            (&picture.luma, (picture.width, picture.height), luma_format),
+            (
+                &picture.chroma,
+                (chroma_width, chroma_height),
+                chroma_format,
+            ),
+        ];
+        let ([luma, chroma], upload) = self.upload(&mut encoder, planes)?;
         // Each plane is resampled across into an intermediate as tall as the plane; the final
         // pass resamples both down and converts to RGB.
         let intermediate =
             wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING;
-        let luma_across = self.texture(
+        let luma_across = self.spare(
             (rect.width, picture.height),
             INTERMEDIATE[LUMA],
             intermediate,
         );
-        let chroma_across = self.texture(
+        let chroma_across = self.spare(
             (rect.width, chroma_height),
             INTERMEDIATE[CHROMA],
             intermediate,
         );
-        let frame = self.texture(
-            size,
-            wgpu::TextureFormat::Rgba8Unorm,
-            intermediate | wgpu::TextureUsages::COPY_SRC,
-        );
+        let frame = self.frame(size);
 
         // Source texels per output texel. 4:2:0 chroma is sited left (MPEG-2): horizontally
         // on the even luma columns, a quarter chroma texel right of where centered chroma
         // would be, and vertically halfway between two luma rows.
         let across = picture.width as f32 / rect.width as f32;
         let down = picture.height as f32 / rect.height as f32;
-        let mut encoder = self.gpu.device.create_command_encoder(&Default::default());
         let passes = [
             (
                 &luma,
@@ -258,6 +303,9 @@ impl Compositor {
         );
         draw(&mut encoder, &self.convert, &bind_group, &frame);
         self.gpu.queue.submit([encoder.finish()]);
+        self.remap(upload);
+        // Copies into these for the next frame are ordered after this submission.
+        self.give_back([luma, chroma, luma_across, chroma_across]);
         Ok(frame)
     }
 
@@ -272,13 +320,7 @@ impl Compositor {
                 limit,
             });
         }
-        let frame = self.texture(
-            size,
-            wgpu::TextureFormat::Rgba8Unorm,
-            wgpu::TextureUsages::RENDER_ATTACHMENT
-                | wgpu::TextureUsages::TEXTURE_BINDING
-                | wgpu::TextureUsages::COPY_SRC,
-        );
+        let frame = self.frame(size);
         // A pass that only clears: its load operation paints the frame black.
         let mut encoder = self.gpu.device.create_command_encoder(&Default::default());
         let view = frame.create_view(&Default::default());
@@ -379,25 +421,167 @@ impl Compositor {
         })
     }
 
-    /// A texture holding one plane of a picture, rows packed.
-    fn upload(&self, data: &[u8], size: (u32, u32), format: wgpu::TextureFormat) -> wgpu::Texture {
-        let texture = self.texture(
+    /// A spare texture of this kind, or a new one.
+    fn spare(
+        &self,
+        size: (u32, u32),
+        format: wgpu::TextureFormat,
+        usage: wgpu::TextureUsages,
+    ) -> wgpu::Texture {
+        let mut spare = self.pool.spare.borrow_mut();
+        let found = spare.iter().position(|texture| {
+            (texture.width(), texture.height()) == size
+                && texture.format() == format
+                && texture.usage() == usage
+        });
+        match found {
+            Some(index) => spare.swap_remove(index),
+            None => self.texture(size, format, usage),
+        }
+    }
+
+    /// Keeps `textures` for the next frame; the oldest spares go when there are too many.
+    fn give_back(&self, textures: [wgpu::Texture; 4]) {
+        let mut spare = self.pool.spare.borrow_mut();
+        spare.extend(textures);
+        let excess = spare.len().saturating_sub(SPARE);
+        spare.drain(..excess);
+    }
+
+    /// The texture the next frame of `size` is drawn into: the oldest of the frames in
+    /// rotation once there are [`FRAMES`] of that size.
+    fn frame(&self, size: (u32, u32)) -> wgpu::Texture {
+        let mut frames = self.pool.frames.borrow_mut();
+        frames.retain(|frame| (frame.width(), frame.height()) == size);
+        let frame = if frames.len() >= FRAMES {
+            frames.pop_front()
+        } else {
+            None
+        };
+        let frame = frame.unwrap_or_else(|| {
+            self.texture(
+                size,
+                wgpu::TextureFormat::Rgba8Unorm,
+                wgpu::TextureUsages::RENDER_ATTACHMENT
+                    | wgpu::TextureUsages::TEXTURE_BINDING
+                    | wgpu::TextureUsages::COPY_SRC,
+            )
+        });
+        frames.push_back(frame.clone());
+        frame
+    }
+
+    /// Textures holding the planes of a picture, each given as its packed rows, its size and
+    /// its texture format, copied in through the next upload buffer as part of `encoder`.
+    /// Returns which upload buffer was used, for [`remap`](Self::remap) after submitting.
+    fn upload(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        planes: [(&Vec<u8>, (u32, u32), wgpu::TextureFormat); 2],
+    ) -> Result<([wgpu::Texture; 2], usize), RenderError> {
+        // Where each plane goes in the buffer: rows padded to the copy alignment, planes one
+        // after the other (a padded plane's length keeps the next one aligned too).
+        let layouts = planes.map(|(_, (width, height), format)| {
+            let row = width * format.block_copy_size(None).unwrap_or(1);
+            let padded = row.next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
+            (row as usize, padded, u64::from(padded) * u64::from(height))
+        });
+        let total = layouts[0].2 + layouts[1].2;
+        let (index, buffer) = self.upload_buffer(total)?;
+        {
+            let mut mapped = buffer
+                .slice(..total)
+                .get_mapped_range_mut()
+                .map_err(|e| RenderError::Upload(e.to_string()))?;
+            let mut offset = 0;
+            for ((data, _, _), (row, padded, length)) in planes.iter().zip(layouts) {
+                for (index, source) in data.chunks(row).enumerate() {
+                    let at = offset + index * padded as usize;
+                    mapped.slice(at..at + row).copy_from_slice(source);
+                }
+                offset += length as usize;
+            }
+        }
+        buffer.unmap();
+        let mut offset = 0;
+        let textures = [0, 1].map(|plane| {
+            let (_, size, format) = planes[plane];
+            let (_, padded, length) = layouts[plane];
+            let texture = self.spare(
+                size,
+                format,
+                wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            );
+            encoder.copy_buffer_to_texture(
+                wgpu::TexelCopyBufferInfo {
+                    buffer: &buffer,
+                    layout: wgpu::TexelCopyBufferLayout {
+                        offset,
+                        bytes_per_row: Some(padded),
+                        rows_per_image: Some(size.1),
+                    },
+                },
+                texture.as_image_copy(),
+                texture.size(),
+            );
+            offset += length;
+            texture
+        });
+        Ok((textures, index))
+    }
+
+    /// The next upload buffer, mapped for writing and at least `size` bytes long. It waits
+    /// for the GPU to finish copying out of it if it has not yet; a larger picture than
+    /// before gets a larger buffer.
+    fn upload_buffer(&self, size: u64) -> Result<(usize, wgpu::Buffer), RenderError> {
+        let index = {
+            let mut next = self.pool.next_upload.borrow_mut();
+            let index = *next;
+            *next = (index + 1) % 2;
+            index
+        };
+        let mut uploads = self.pool.uploads.borrow_mut();
+        if let Some(upload) = &uploads[index]
+            && upload.buffer.size() >= size
+        {
+            // Mapping callbacks run when the device is polled.
+            if !upload.ready.load(Ordering::Acquire) {
+                self.gpu
+                    .device
+                    .poll(wgpu::PollType::wait_indefinitely())
+                    .map_err(|e| RenderError::Upload(e.to_string()))?;
+            }
+            if upload.ready.load(Ordering::Acquire) {
+                return Ok((index, upload.buffer.clone()));
+            }
+        }
+        let buffer = self.gpu.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("upload"),
             size,
-            format,
-            wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-        );
-        let bytes_per_texel = format.block_copy_size(None).unwrap_or(1);
-        self.gpu.queue.write_texture(
-            texture.as_image_copy(),
-            data,
-            wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(size.0 * bytes_per_texel),
-                rows_per_image: Some(size.1),
-            },
-            texture.size(),
-        );
-        texture
+            usage: wgpu::BufferUsages::MAP_WRITE | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: true,
+        });
+        uploads[index] = Some(Upload {
+            buffer: buffer.clone(),
+            ready: Arc::new(AtomicBool::new(true)),
+        });
+        Ok((index, buffer))
+    }
+
+    /// Maps upload buffer `index` for writing again, once the GPU has copied out of it.
+    fn remap(&self, index: usize) {
+        let uploads = self.pool.uploads.borrow();
+        let Some(upload) = &uploads[index] else {
+            return;
+        };
+        upload.ready.store(false, Ordering::Release);
+        let ready = Arc::clone(&upload.ready);
+        upload
+            .buffer
+            .slice(..)
+            .map_async(wgpu::MapMode::Write, move |result| {
+                ready.store(result.is_ok(), Ordering::Release);
+            });
     }
 
     fn uniforms(&self, bytes: &[u8]) -> wgpu::Buffer {

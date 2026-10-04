@@ -218,3 +218,31 @@ fn an_edge_stays_in_place_when_scaling_up() {
     );
     assert!(level(63) > 40 && level(63) < 215, "{}", level(63));
 }
+
+#[test]
+fn a_frame_keeps_its_picture_until_two_newer_ones_are_drawn() {
+    let compositor = compositor();
+    let red = flat(
+        16,
+        16,
+        [63, 102, 240],
+        ColorMatrix::Bt709,
+        ColorRange::Limited,
+    );
+    let gray = flat(
+        16,
+        16,
+        [126, 128, 128],
+        ColorMatrix::Bt709,
+        ColorRange::Limited,
+    );
+    let first = compositor.render(&red, (16, 16)).unwrap();
+    compositor.render(&gray, (16, 16)).unwrap();
+    compositor.render(&gray, (16, 16)).unwrap();
+    let kept = compositor.read_rgba(&first).unwrap();
+    assert!(close(pixel(&kept, 16, 8, 8), [255, 0, 0, 255], 3));
+    // The textures are reused in turn: the fourth frame is drawn into the first one.
+    compositor.render(&gray, (16, 16)).unwrap();
+    let reused = compositor.read_rgba(&first).unwrap();
+    assert!(close(pixel(&reused, 16, 8, 8), [128, 128, 128, 255], 3));
+}
