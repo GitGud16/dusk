@@ -1,6 +1,283 @@
 import { AboutSlint } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 
+// A clip as the timeline draws it; positions and lengths in timeline frames.
+export struct ClipView {
+    id: int,
+    // 0 for the video track, 1 for the audio track.
+    track: int,
+    start: int,
+    length: int,
+    name: string,
+    // The link group; 0 when unlinked.
+    link: int,
+    video: bool,
+}
+
+// A labeled mark on the ruler.
+export struct TickView {
+    frame: int,
+    label: string,
+}
+
+// A line of the shortcut list.
+export struct ShortcutView {
+    keys: string,
+    description: string,
+}
+
+// A flat button: a background step and a 1px border, no shadow (docs/THEME.md).
+component ToolButton inherits Rectangle {
+    in property <string> text;
+    in property <bool> enabled: true;
+    in property <bool> primary;
+    callback clicked;
+
+    height: Theme.control-height;
+    min-width: label.preferred-width + 2 * Theme.space-3;
+    border-radius: Theme.radius-control;
+    border-width: Theme.border-width;
+    border-color: root.primary && root.enabled ? Theme.primary : Theme.border;
+    background: !root.enabled ? Theme.bg-1
+        : root.primary ? (touch.has-hover ? Theme.primary-hover : Theme.primary)
+        : (touch.has-hover ? Theme.bg-3 : Theme.bg-2);
+
+    label := Text {
+        text: root.text;
+        color: !root.enabled ? Theme.text-3 : root.primary ? Theme.on-brand : Theme.text-1;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+
+    touch := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: pointer;
+        clicked => {
+            root.clicked();
+        }
+    }
+}
+
+// A timecode readout in the numeric font.
+component Timecode inherits Text {
+    font-family: Theme.font-numeric;
+    font-size: Theme.font-title;
+    vertical-alignment: center;
+}
+
+// The ruler, one video track and one audio track (the M1 layout), the clips with their trim
+// handles, and the playhead.
+component Timeline inherits Rectangle {
+    in property <[ClipView]> clips;
+    in property <[TickView]> ticks;
+    in property <int> playhead;
+    // Pixels per frame.
+    in property <float> zoom: 1;
+    // The width clips are laid out in, in pixels.
+    out property <length> tracks-width: tracks.width;
+    // The playhead is dragged to `frame`; `scrub-end` when the drag ends.
+    callback scrub(frame: int);
+    callback scrub-end(frame: int);
+    // A trim handle was dragged: the clip, whether its start edge, and the frame it ended on.
+    callback trim(clip: int, start: bool, frame: int);
+
+    // The trim being dragged: the clip, its link group (or 0), which edge, and where.
+    property <int> drag-clip: -1;
+    property <int> drag-link;
+    property <bool> drag-start;
+    property <int> drag-frame;
+
+    background: Theme.bg-1;
+    height: Theme.ruler-height + Theme.video-track-height + Theme.audio-track-height;
+
+    pure function frame-at(x: length) -> int {
+        return Math.max(0, Math.round(x / 1px / root.zoom));
+    }
+    pure function track-y(track: int) -> length {
+        return Theme.ruler-height + (track == 0 ? 0px : Theme.video-track-height);
+    }
+    pure function track-height(track: int) -> length {
+        return track == 0 ? Theme.video-track-height : Theme.audio-track-height;
+    }
+    // Whether a trim drag moves this clip: the dragged clip and its linked partners.
+    pure function dragged(clip: ClipView) -> bool {
+        return root.drag-clip >= 0 && (clip.id == root.drag-clip || (clip.link != 0 && clip.link == root.drag-link));
+    }
+
+    HorizontalLayout {
+        // Track labels.
+        Rectangle {
+            width: 40px;
+            background: Theme.bg-2;
+
+            Text {
+                y: root.track-y(0);
+                height: root.track-height(0);
+                x: Theme.space-2;
+                text: "V1";
+                color: Theme.text-2;
+                font-size: Theme.font-tiny;
+                vertical-alignment: center;
+            }
+
+            Text {
+                y: root.track-y(1);
+                height: root.track-height(1);
+                x: Theme.space-2;
+                text: "A1";
+                color: Theme.text-2;
+                font-size: Theme.font-tiny;
+                vertical-alignment: center;
+            }
+
+            Rectangle {
+                x: parent.width - self.width;
+                width: Theme.border-width;
+                background: Theme.border;
+            }
+        }
+
+        tracks := Rectangle {
+            clip: true;
+
+            // The ruler.
+            Rectangle {
+                y: 0;
+                height: Theme.ruler-height;
+                background: Theme.bg-2;
+
+                for tick in root.ticks: Rectangle {
+                    x: tick.frame * root.zoom * 1px;
+                    width: Theme.border-width;
+                    background: Theme.border;
+
+                    Text {
+                        x: Theme.space-1;
+                        text: tick.label;
+                        color: Theme.text-3;
+                        font-family: Theme.font-numeric;
+                        font-size: Theme.font-tiny;
+                        vertical-alignment: center;
+                    }
+                }
+
+                Rectangle {
+                    y: parent.height - self.height;
+                    height: Theme.border-width;
+                    background: Theme.border;
+                }
+            }
+
+            // The line between the two tracks.
+            Rectangle {
+                y: root.track-y(1) - Theme.border-width;
+                height: Theme.border-width;
+                background: Theme.border;
+            }
+
+            // Pressing anywhere outside a trim handle moves the playhead there.
+            TouchArea {
+                moved => {
+                    root.scrub(root.frame-at(self.mouse-x));
+                }
+                pointer-event(event) => {
+                    if event.button == PointerEventButton.left && event.kind == PointerEventKind.down {
+                        root.scrub(root.frame-at(self.mouse-x));
+                    }
+                    if event.button == PointerEventButton.left && event.kind == PointerEventKind.up {
+                        root.scrub-end(root.frame-at(self.mouse-x));
+                    }
+                }
+            }
+
+            // The clips, as a trim drag would leave them.
+            for clip in root.clips: Rectangle {
+                property <bool> moving: root.dragged(clip);
+                property <int> first: self.moving && root.drag-start
+                    ? Math.min(root.drag-frame, clip.start + clip.length - 1) : clip.start;
+                property <int> end: self.moving && !root.drag-start
+                    ? Math.max(root.drag-frame, clip.start + 1) : clip.start + clip.length;
+                x: self.first * root.zoom * 1px;
+                width: Math.max(1px, (self.end - self.first) * root.zoom * 1px);
+                y: root.track-y(clip.track) + Theme.clip-gap;
+                height: root.track-height(clip.track) - 2 * Theme.clip-gap;
+                border-radius: Theme.radius-clip;
+                background: clip.video ? Theme.primary : Theme.secondary;
+                border-width: self.moving ? Theme.focus-width : 0px;
+                border-color: Theme.primary-bright;
+
+                Text {
+                    x: Theme.space-2;
+                    width: Math.max(0px, parent.width - 2 * Theme.space-2);
+                    text: clip.name;
+                    color: Theme.on-brand;
+                    font-size: Theme.font-tiny;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+            }
+
+            // Trim handles at each clip's edges. They stay where the drag started, so the
+            // pointer position maps straight to a frame.
+            for clip in root.clips: Rectangle {
+                x: clip.start * root.zoom * 1px - 4px;
+                width: clip.length * root.zoom * 1px + 8px;
+                y: root.track-y(clip.track);
+                height: root.track-height(clip.track);
+
+                TouchArea {
+                    x: 0;
+                    width: 8px;
+                    mouse-cursor: ew-resize;
+                    moved => {
+                        root.drag-frame = root.frame-at(parent.x + self.x + self.mouse-x);
+                    }
+                    pointer-event(event) => {
+                        if event.button == PointerEventButton.left && event.kind == PointerEventKind.down {
+                            root.drag-clip = clip.id;
+                            root.drag-link = clip.link;
+                            root.drag-start = true;
+                            root.drag-frame = clip.start;
+                        }
+                        if event.kind == PointerEventKind.up && root.drag-clip == clip.id {
+                            root.drag-clip = -1;
+                            root.trim(clip.id, true, root.drag-frame);
+                        }
+                    }
+                }
+
+                TouchArea {
+                    x: parent.width - self.width;
+                    width: 8px;
+                    mouse-cursor: ew-resize;
+                    moved => {
+                        root.drag-frame = root.frame-at(parent.x + self.x + self.mouse-x);
+                    }
+                    pointer-event(event) => {
+                        if event.button == PointerEventButton.left && event.kind == PointerEventKind.down {
+                            root.drag-clip = clip.id;
+                            root.drag-link = clip.link;
+                            root.drag-start = false;
+                            root.drag-frame = clip.start + clip.length;
+                        }
+                        if event.kind == PointerEventKind.up && root.drag-clip == clip.id {
+                            root.drag-clip = -1;
+                            root.trim(clip.id, false, root.drag-frame);
+                        }
+                    }
+                }
+            }
+
+            // The playhead.
+            Rectangle {
+                x: root.playhead * root.zoom * 1px - self.width / 2;
+                width: Theme.playhead-width;
+                background: Theme.alert;
+            }
+        }
+    }
+}
+
 export component MainWindow inherits Window {
     title: "Dusk";
     preferred-width: 1280px;
@@ -10,19 +287,55 @@ export component MainWindow inherits Window {
     background: Theme.bg-0;
     default-font-family: Theme.font-ui;
     default-font-size: Theme.font-body;
+    forward-focus: keys;
 
     // The latest preview frame, drawn by dusk-render at the preview's size in physical pixels.
     in property <image> preview-image;
-    // Shown over the preview instead of a frame: how to open a clip, or what went wrong.
+    // Shown over the preview instead of a frame: how to open a clip.
     in property <string> preview-message;
     // The preview's size in physical pixels, so frames are drawn 1:1.
     out property <int> preview-pixel-width: Math.round(preview.width / 1phx);
     out property <int> preview-pixel-height: Math.round(preview.height / 1phx);
     callback preview-resized(width: int, height: int);
 
+    // The timeline.
+    in property <[ClipView]> clips;
+    in property <[TickView]> ticks;
+    in property <int> playhead;
+    in property <float> zoom: 1;
+    out property <float> timeline-width: timeline.tracks-width / 1px;
+    callback timeline-resized(width: float);
+    callback scrub(frame: int);
+    callback scrub-end(frame: int);
+    callback trim(clip: int, start: bool, frame: int);
+
+    // The transport.
+    in property <string> position-timecode: "00:00:00:00";
+    in property <string> end-timecode: "00:00:00:00";
+    in property <bool> playing;
+    // The playback factor while playing, such as "2x"; empty at normal speed.
+    in property <string> speed;
+    in property <bool> has-project;
+    callback play-pause();
+
+    // The status line: what just happened, or what went wrong.
+    in property <string> status;
+    in property <bool> status-is-error;
+
+    // Every key press goes to the shortcut table; true when it was a shortcut.
+    callback key(text: string, ctrl: bool, shift: bool, alt: bool) -> bool;
+    // The shortcut table, for the shortcut list.
+    in property <[ShortcutView]> shortcuts;
+
     MenuBar {
         Menu {
             title: "Help";
+            MenuItem {
+                title: "Keyboard shortcuts";
+                activated => {
+                    shortcut-list.show();
+                }
+            }
             MenuItem {
                 title: "About Dusk";
                 activated => {
@@ -32,59 +345,199 @@ export component MainWindow inherits Window {
         }
     }
 
-    VerticalLayout {
-        // Toolbar: bg-1 with a 1px border below (elevation by background step, no shadow).
-        Rectangle {
-            height: Theme.toolbar-height;
-            background: Theme.bg-1;
+    keys := FocusScope {
+        key-pressed(event) => {
+            return root.key(event.text, event.modifiers.control, event.modifiers.shift, event.modifiers.alt) ? EventResult.accept : EventResult.reject;
+        }
 
-            HorizontalLayout {
-                padding-left: Theme.panel-padding;
-                padding-right: Theme.panel-padding;
-                alignment: start;
+        VerticalLayout {
+            // Toolbar: bg-1 with a 1px border below (elevation by background step, no shadow).
+            Rectangle {
+                height: Theme.toolbar-height;
+                background: Theme.bg-1;
 
-                Text {
-                    text: "Dusk";
-                    color: Theme.text-1;
-                    font-size: Theme.font-title;
-                    font-weight: Theme.weight-semibold;
-                    vertical-alignment: center;
+                HorizontalLayout {
+                    padding-left: Theme.panel-padding;
+                    padding-right: Theme.panel-padding;
+                    alignment: start;
+
+                    Text {
+                        text: "Dusk";
+                        color: Theme.text-1;
+                        font-size: Theme.font-title;
+                        font-weight: Theme.weight-semibold;
+                        vertical-alignment: center;
+                    }
+                }
+
+                Rectangle {
+                    y: parent.height - self.height;
+                    height: Theme.border-width;
+                    background: Theme.border;
                 }
             }
 
+            preview := Rectangle {
+                background: Theme.bg-0;
+
+                Image {
+                    width: 100%;
+                    height: 100%;
+                    source: root.preview-image;
+                    image-fit: contain;
+                }
+
+                Text {
+                    width: 100%;
+                    height: 100%;
+                    text: root.preview-message;
+                    color: Theme.text-2;
+                    wrap: word-wrap;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+
+                changed width => {
+                    root.preview-resized(root.preview-pixel-width, root.preview-pixel-height);
+                }
+                changed height => {
+                    root.preview-resized(root.preview-pixel-width, root.preview-pixel-height);
+                }
+            }
+
+            // The transport bar.
             Rectangle {
-                y: parent.height - self.height;
-                height: Theme.border-width;
-                background: Theme.border;
+                height: Theme.toolbar-height + Theme.space-2;
+                background: Theme.bg-1;
+
+                Rectangle {
+                    height: Theme.border-width;
+                    y: 0;
+                    background: Theme.border;
+                }
+
+                HorizontalLayout {
+                    padding-left: Theme.panel-padding;
+                    padding-right: Theme.panel-padding;
+                    spacing: Theme.space-3;
+
+                    Timecode {
+                        text: root.position-timecode;
+                        color: Theme.text-1;
+                    }
+
+                    ToolButton {
+                        y: (parent.height - self.height) / 2;
+                        text: root.playing ? "Pause" : "Play";
+                        enabled: root.has-project;
+                        clicked => {
+                            root.play-pause();
+                            keys.focus();
+                        }
+                    }
+
+                    Text {
+                        text: root.speed;
+                        color: Theme.signal;
+                        font-family: Theme.font-numeric;
+                        vertical-alignment: center;
+                    }
+
+                    Rectangle {
+                        horizontal-stretch: 1;
+                    }
+
+                    Timecode {
+                        text: root.end-timecode;
+                        color: Theme.text-2;
+                    }
+                }
+            }
+
+            timeline := Timeline {
+                clips: root.clips;
+                ticks: root.ticks;
+                playhead: root.playhead;
+                zoom: root.zoom;
+                scrub(frame) => {
+                    root.scrub(frame);
+                }
+                scrub-end(frame) => {
+                    root.scrub-end(frame);
+                }
+                trim(clip, start, frame) => {
+                    root.trim(clip, start, frame);
+                }
+                changed tracks-width => {
+                    root.timeline-resized(self.tracks-width / 1px);
+                }
+            }
+
+            // The status line.
+            Rectangle {
+                height: Theme.control-height;
+                background: Theme.bg-1;
+
+                Rectangle {
+                    height: Theme.border-width;
+                    y: 0;
+                    background: Theme.border;
+                }
+
+                HorizontalLayout {
+                    padding-left: Theme.panel-padding;
+                    padding-right: Theme.panel-padding;
+                    spacing: Theme.space-3;
+
+                    Text {
+                        text: root.status;
+                        color: root.status-is-error ? Theme.alert : Theme.text-2;
+                        vertical-alignment: center;
+                        overflow: elide;
+                        horizontal-stretch: 1;
+                    }
+                }
             }
         }
+    }
 
-        // The preview; the timeline arrives later in M1 and the media bin in M2.
-        preview := Rectangle {
-            background: Theme.bg-0;
+    shortcut-list := PopupWindow {
+        width: 320px;
+        x: (root.width - self.width) / 2;
+        y: (root.height - self.height) / 2;
 
-            Image {
-                width: 100%;
-                height: 100%;
-                source: root.preview-image;
-                image-fit: contain;
-            }
+        Rectangle {
+            background: Theme.bg-2;
+            border-color: Theme.border;
+            border-width: Theme.border-width;
+            border-radius: Theme.radius-panel;
 
-            Text {
-                width: 100%;
-                height: 100%;
-                text: root.preview-message;
-                color: Theme.text-2;
-                wrap: word-wrap;
-                horizontal-alignment: center;
-                vertical-alignment: center;
-            }
+            VerticalLayout {
+                padding: Theme.panel-padding;
+                spacing: Theme.space-1;
 
-            changed width => {
-                root.preview-resized(root.preview-pixel-width, root.preview-pixel-height);
-            }
-            changed height => {
-                root.preview-resized(root.preview-pixel-width, root.preview-pixel-height);
+                Text {
+                    text: "Keyboard shortcuts";
+                    color: Theme.text-1;
+                    font-size: Theme.font-dialog;
+                    font-weight: Theme.weight-semibold;
+                }
+
+                for shortcut in root.shortcuts: HorizontalLayout {
+                    spacing: Theme.space-3;
+
+                    Text {
+                        width: 112px;
+                        text: shortcut.keys;
+                        color: Theme.primary-bright;
+                        font-family: Theme.font-numeric;
+                    }
+
+                    Text {
+                        text: shortcut.description;
+                        color: Theme.text-2;
+                    }
+                }
             }
         }
     }

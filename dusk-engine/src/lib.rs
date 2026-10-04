@@ -2,14 +2,22 @@
 //! and waveform jobs, and the export pipeline. The only crate that moves data between the
 //! leaf crates (`dusk-media`, `dusk-render`, `dusk-audio`).
 
+#[cfg(feature = "gpu")]
+mod cache;
+#[cfg(feature = "gpu")]
+mod engine;
 mod error;
 mod info;
 #[cfg(feature = "gpu")]
-mod preview;
+mod mixer;
+#[cfg(feature = "gpu")]
+mod sound;
+#[cfg(feature = "gpu")]
+mod video;
 
 #[cfg(feature = "gpu")]
-pub use dusk_render::{Gpu, GpuError};
+pub use dusk_render::{Gpu, GpuError, wgpu};
+#[cfg(feature = "gpu")]
+pub use engine::{DECODER_IDLE, Engine, EngineEvent, EngineOptions};
 pub use error::EngineError;
 pub use info::media_info;
-#[cfg(feature = "gpu")]
-pub use preview::{DECODER_IDLE, Preview, PreviewError, PreviewEvent};
