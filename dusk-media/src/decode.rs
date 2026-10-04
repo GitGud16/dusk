@@ -123,6 +123,26 @@ impl VideoDecoder {
                 None => self.ahead = self.decode_next()?,
             }
         }
+        self.copy_shown()
+    }
+
+    /// The frame after the one last returned, in presentation order, or the first frame
+    /// after a [`seek`](Self::seek); `None` after the last frame.
+    pub fn next_frame(&mut self) -> Result<Option<DecodedFrame>, MediaError> {
+        let next = match self.ahead.take() {
+            Some(frame) => Some(frame),
+            None if self.ended => None,
+            None => self.decode_next()?,
+        };
+        if next.is_none() {
+            return Ok(None);
+        }
+        self.shown = next;
+        self.copy_shown()
+    }
+
+    /// The current frame, copied out of the decoder.
+    fn copy_shown(&mut self) -> Result<Option<DecodedFrame>, MediaError> {
         let Some((at, frame)) = &self.shown else {
             return Ok(None);
         };
@@ -131,8 +151,9 @@ impl VideoDecoder {
         Ok(Some(DecodedFrame { time: *at, picture }))
     }
 
-    /// Moves to the keyframe at or before `time` and forgets what was decoded.
-    fn seek(&mut self, time: MediaTime) -> Result<(), MediaError> {
+    /// Moves to the keyframe at or before `time` and forgets what was decoded; the next
+    /// [`next_frame`](Self::next_frame) returns the frame there.
+    pub fn seek(&mut self, time: MediaTime) -> Result<(), MediaError> {
         let target = time.0.max(0) + self.start;
         self.input
             .seek(target, ..target)

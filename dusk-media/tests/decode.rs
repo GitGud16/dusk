@@ -181,3 +181,31 @@ fn hardware_and_software_decoding_agree_on_10_bit_video() {
         "the pictures differ"
     );
 }
+
+#[test]
+fn frames_come_one_after_another_from_a_seek() {
+    let mut decoder = decoder();
+    decoder.seek(frame_time(10)).unwrap();
+    // The sample has one keyframe, at frame 0, so decoding restarts there.
+    let times: Vec<_> = (0..12)
+        .map(|_| decoder.next_frame().unwrap().expect("a frame").time)
+        .collect();
+    let expected: Vec<_> = (0..12).map(frame_time).collect();
+    assert_eq!(times, expected);
+}
+
+#[test]
+fn next_frame_continues_after_frame_at() {
+    let mut decoder = decoder();
+    assert_eq!(time_at(&mut decoder, frame_time(5)), frame_time(5));
+    assert_eq!(decoder.next_frame().unwrap().unwrap().time, frame_time(6));
+    assert_eq!(decoder.next_frame().unwrap().unwrap().time, frame_time(7));
+    assert_eq!(time_at(&mut decoder, frame_time(9)), frame_time(9));
+}
+
+#[test]
+fn next_frame_ends_after_the_last_frame() {
+    let mut decoder = decoder();
+    assert_eq!(time_at(&mut decoder, frame_time(29)), frame_time(29));
+    assert!(decoder.next_frame().unwrap().is_none());
+}
