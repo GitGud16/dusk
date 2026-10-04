@@ -10,7 +10,7 @@ Constraints that shape the architecture. Targets are measured at every milestone
 - **During export**: the playback budget plus an encoder line, provisionally 200 MB for hardware encoders, OpenH264 and Kvazaar and 600 MB for SVT-AV1 at 1080p (likely low at 4K; fix its thread count and lookahead when measuring), measured per encoder at M4. Playback and the pop-out preview pause while exporting; export frames in flight live inside the cache cap and export decoders follow the pool rules.
 - **After playback stops**: back to under idle + frame cache cap within 10 s (decoders idle for 5 s are closed). Memory must never grow with project length or session length.
 - Frame cache cap is user-configurable, default 384 MB. The cache owns its frames (copied out of decoder pools), so eviction always frees memory.
-- **Download**: under ~60 MB, which requires LZMA compression: NSIS or Inno Setup, or a 7z self-extractor (MSI only offers MSZIP/LZX, so no MSI). **Installed**: under ~160 MB for 0.1: the five FFmpeg DLLs Dusk loads (measured 120–130 MB), `dusk.exe` (about 15–20 MB) and `dusq.exe` (about 5 MB), sharing the DLLs. Long-term target under ~60 MB installed, via the slim custom FFmpeg build planned for 0.2. Both measured from M0 onward.
+- **Download**: under ~60 MB, which requires LZMA compression: an Inno Setup installer with solid LZMA2, picked at M0 (MSI only offers MSZIP/LZX, so no MSI). **Installed**: under ~160 MB for 0.1: the five FFmpeg DLLs Dusk loads (measured 120–130 MB), `dusk.exe` (about 15–20 MB) and `dusq.exe` (about 5 MB), sharing the DLLs. Long-term target under ~60 MB installed, via the slim custom FFmpeg build planned for 0.2. Both measured from M0 onward.
 - Cold start under 2 seconds.
 - Idle CPU near 0% when not playing or exporting.
 

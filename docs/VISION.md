@@ -28,3 +28,4 @@ The one thing it does better than anything else is **in-place clip editing**: cl
 - **GPU**: `wgpu` for frame rendering and preview.
 - **Platform**: Windows first; Linux and macOS later.
 - **License**: own code under MIT. No GPL dependencies in the default build (no x264/x265); encode with hardware encoders (NVENC / QSV / AMF), OpenH264, Kvazaar and SVT-AV1. GPL encoders only through an optional, user-supplied external `ffmpeg.exe`.
+- **Installer**: Inno Setup with solid LZMA2 compression, picked at M0. The download target needs LZMA, which MSI cannot use.
