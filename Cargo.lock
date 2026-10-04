@@ -1077,6 +1077,9 @@ dependencies = [
 [[package]]
 name = "dusk-core"
 version = "0.0.0"
+dependencies = [
+ "thiserror 2.0.21",
+]
 
 [[package]]
 name = "dusk-engine"
