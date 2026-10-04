@@ -1,0 +1,56 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  windows:
+    runs-on: windows-2025
+    env:
+      CARGO_TERM_COLOR: always
+    steps:
+      - uses: actions/checkout@v4
+
+      # The pinned BtbN build is deleted upstream after about two weeks (see docs/SETUP.md);
+      # the cache keeps CI working until the pin moves to a month-end build.
+      - name: Cache the pinned FFmpeg zip
+        uses: actions/cache@v4
+        with:
+          path: ~\AppData\Local\dusk\ffmpeg-cache
+          key: ffmpeg-${{ hashFiles('scripts/ffmpeg-pin.psd1') }}
+
+      - name: Install the pinned FFmpeg and export the dev environment
+        shell: pwsh
+        run: |
+          ./scripts/setup-ffmpeg.ps1
+          . ./scripts/dev-env.ps1
+          "FFMPEG_DIR=$env:FFMPEG_DIR" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "LIBCLANG_PATH=$env:LIBCLANG_PATH" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "$env:FFMPEG_DIR\bin" | Out-File -FilePath $env:GITHUB_PATH -Append
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Format
+        run: cargo fmt --all -- --check
+
+      - name: Clippy (workspace, gpu on)
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Test (workspace, gpu on)
+        run: cargo test --workspace
+
+      - name: Clippy (dusk-engine without gpu)
+        run: cargo clippy -p dusk-engine --no-default-features --all-targets -- -D warnings
+
+      - name: Test (dusk-engine without gpu)
+        run: cargo test -p dusk-engine --no-default-features
+
+      - name: Build dusq alone (no gpu feature)
+        run: cargo build -p dusk-cli --release
+
+      - name: dusq never links wgpu
+        shell: bash
+        run: |
+          deps=$(cargo tree -p dusk-cli -e normal,build --prefix none -f '{p}') || exit 1
+          if grep -q '^wgpu ' <<<"$deps"; then echo "dusq links wgpu"; exit 1; fi
