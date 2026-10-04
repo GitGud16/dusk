@@ -16,7 +16,7 @@ fn frame_time(n: i64) -> MediaTime {
 }
 
 fn decoder() -> VideoDecoder {
-    VideoDecoder::open(&sample(), Acceleration::Auto).expect("the sample opens")
+    VideoDecoder::open(&sample(), Acceleration::Software).expect("the sample opens")
 }
 
 fn time_at(decoder: &mut VideoDecoder, time: MediaTime) -> MediaTime {
@@ -104,19 +104,19 @@ fn software_decoding_never_uses_the_hardware() {
 }
 
 /// H.264 decoding is bit-exact, so a hardware decoder must produce the software picture.
-/// Machines without a hardware decoder (CI runners) only check that `Auto` fell back.
+/// Machines without a hardware decoder (CI runners) only check that it fell back.
 #[test]
 fn hardware_and_software_decoding_agree() {
-    let mut auto = decoder();
+    let mut hardware = VideoDecoder::open(&sample(), Acceleration::Hardware).unwrap();
     let mut software = VideoDecoder::open(&sample(), Acceleration::Software).unwrap();
-    let from_auto = auto.frame_at(frame_time(10)).unwrap().unwrap();
+    let from_hardware = hardware.frame_at(frame_time(10)).unwrap().unwrap();
     let from_software = software.frame_at(frame_time(10)).unwrap().unwrap();
-    if !auto.is_hardware() {
-        eprintln!("no hardware decoder on this machine; Auto fell back to software");
+    if !hardware.is_hardware() {
+        eprintln!("no hardware decoder on this machine; decoding fell back to software");
     }
-    assert_eq!(from_auto.time, from_software.time);
+    assert_eq!(from_hardware.time, from_software.time);
     assert!(
-        from_auto.picture == from_software.picture,
+        from_hardware.picture == from_software.picture,
         "the pictures differ"
     );
 }
@@ -125,7 +125,7 @@ fn hardware_and_software_decoding_agree() {
 fn a_file_without_video_is_refused() {
     let readme = Path::new(env!("CARGO_MANIFEST_DIR")).join("../testdata/README.md");
     assert!(matches!(
-        VideoDecoder::open(&readme, Acceleration::Auto),
+        VideoDecoder::open(&readme, Acceleration::Software),
         Err(MediaError::Open { .. } | MediaError::NoVideo { .. })
     ));
 }
@@ -168,16 +168,16 @@ fn a_10_bit_video_decodes_to_p010_with_the_value_in_the_top_bits() {
 /// VP9 decoding is bit-exact too; this also covers the hardware P010 path where it exists.
 #[test]
 fn hardware_and_software_decoding_agree_on_10_bit_video() {
-    let mut auto = VideoDecoder::open(&sample_10_bit(), Acceleration::Auto).unwrap();
+    let mut hardware = VideoDecoder::open(&sample_10_bit(), Acceleration::Hardware).unwrap();
     let mut software = VideoDecoder::open(&sample_10_bit(), Acceleration::Software).unwrap();
-    let from_auto = auto.frame_at(frame_time(7)).unwrap().unwrap();
+    let from_hardware = hardware.frame_at(frame_time(7)).unwrap().unwrap();
     let from_software = software.frame_at(frame_time(7)).unwrap().unwrap();
-    if !auto.is_hardware() {
-        eprintln!("no hardware VP9 decoder on this machine; Auto fell back to software");
+    if !hardware.is_hardware() {
+        eprintln!("no hardware VP9 decoder on this machine; decoding fell back to software");
     }
-    assert_eq!(from_auto.time, from_software.time);
+    assert_eq!(from_hardware.time, from_software.time);
     assert!(
-        from_auto.picture == from_software.picture,
+        from_hardware.picture == from_software.picture,
         "the pictures differ"
     );
 }

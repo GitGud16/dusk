@@ -15,10 +15,12 @@ use crate::{MediaError, ffi};
 /// Whether a decoder may use the GPU's video decoder.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Acceleration {
-    /// Hardware decoding (D3D11VA on Windows) when the file and GPU allow it, else software.
-    Auto,
-    /// Software decoding only.
+    /// Software decoding, Dusk's default (docs/ARCHITECTURE.md, "Decoder pool").
     Software,
+    /// The GPU's video decoder (D3D11VA on Windows) when the file and GPU allow it, else
+    /// software. Not used by default: while frames are copied back to system memory it is no
+    /// faster than software decoding and holds many times the memory.
+    Hardware,
 }
 
 /// A decoded frame: when it starts in the source and its picture.
@@ -78,7 +80,7 @@ impl VideoDecoder {
         let parameters = stream.parameters();
         let decoder = match acceleration {
             // A hardware decoder that fails to open falls back to software for this file.
-            Acceleration::Auto => open_decoder(&parameters, true)
+            Acceleration::Hardware => open_decoder(&parameters, true)
                 .or_else(|_| open_decoder(&parameters, false))
                 .map_err(open_error)?,
             Acceleration::Software => open_decoder(&parameters, false).map_err(open_error)?,

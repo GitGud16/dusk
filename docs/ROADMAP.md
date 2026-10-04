@@ -20,7 +20,7 @@ Milestones, not dates. Each one ends with something that runs. Memory and respon
 Import one file, see it as a linked video clip and audio clip on one video track and one audio track, play it with sound, scrub, trim, export. In M1 the file is opened from the command line (`dusk.exe clip.mp4`), which needs no new dependency; drag-and-drop import arrives with the media bin in M2.
 
 1. Startup: `dusk-render` creates the wgpu device and hands it to Slint (Vulkan first, DX12 fallback; see ARCHITECTURE.md, Slint specifics), to bring the first window under the 2 s cold-start target (about 3.0 s at M0).
-2. Decode one frame (D3D11VA, software fallback) and show it in the preview through a `wgpu` texture. If 60 fps texture updates don't hold on integrated graphics, switch to the pre-approved fallback (GPU readback of the composited RGBA texture into a Slint `SharedPixelBuffer`) and record the decision in ARCHITECTURE.md.
+2. Decode one frame (in software for 0.1; see ARCHITECTURE.md, "Decoder pool") and show it in the preview through a `wgpu` texture. If 60 fps texture updates don't hold on integrated graphics, switch to the pre-approved fallback (GPU readback of the composited RGBA texture into a Slint `SharedPixelBuffer`) and record the decision in ARCHITECTURE.md.
 3. Playback with audio as the clock; play/pause, scrub, frame-step; J/K/L.
 4. Timeline with a ruler, a playhead, one video track and one audio track, and one link group with draggable trim handles that move both clips.
 5. Export to MP4 (hardware encoder or software fallback) with a progress bar and cancel; `.part` file and rename.
@@ -82,7 +82,7 @@ Import one file, see it as a linked video clip and audio clip on one video track
 ## 0.2
 
 - Slim custom FFmpeg build (only the demuxers, decoders and encoders Dusk uses) to reach the ~60 MB installed target.
-- Zero-copy hardware decode (D3D11 surfaces shared with wgpu) if measurements show the copy matters.
+- Zero-copy hardware decode (D3D11 surfaces shared with wgpu): at M1 the copy back made D3D11VA no faster than software decoding, at many times the memory.
 
 ## Later (from FEATURES.md)
 

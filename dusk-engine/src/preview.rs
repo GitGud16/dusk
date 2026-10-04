@@ -150,7 +150,10 @@ impl Worker {
     }
 
     fn open_decoder(&self) -> Result<VideoDecoder, MediaError> {
-        let decoder = VideoDecoder::open(&self.path, Acceleration::Auto)?;
+        // Software decoding (docs/ARCHITECTURE.md, "Decoder pool"): measured on 1080p and 4K
+        // clips it is as fast as the hardware decoder once frames are copied back, and holds
+        // a fraction of its memory.
+        let decoder = VideoDecoder::open(&self.path, Acceleration::Software)?;
         self.decoding.store(true, Ordering::Relaxed);
         Ok(decoder)
     }

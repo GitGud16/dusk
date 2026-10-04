@@ -4,9 +4,9 @@ Constraints that shape the architecture. Targets are measured at every milestone
 
 ## 1. Lightweight (top priority)
 - **Idle**: under ~200 MB with a 1080p project open and nothing playing.
-- **During 1080p playback**: under idle + frame cache cap + 300 MB decoder budget + 64 MB thumbnails. The reverse-playback buffer lives inside the cache cap. The decoder budget holds at most 2 video decoders (a hardware pool is about 65 MB for 1080p 8-bit, about 133 MB for 10-bit HEVC) and 4 audio decoders. GPU textures on integrated graphics count. With the default cache cap this is about 950 MB worst case (10-bit) and about 800 MB for typical 8-bit footage.
-- **4K sources**: one video decoder, no lookahead; its pool reaches about 500 MB for 3840-wide 10-bit HEVC and about 535 MB at 4096 wide, so the decoder line for one such source is a measured ceiling of about 550 MB and playback may reach about 1.2 GB. 4K is usable, not smooth, in 0.1.
-- **dusq**: one decoder (hardware only for the 1080p class, software above it with 2 threads, 1 thread above 9 Mpx), scaling and normalizing right after decode, a 4-frame queue, no frame cache. Ceiling is measured at M4 per size class (1080p, 4K, 8K) and recorded here; before the encoder line it is expected well under the app's playback budget for the same source.
+- **During 1080p playback**: under idle + frame cache cap + 300 MB decoder budget + 64 MB thumbnails. The reverse-playback buffer lives inside the cache cap. The decoder budget holds at most 2 video decoders and 4 audio decoders; 0.1 decodes video in software, where a 1080p decoder peaks at about 32 MB (H.264) to 51 MB (10-bit HEVC), measured at M1 (a hardware pool would be about 65 MB for 1080p 8-bit, about 133 MB for 10-bit HEVC). GPU textures on integrated graphics count. With the default cache cap this is about 950 MB worst case (10-bit) and about 800 MB for typical 8-bit footage.
+- **4K sources**: one video decoder, no lookahead. In software it peaks at about 150 MB (H.264) to 200 MB (10-bit HEVC), measured at M1; a hardware pool would reach about 500 MB for 3840-wide 10-bit HEVC and about 535 MB at 4096 wide, so the decoder line for one such source keeps a ceiling of about 550 MB and playback stays under about 1.2 GB. 4K is usable, not smooth, in 0.1.
+- **dusq**: one software decoder, as in the app (`min(4, cores / 2)` threads for the 1080p class, 2 above it, 1 above 9 Mpx), scaling and normalizing right after decode, a 4-frame queue, no frame cache. Ceiling is measured at M4 per size class (1080p, 4K, 8K) and recorded here; before the encoder line it is expected well under the app's playback budget for the same source.
 - **During export**: the playback budget plus an encoder line, provisionally 200 MB for hardware encoders, OpenH264 and Kvazaar and 600 MB for SVT-AV1 at 1080p (likely low at 4K; fix its thread count and lookahead when measuring), measured per encoder at M4. Playback and the pop-out preview pause while exporting; export frames in flight live inside the cache cap and export decoders follow the pool rules.
 - **After playback stops**: back to under idle + frame cache cap within 10 s (decoders idle for 5 s are closed). Memory must never grow with project length or session length.
 - Frame cache cap is user-configurable, default 384 MB. The cache owns its frames (copied out of decoder pools), so eviction always frees memory.
@@ -16,7 +16,7 @@ Constraints that shape the architecture. Targets are measured at every milestone
 
 ## 2. Responsive
 - The UI thread never blocks. Decoding, thumbnails, waveform analysis, and export run on worker threads.
-- Hardware video decoding (D3D11VA on Windows) with per-file software fallback.
+- Video is decoded in software in 0.1: measured at M1, D3D11VA with the copy back to system memory was no faster and held many times the memory (ARCHITECTURE.md, "Decoder pool"). Hardware decoding returns with zero-copy decoding, or sooner where software decoding cannot keep up.
 - 1080p scrubbing is smooth on integrated graphics (Intel Iris Xe class).
 - 4K is usable at MVP (may stutter); proxies come later.
 
