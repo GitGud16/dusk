@@ -4,6 +4,8 @@
 //! A leaf crate: it never decodes media or asks for frames; `dusk-engine` hands them in. It
 //! also creates the wgpu device, which Slint renders with too (see docs/ARCHITECTURE.md).
 
+mod compositor;
 mod gpu;
 
+pub use compositor::{Compositor, RenderError};
 pub use gpu::{Gpu, GpuError};

@@ -1104,6 +1104,7 @@ dependencies = [
 name = "dusk-render"
 version = "0.0.0"
 dependencies = [
+ "dusk-core",
  "thiserror 2.0.21",
  "wgpu",
 ]
