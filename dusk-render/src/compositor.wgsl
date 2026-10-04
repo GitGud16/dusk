@@ -1,28 +1,23 @@
 // The compositor's passes (docs/ARCHITECTURE.md, color and scaling steps 1, 2 and 4).
 //
-// Resampling runs once per plane and axis: a horizontal pass into an intermediate texture,
-// then a vertical pass. Values stay in code units of the picture's bit depth (16 to 235 is
-// video black to white at 8 bits) until the last pass turns YUV into RGB.
+// Each plane is resampled across in its own pass into a half-float intermediate; the last
+// pass resamples both intermediates down and turns YUV into RGB, so only two intermediates
+// exist per frame. Values stay in code units of the picture's bit depth (16 to 235 is video
+// black to white at 8 bits) until that last pass. Half floats hold them closely enough for
+// 8-bit output: a 10-bit code is off by at most half a code, an eighth of an 8-bit one.
 //
 // Every resource has its own binding number, so each pipeline binds only what its entry
 // point uses.
 
 struct Resample {
-    // Size of the texture being read, in texels.
-    src_size: vec2<i32>,
-    // 0: resample along x, 1: along y.
-    axis: u32,
-    // For 16-bit integer sources: how far to shift right to get the code (6 for P010).
-    code_shift: u32,
-    // Source texels per output texel along the axis.
+    // Width of the plane being read, in texels.
+    src_width: i32,
+    // Source texels per output texel.
     step: f32,
     // Added to the source position, in source texels (chroma siting).
     offset: f32,
     // Kernel scale, max(step, 1): a downscale widens the kernel so it does not alias.
     scale: f32,
-    // For normalized float sources: what turns a sample into a code (255 for 8-bit planes,
-    // 1 for intermediates, which hold codes already).
-    code_scale: f32,
 }
 
 struct Convert {
@@ -33,6 +28,16 @@ struct Convert {
     to_r: vec4<f32>,
     to_g: vec4<f32>,
     to_b: vec4<f32>,
+    // Resampling down: each intermediate's rows, and per plane the source rows per output
+    // row, the offset in source rows (chroma siting) and the kernel scale, as in Resample.
+    luma_rows: i32,
+    chroma_rows: i32,
+    luma_step: f32,
+    luma_offset: f32,
+    luma_scale: f32,
+    chroma_step: f32,
+    chroma_offset: f32,
+    chroma_scale: f32,
 }
 
 @group(0) @binding(0) var<uniform> resample: Resample;
@@ -63,18 +68,15 @@ fn catmull_rom(x: f32) -> f32 {
 
 // Where output texel `position` reads from, in source texels (texel i is centered at i + 0.5).
 fn source_center(position: vec4<f32>) -> f32 {
-    let along = select(position.x, position.y, resample.axis == 1u);
-    return along * resample.step + resample.offset;
+    return position.x * resample.step + resample.offset;
 }
 
 // The source texel to read for tap `i`, clamped to the edge.
 fn tap(position: vec4<f32>, i: i32) -> vec2<i32> {
-    let size = select(resample.src_size.x, resample.src_size.y, resample.axis == 1u);
-    let at = clamp(i, 0, size - 1);
-    let here = vec2<i32>(position.xy);
-    return select(vec2<i32>(at, here.y), vec2<i32>(here.x, at), resample.axis == 1u);
+    return vec2<i32>(clamp(i, 0, resample.src_width - 1), i32(position.y));
 }
 
+// 8-bit planes are normalized, so a sample times 255 is its code.
 @fragment
 fn resample_float(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
     let center = source_center(position);
@@ -83,12 +85,13 @@ fn resample_float(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f
     var total = 0.0;
     for (var i = i32(floor(center - 0.5 - radius)); i <= i32(ceil(center - 0.5 + radius)); i++) {
         let weight = catmull_rom((f32(i) + 0.5 - center) / resample.scale);
-        sum += textureLoad(float_source, tap(position, i), 0).xy * resample.code_scale * weight;
+        sum += textureLoad(float_source, tap(position, i), 0).xy * 255.0 * weight;
         total += weight;
     }
     return vec4<f32>(sum / total, 0.0, 1.0);
 }
 
+// P010 planes keep each 10-bit code in the top bits of a 16-bit sample.
 @fragment
 fn resample_uint(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
     let center = source_center(position);
@@ -97,11 +100,25 @@ fn resample_uint(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f3
     var total = 0.0;
     for (var i = i32(floor(center - 0.5 - radius)); i <= i32(ceil(center - 0.5 + radius)); i++) {
         let weight = catmull_rom((f32(i) + 0.5 - center) / resample.scale);
-        let code = textureLoad(uint_source, tap(position, i), 0).xy >> vec2<u32>(resample.code_shift);
+        let code = textureLoad(uint_source, tap(position, i), 0).xy >> vec2<u32>(6u);
         sum += vec2<f32>(code) * weight;
         total += weight;
     }
     return vec4<f32>(sum / total, 0.0, 1.0);
+}
+
+// Resamples column `x` of `plane` down to output row `row` (centered at row + 0.5).
+fn down(plane: texture_2d<f32>, x: i32, row: f32, rows: i32, step: f32, offset: f32, scale: f32) -> vec2<f32> {
+    let center = row * step + offset;
+    let radius = 2.0 * scale;
+    var sum = vec2<f32>(0.0);
+    var total = 0.0;
+    for (var i = i32(floor(center - 0.5 - radius)); i <= i32(ceil(center - 0.5 + radius)); i++) {
+        let weight = catmull_rom((f32(i) + 0.5 - center) / scale);
+        sum += textureLoad(plane, vec2<i32>(x, clamp(i, 0, rows - 1)), 0).xy * weight;
+        total += weight;
+    }
+    return sum / total;
 }
 
 @fragment
@@ -111,7 +128,10 @@ fn to_rgb(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
         return vec4<f32>(0.0, 0.0, 0.0, 1.0);
     }
     let q = p - convert.rect_min;
-    let yuv = vec4<f32>(textureLoad(luma, q, 0).x, textureLoad(chroma, q, 0).xy, 1.0);
+    let row = f32(q.y) + 0.5;
+    let y = down(luma, q.x, row, convert.luma_rows, convert.luma_step, convert.luma_offset, convert.luma_scale).x;
+    let uv = down(chroma, q.x, row, convert.chroma_rows, convert.chroma_step, convert.chroma_offset, convert.chroma_scale);
+    let yuv = vec4<f32>(y, uv, 1.0);
     let rgb = vec3<f32>(dot(convert.to_r, yuv), dot(convert.to_g, yuv), dot(convert.to_b, yuv));
     return vec4<f32>(clamp(rgb, vec3<f32>(0.0), vec3<f32>(1.0)), 1.0);
 }

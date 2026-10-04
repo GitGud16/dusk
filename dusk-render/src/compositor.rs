@@ -53,8 +53,8 @@ pub struct Compositor {
 const LUMA: usize = 0;
 const CHROMA: usize = 1;
 const INTERMEDIATE: [wgpu::TextureFormat; 2] = [
-    wgpu::TextureFormat::R32Float,
-    wgpu::TextureFormat::Rg32Float,
+    wgpu::TextureFormat::R16Float,
+    wgpu::TextureFormat::Rg16Float,
 ];
 
 impl Compositor {
@@ -192,6 +192,8 @@ impl Compositor {
             (chroma_width, chroma_height),
             chroma_format,
         );
+        // Each plane is resampled across into an intermediate as tall as the plane; the final
+        // pass resamples both down and converts to RGB.
         let intermediate =
             wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING;
         let luma_across = self.texture(
@@ -199,14 +201,8 @@ impl Compositor {
             INTERMEDIATE[LUMA],
             intermediate,
         );
-        let luma_done = self.texture((rect.width, rect.height), INTERMEDIATE[LUMA], intermediate);
         let chroma_across = self.texture(
             (rect.width, chroma_height),
-            INTERMEDIATE[CHROMA],
-            intermediate,
-        );
-        let chroma_done = self.texture(
-            (rect.width, rect.height),
             INTERMEDIATE[CHROMA],
             intermediate,
         );
@@ -221,52 +217,23 @@ impl Compositor {
         // would be, and vertically halfway between two luma rows.
         let across = picture.width as f32 / rect.width as f32;
         let down = picture.height as f32 / rect.height as f32;
-        let plane_code_scale = if ten_bit { 1.0 } else { 255.0 };
         let mut encoder = self.gpu.device.create_command_encoder(&Default::default());
         let passes = [
             (
                 &luma,
                 &luma_across,
                 LUMA,
-                ten_bit,
-                Pass::new(
-                    (picture.width, picture.height),
-                    0,
-                    across,
-                    0.0,
-                    plane_code_scale,
-                ),
-            ),
-            (
-                &luma_across,
-                &luma_done,
-                LUMA,
-                false,
-                Pass::new((rect.width, picture.height), 1, down, 0.0, 1.0),
+                Pass::new(picture.width, across, 0.0),
             ),
             (
                 &chroma,
                 &chroma_across,
                 CHROMA,
-                ten_bit,
-                Pass::new(
-                    (chroma_width, chroma_height),
-                    0,
-                    across / 2.0,
-                    0.25,
-                    plane_code_scale,
-                ),
-            ),
-            (
-                &chroma_across,
-                &chroma_done,
-                CHROMA,
-                false,
-                Pass::new((rect.width, chroma_height), 1, down / 2.0, 0.0, 1.0),
+                Pass::new(chroma_width, across / 2.0, 0.25),
             ),
         ];
-        for (source, target, plane, uint, pass) in passes {
-            let (pipeline, layout, binding) = if uint {
+        for (source, target, plane, pass) in passes {
+            let (pipeline, layout, binding) = if ten_bit {
                 (&self.resample_uint[plane], &self.resample_uint_layout, 2)
             } else {
                 (&self.resample_float[plane], &self.resample_float_layout, 1)
@@ -279,13 +246,15 @@ impl Compositor {
         let convert = Convert {
             rect,
             to_rgb: yuv_to_rgb(picture.matrix, picture.range, bits),
+            luma_down: Pass::new(picture.height, down, 0.0),
+            chroma_down: Pass::new(chroma_height, down / 2.0, 0.0),
         };
         let uniforms = self.uniforms(&convert.bytes());
         let bind_group = self.bind_group(
             &self.convert_layout,
             &uniforms,
             3,
-            &[(4, &luma_done), (5, &chroma_done)],
+            &[(4, &luma_across), (5, &chroma_across)],
         );
         draw(&mut encoder, &self.convert, &bind_group, &frame);
         self.gpu.queue.submit([encoder.finish()]);
@@ -458,43 +427,36 @@ fn draw(
     pass.draw(0..3, 0..1);
 }
 
-/// One resampling pass, as the shader's `Resample` uniform.
+/// One direction of resampling: how many texels the source has along it, how many source
+/// texels one output texel covers, and the source offset (chroma siting).
+#[derive(Clone, Copy)]
 struct Pass {
-    source_size: (u32, u32),
-    axis: u32,
-    code_shift: u32,
+    source_texels: u32,
     step: f32,
     offset: f32,
-    code_scale: f32,
 }
 
 impl Pass {
-    /// A pass along `axis` (0: x, 1: y) that reads a `source_size` texture, `step` source
-    /// texels per output texel, shifted by `offset` source texels. Plane sources are either
-    /// 8-bit normalized (`code_scale` 255) or P010 integers (`code_scale` 1, shifted by 6);
-    /// intermediates hold codes already.
-    fn new(source_size: (u32, u32), axis: u32, step: f32, offset: f32, code_scale: f32) -> Pass {
+    fn new(source_texels: u32, step: f32, offset: f32) -> Pass {
         Pass {
-            source_size,
-            axis,
-            code_shift: 6,
+            source_texels,
             step,
             offset,
-            code_scale,
         }
     }
 
+    /// Kernel scale: a downscale widens the kernel so it does not alias.
+    fn scale(&self) -> f32 {
+        self.step.max(1.0)
+    }
+
+    /// The shader's `Resample` uniform.
     fn bytes(&self) -> Vec<u8> {
-        let scale = self.step.max(1.0);
         [
-            &(self.source_size.0 as i32).to_le_bytes()[..],
-            &(self.source_size.1 as i32).to_le_bytes(),
-            &self.axis.to_le_bytes(),
-            &self.code_shift.to_le_bytes(),
+            &(self.source_texels as i32).to_le_bytes()[..],
             &self.step.to_le_bytes(),
             &self.offset.to_le_bytes(),
-            &scale.to_le_bytes(),
-            &self.code_scale.to_le_bytes(),
+            &self.scale().to_le_bytes(),
         ]
         .concat()
     }
@@ -504,6 +466,8 @@ impl Pass {
 struct Convert {
     rect: Rect,
     to_rgb: [[f32; 4]; 3],
+    luma_down: Pass,
+    chroma_down: Pass,
 }
 
 impl Convert {
@@ -516,7 +480,24 @@ impl Convert {
         } = self.rect;
         let corners = [x, y, x + width, y + height].map(|v| (v as i32).to_le_bytes());
         let rows = self.to_rgb.iter().flatten().map(|v| v.to_le_bytes());
-        corners.into_iter().chain(rows).flatten().collect()
+        let (luma, chroma) = (self.luma_down, self.chroma_down);
+        let counts = [luma.source_texels, chroma.source_texels].map(|v| (v as i32).to_le_bytes());
+        let down = [
+            luma.step,
+            luma.offset,
+            luma.scale(),
+            chroma.step,
+            chroma.offset,
+            chroma.scale(),
+        ]
+        .map(f32::to_le_bytes);
+        corners
+            .into_iter()
+            .chain(rows)
+            .chain(counts)
+            .chain(down)
+            .flatten()
+            .collect()
     }
 }
 
