@@ -1,0 +1,5 @@
+# Rust build output
+/target
+
+# Pinned third-party binaries fetched by scripts/setup-ffmpeg.ps1 (never commit)
+/.deps
