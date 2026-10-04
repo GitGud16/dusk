@@ -19,11 +19,12 @@ Milestones, not dates. Each one ends with something that runs. Memory and respon
 
 Import one file, see it as a linked video clip and audio clip on one video track and one audio track, play it with sound, scrub, trim, export.
 
-1. Decode one frame (D3D11VA, software fallback) and show it in the preview through a `wgpu` texture. If 60 fps texture updates don't hold on integrated graphics, switch to the pre-approved fallback (GPU readback of the composited RGBA texture into a Slint `SharedPixelBuffer`) and record the decision in ARCHITECTURE.md.
-2. Playback with audio as the clock; play/pause, scrub, frame-step; J/K/L.
-3. Timeline with a ruler, a playhead, one video track and one audio track, and one link group with draggable trim handles that move both clips.
-4. Export to MP4 (hardware encoder or software fallback) with a progress bar and cancel; `.part` file and rename.
-5. Measure: idle memory, memory during and 10 s after 5 minutes of playback, scrub latency on 1080p, download and installed size.
+1. Startup: `dusk-render` creates the wgpu device and hands it to Slint (Vulkan first, DX12 fallback; see ARCHITECTURE.md, Slint specifics), to bring the first window under the 2 s cold-start target (about 3.0 s at M0).
+2. Decode one frame (D3D11VA, software fallback) and show it in the preview through a `wgpu` texture. If 60 fps texture updates don't hold on integrated graphics, switch to the pre-approved fallback (GPU readback of the composited RGBA texture into a Slint `SharedPixelBuffer`) and record the decision in ARCHITECTURE.md.
+3. Playback with audio as the clock; play/pause, scrub, frame-step; J/K/L.
+4. Timeline with a ruler, a playhead, one video track and one audio track, and one link group with draggable trim handles that move both clips.
+5. Export to MP4 (hardware encoder or software fallback) with a progress bar and cancel; `.part` file and rename.
+6. Measure: idle memory, memory during and 10 s after 5 minutes of playback, scrub latency on 1080p, download and installed size.
 
 **Done when**: a 1080p clip plays smoothly with sound, can be trimmed, and exports to a playable MP4. Memory stays within the idle, during-playback and after-playback budgets in REQUIREMENTS.md.
 
