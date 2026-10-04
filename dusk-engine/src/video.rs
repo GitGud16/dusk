@@ -193,7 +193,7 @@ impl VideoThread {
     /// it takes.
     fn wait(&self) -> Option<Duration> {
         if self.playing.is_some() {
-            return Some(PLAYBACK_POLL);
+            return Some(self.until_next_frame().min(PLAYBACK_POLL));
         }
         let now = Instant::now();
         let scrub = self.pending_scrub.map(|_| {
@@ -210,6 +210,30 @@ impl VideoThread {
             (Some(scrub), Some(idle)) => Some(scrub.min(idle)),
             (scrub, idle) => scrub.or(idle),
         }
+    }
+
+    /// How long until the playback clock reaches the next frame; zero when the frame on
+    /// screen is not the one the clock is at.
+    fn until_next_frame(&self) -> Duration {
+        let transport = lock(&self.transport);
+        let (Some(factor), true) = (transport.playing, transport.clock.is_running()) else {
+            // Waiting for the sound to start the clock.
+            return Duration::from_millis(1);
+        };
+        let rate = transport.rate;
+        let time = transport.clock.time(Instant::now());
+        let frame = frame_at(MediaTime(time), rate);
+        if self.shown_exactly != Some(frame) {
+            return Duration::ZERO;
+        }
+        // The next frame starts where this one ends, or, backwards, just before this one.
+        let next = if factor > 0.0 {
+            frame_to_media(frame + Frame(1), rate).0
+        } else {
+            frame_to_media(frame, rate).0 - 1
+        };
+        let micros = (next - time).unsigned_abs() as f64 / factor.abs().max(f64::MIN_POSITIVE);
+        Duration::from_micros(micros.ceil() as u64)
     }
 
     fn scrub_due(&self) -> bool {
