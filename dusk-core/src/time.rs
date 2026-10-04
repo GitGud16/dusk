@@ -76,6 +76,49 @@ impl Rational {
     }
 }
 
+/// The rates variable-frame-rate sources snap to (docs/ARCHITECTURE.md, "Sequence settings"):
+/// 23.976, 24, 25, 29.97, 30, 50, 59.94 and 60.
+pub const STANDARD_RATES: [Rational; 8] = [
+    Rational {
+        num: 24000,
+        den: 1001,
+    },
+    Rational { num: 24, den: 1 },
+    Rational { num: 25, den: 1 },
+    Rational {
+        num: 30000,
+        den: 1001,
+    },
+    Rational { num: 30, den: 1 },
+    Rational { num: 50, den: 1 },
+    Rational {
+        num: 60000,
+        den: 1001,
+    },
+    Rational { num: 60, den: 1 },
+];
+
+/// The standard rate nearest to `rate`; on a tie, the lower one.
+pub fn snap_to_standard(rate: Rational) -> Rational {
+    // |rate - standard| = |n·d' - n'·d| / (d·d'); d is the same for every candidate, so
+    // compare |n·d' - n'·d| / d' between candidates, exactly, by cross-multiplying.
+    let gap = |standard: &Rational| {
+        let (n, d) = (i128::from(rate.num), i128::from(rate.den));
+        let (n2, d2) = (i128::from(standard.num), i128::from(standard.den));
+        ((n * d2 - n2 * d).abs(), d2)
+    };
+    let mut best = STANDARD_RATES[0];
+    let mut best_gap = gap(&best);
+    for standard in &STANDARD_RATES[1..] {
+        let (over, under) = gap(standard);
+        if over * best_gap.1 < best_gap.0 * under {
+            best = *standard;
+            best_gap = (over, under);
+        }
+    }
+    best
+}
+
 /// The media time at which timeline frame `frame` starts, at `rate` frames per second.
 pub fn frame_to_media(frame: Frame, rate: Rational) -> MediaTime {
     MediaTime(saturate(div_round(
@@ -144,6 +187,22 @@ mod tests {
             (rate(30000, 1001).num(), rate(30000, 1001).den()),
             (30000, 1001)
         );
+    }
+
+    #[test]
+    fn a_variable_rate_snaps_to_the_nearest_standard_rate() {
+        // An Android phone clip: 393 frames in 13.6 s.
+        assert_eq!(
+            snap_to_standard(rate(35_370_000, 1_224_653)),
+            rate(30000, 1001)
+        );
+        assert_eq!(snap_to_standard(rate(30, 1)), rate(30, 1));
+        assert_eq!(snap_to_standard(rate(5960, 100)), rate(60000, 1001));
+        assert_eq!(snap_to_standard(rate(47, 1)), rate(50, 1));
+        assert_eq!(snap_to_standard(rate(15, 1)), rate(24000, 1001));
+        assert_eq!(snap_to_standard(rate(120, 1)), rate(60, 1));
+        // 24.5 is as far from 24 as from 25: the lower one wins.
+        assert_eq!(snap_to_standard(rate(49, 2)), rate(24, 1));
     }
 
     #[test]

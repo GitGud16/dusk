@@ -45,8 +45,12 @@ pub struct MediaInfo {
     pub has_video: bool,
     /// Whether the file has an audio stream.
     pub has_audio: bool,
-    /// The video frame rate; `None` without video.
+    /// The video frame rate, snapped to a standard rate when the file's rate varies; `None`
+    /// without video.
     pub frame_rate: Option<Rational>,
+    /// Whether the video's frame rate varies (phone recordings); its frames are then placed by
+    /// timestamp, never by counting.
+    pub vfr: bool,
     /// Picture width in pixels, after rotation; 0 without video.
     pub width: u32,
     /// Picture height in pixels, after rotation; 0 without video.
@@ -230,6 +234,31 @@ impl Sequence {
         self.tracks.iter().find(|track| track.id == id)
     }
 
+    /// The video clip shown at `frame`: the enabled clip there on the topmost unmuted video
+    /// track (later video tracks draw over earlier ones), or `None` in a gap, which is black.
+    pub fn visible_video_at(&self, frame: Frame) -> Option<&Clip> {
+        self.tracks
+            .iter()
+            .rev()
+            .filter(|track| track.kind == TrackKind::Video && !track.muted)
+            .find_map(|track| {
+                // Clips are sorted and never overlap: only the last one starting at or before
+                // `frame` can cover it.
+                let after = track.clips.partition_point(|clip| clip.position <= frame);
+                let clip = &track.clips[after.checked_sub(1)?];
+                (clip.enabled && frame < clip.end()).then_some(clip)
+            })
+    }
+
+    /// The first frame after the last clip; 0 for an empty sequence.
+    pub fn end(&self) -> Frame {
+        self.tracks
+            .iter()
+            .filter_map(|track| track.clips.last().map(Clip::end))
+            .max()
+            .unwrap_or(Frame(0))
+    }
+
     pub(crate) fn track_mut(&mut self, id: TrackId) -> Option<&mut Track> {
         self.tracks.iter_mut().find(|track| track.id == id)
     }
@@ -410,6 +439,45 @@ mod tests {
         assert!(project.media().is_empty());
         let ids: Vec<_> = project.sequence().tracks().iter().map(Track::id).collect();
         assert_ne!(ids[0], ids[1]);
+    }
+
+    #[test]
+    fn the_visible_video_clip_is_the_enabled_one_on_the_top_unmuted_track() {
+        let mut project = Project::new(rate(30, 1), (1920, 1080));
+        let low = clip_at(0, 0, 1.0); // frames 0..120
+        let mut high = clip_at(60, 0, 1.0); // frames 60..180
+        high.id = ClipId(2);
+        let mut upper = project.sequence.tracks[0].clone();
+        upper.id = TrackId(3);
+        upper.clips = vec![high];
+        project.sequence.tracks[0].clips.push(low);
+        project.sequence.tracks.insert(1, upper);
+        let shown = |project: &Project, frame| {
+            project
+                .sequence()
+                .visible_video_at(Frame(frame))
+                .map(|clip| clip.id)
+        };
+
+        assert_eq!(shown(&project, 10), Some(ClipId(1)));
+        assert_eq!(shown(&project, 100), Some(ClipId(2)));
+        assert_eq!(shown(&project, 150), Some(ClipId(2)));
+        assert_eq!(shown(&project, 180), None);
+        project.sequence.tracks[1].muted = true;
+        assert_eq!(shown(&project, 100), Some(ClipId(1)));
+        project.sequence.tracks[0].clips[0].enabled = false;
+        assert_eq!(shown(&project, 100), None);
+    }
+
+    #[test]
+    fn the_sequence_ends_after_its_last_clip() {
+        let mut project = Project::new(rate(30, 1), (1920, 1080));
+        assert_eq!(project.sequence().end(), Frame(0));
+        project.sequence.tracks[0].clips.push(clip_at(10, 0, 1.0));
+        let mut audio = clip_at(200, 0, 1.0);
+        audio.edits = ClipEdits::Audio(AudioEdits::default());
+        project.sequence.tracks[1].clips.push(audio);
+        assert_eq!(project.sequence().end(), Frame(320));
     }
 
     #[test]

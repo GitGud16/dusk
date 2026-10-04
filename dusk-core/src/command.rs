@@ -455,6 +455,7 @@ mod tests {
                 has_video: true,
                 has_audio: true,
                 frame_rate: Some(fps30()),
+                vfr: false,
                 width: 1920,
                 height: 1080,
             },
