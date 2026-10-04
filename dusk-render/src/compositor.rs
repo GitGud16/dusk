@@ -261,6 +261,47 @@ impl Compositor {
         Ok(frame)
     }
 
+    /// A black frame of `size`, for where no clip is visible.
+    pub fn blank(&self, size: (u32, u32)) -> Result<wgpu::Texture, RenderError> {
+        let limit = self.gpu.device.limits().max_texture_dimension_2d;
+        let (width, height) = size;
+        if width == 0 || height == 0 || width > limit || height > limit {
+            return Err(RenderError::Size {
+                width,
+                height,
+                limit,
+            });
+        }
+        let frame = self.texture(
+            size,
+            wgpu::TextureFormat::Rgba8Unorm,
+            wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_SRC,
+        );
+        // A pass that only clears: its load operation paints the frame black.
+        let mut encoder = self.gpu.device.create_command_encoder(&Default::default());
+        let view = frame.create_view(&Default::default());
+        encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: None,
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &view,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+        self.gpu.queue.submit([encoder.finish()]);
+        Ok(frame)
+    }
+
     /// Reads an `Rgba8Unorm` texture back into memory, four bytes a pixel, rows packed.
     /// Blocks until the GPU is done; meant for export and tests, not for the UI thread.
     pub fn read_rgba(&self, texture: &wgpu::Texture) -> Result<Vec<u8>, RenderError> {
@@ -399,7 +440,7 @@ impl Compositor {
 }
 
 /// Runs `pipeline` over the whole of `target`.
-fn draw(
+pub(crate) fn draw(
     encoder: &mut wgpu::CommandEncoder,
     pipeline: &wgpu::RenderPipeline,
     bind_group: &wgpu::BindGroup,
