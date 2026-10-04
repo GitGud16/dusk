@@ -3,7 +3,7 @@
 #![cfg(windows)]
 
 use std::io::Read;
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::thread::sleep;
 use std::time::{Duration, Instant};
 
@@ -74,7 +74,11 @@ fn closing_the_main_window_exits_cleanly() {
             break window;
         }
         if let Some(status) = dusk.try_wait().expect("poll dusk") {
-            panic!("dusk exited before showing its window: {status}");
+            panic!(
+                "dusk exited before showing its window ({status}); its stderr:
+{}",
+                stderr_of(&mut dusk)
+            );
         }
         assert!(Instant::now() < deadline, "no Dusk window within 60 s");
         sleep(Duration::from_millis(50));
@@ -95,9 +99,15 @@ fn closing_the_main_window_exits_cleanly() {
         }
         sleep(Duration::from_millis(50));
     };
+    let stderr = stderr_of(&mut dusk);
+    assert_eq!(status.code(), Some(0), "dusk's stderr:\n{stderr}");
+}
+
+/// What the exited `child` wrote to stderr.
+fn stderr_of(child: &mut Child) -> String {
     let mut stderr = String::new();
-    if let Some(mut pipe) = dusk.stderr.take() {
+    if let Some(mut pipe) = child.stderr.take() {
         let _ = pipe.read_to_string(&mut stderr);
     }
-    assert_eq!(status.code(), Some(0), "dusk's stderr:\n{stderr}");
+    stderr
 }
