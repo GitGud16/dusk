@@ -12,6 +12,7 @@ name = "dusk"
 path = "src/main.rs"
 
 [dependencies]
+dusk-core.workspace = true
 dusk-engine = { workspace = true, features = ["gpu"] }
 slint.workspace = true
 anyhow.workspace = true

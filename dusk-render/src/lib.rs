@@ -9,3 +9,5 @@ mod gpu;
 
 pub use compositor::{Compositor, RenderError};
 pub use gpu::{Gpu, GpuError};
+/// The wgpu version Dusk renders with, for crates that pass its textures on.
+pub use wgpu;

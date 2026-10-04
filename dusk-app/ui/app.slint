@@ -11,6 +11,15 @@ export component MainWindow inherits Window {
     default-font-family: Theme.font-ui;
     default-font-size: Theme.font-body;
 
+    // The latest preview frame, drawn by dusk-render at the preview's size in physical pixels.
+    in property <image> preview-image;
+    // Shown over the preview instead of a frame: how to open a clip, or what went wrong.
+    in property <string> preview-message;
+    // The preview's size in physical pixels, so frames are drawn 1:1.
+    out property <int> preview-pixel-width: Math.round(preview.width / 1phx);
+    out property <int> preview-pixel-height: Math.round(preview.height / 1phx);
+    callback preview-resized(width: int, height: int);
+
     MenuBar {
         Menu {
             title: "Help";
@@ -50,9 +59,33 @@ export component MainWindow inherits Window {
             }
         }
 
-        // The empty workspace; the media bin, preview and timeline arrive in M1 and M2.
-        Rectangle {
+        // The preview; the timeline arrives later in M1 and the media bin in M2.
+        preview := Rectangle {
             background: Theme.bg-0;
+
+            Image {
+                width: 100%;
+                height: 100%;
+                source: root.preview-image;
+                image-fit: contain;
+            }
+
+            Text {
+                width: 100%;
+                height: 100%;
+                text: root.preview-message;
+                color: Theme.text-2;
+                wrap: word-wrap;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+
+            changed width => {
+                root.preview-resized(root.preview-pixel-width, root.preview-pixel-height);
+            }
+            changed height => {
+                root.preview-resized(root.preview-pixel-width, root.preview-pixel-height);
+            }
         }
     }
 

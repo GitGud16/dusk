@@ -2,7 +2,9 @@
 //! (hardware, or WARP on CI runners).
 #![cfg(windows)]
 
+use std::ffi::OsStr;
 use std::io::Read;
+use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::thread::sleep;
 use std::time::{Duration, Instant};
@@ -62,7 +64,21 @@ fn main_window_of(process_id: u32) -> Option<isize> {
 
 #[test]
 fn closing_the_main_window_exits_cleanly() {
+    start_and_close(&[], Duration::from_millis(500));
+}
+
+#[test]
+fn closing_the_window_with_a_clip_open_exits_cleanly() {
+    let clip = Path::new(env!("CARGO_MANIFEST_DIR")).join("../testdata/sample-h264-aac.mp4");
+    // Long enough for the preview worker to decode and draw the first frame.
+    start_and_close(&[clip.as_os_str()], Duration::from_millis(2000));
+}
+
+/// Starts `dusk` with `args`, waits for its window, lets it run for `linger` as a person
+/// would, closes the window and checks that the process exits with code 0.
+fn start_and_close(args: &[&OsStr], linger: Duration) {
     let mut dusk = Command::new(env!("CARGO_BIN_EXE_dusk"))
+        .args(args)
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .spawn()
@@ -75,16 +91,14 @@ fn closing_the_main_window_exits_cleanly() {
         }
         if let Some(status) = dusk.try_wait().expect("poll dusk") {
             panic!(
-                "dusk exited before showing its window ({status}); its stderr:
-{}",
+                "dusk exited before showing its window ({status}); its stderr:\n{}",
                 stderr_of(&mut dusk)
             );
         }
         assert!(Instant::now() < deadline, "no Dusk window within 60 s");
         sleep(Duration::from_millis(50));
     };
-    // Let startup finish before closing, as a person would.
-    sleep(Duration::from_millis(500));
+    sleep(linger);
     // SAFETY: posting a message to a window handle is safe even if the window is gone.
     unsafe { PostMessageW(window, WM_CLOSE, 0, 0) };
 
