@@ -60,6 +60,11 @@ pub enum StreamDetail {
         height: u32,
         /// Average frame rate as numerator and denominator, if known.
         frame_rate: Option<(i32, i32)>,
+        /// The base frame rate FFmpeg guesses from the timestamps (`r_frame_rate`), if known.
+        /// It differs from the average when the frame rate varies.
+        base_frame_rate: Option<(i32, i32)>,
+        /// Whether the stream is an attached picture (cover art) rather than video.
+        cover_art: bool,
     },
     /// An audio stream.
     Audio {
@@ -99,12 +104,18 @@ fn summarize(stream: ffmpeg::format::stream::Stream<'_>) -> StreamSummary {
     let fields = ffi::codec_fields(&parameters);
     let detail = match kind {
         StreamKind::Video => {
-            let rate = stream.avg_frame_rate();
+            let known = |rate: ffmpeg::Rational| {
+                (rate.numerator() > 0 && rate.denominator() > 0)
+                    .then(|| (rate.numerator(), rate.denominator()))
+            };
             StreamDetail::Video {
                 width: u32::try_from(fields.width).unwrap_or(0),
                 height: u32::try_from(fields.height).unwrap_or(0),
-                frame_rate: (rate.numerator() > 0 && rate.denominator() > 0)
-                    .then(|| (rate.numerator(), rate.denominator())),
+                frame_rate: known(stream.avg_frame_rate()),
+                base_frame_rate: known(stream.rate()),
+                cover_art: stream
+                    .disposition()
+                    .contains(ffmpeg::format::stream::Disposition::ATTACHED_PIC),
             }
         }
         StreamKind::Audio => StreamDetail::Audio {
@@ -143,6 +154,7 @@ impl fmt::Display for StreamSummary {
                 width,
                 height,
                 frame_rate,
+                ..
             } => {
                 write!(f, " {width}x{height}")?;
                 if let Some((numerator, denominator)) = frame_rate {

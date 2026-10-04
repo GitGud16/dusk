@@ -23,9 +23,14 @@ fn probe_reads_the_video_and_audio_streams_of_the_sample() {
             width,
             height,
             frame_rate,
+            base_frame_rate,
+            cover_art,
         } => {
             assert_eq!((width, height), (320, 240));
             assert_eq!(frame_rate, Some((30, 1)));
+            // A constant-rate file: the base rate equals the average.
+            assert_eq!(base_frame_rate, Some((30, 1)));
+            assert!(!cover_art);
         }
         ref other => panic!("expected video details, got {other:?}"),
     }
