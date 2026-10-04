@@ -13,6 +13,6 @@ mod input;
 mod probe;
 
 pub use audio::AudioDecoder;
-pub use decode::{Acceleration, DecodedFrame, VideoDecoder};
+pub use decode::{Acceleration, DecodedFrame, Following, VideoDecoder};
 pub use error::MediaError;
 pub use probe::{ProbeInfo, StreamDetail, StreamKind, StreamSummary, probe};

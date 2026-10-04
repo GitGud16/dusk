@@ -23,6 +23,17 @@ pub enum Acceleration {
     Hardware,
 }
 
+/// What comes after the frame a decoder returned last.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Following {
+    /// The next frame starts at this time, so the last one is shown until then.
+    Next(MediaTime),
+    /// The last frame was the stream's last; it is held from then on.
+    End,
+    /// Not decoded yet.
+    Unknown,
+}
+
 /// A decoded frame: when it starts in the source and its picture.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DecodedFrame {
@@ -124,6 +135,16 @@ impl VideoDecoder {
             }
         }
         self.copy_shown()
+    }
+
+    /// What comes after the frame returned last: [`frame_at`](Self::frame_at) always knows,
+    /// [`next_frame`](Self::next_frame) only at the end of the stream.
+    pub fn following(&self) -> Following {
+        match &self.ahead {
+            Some((next, _)) => Following::Next(*next),
+            None if self.ended => Following::End,
+            None => Following::Unknown,
+        }
     }
 
     /// The frame after the one last returned, in presentation order, or the first frame

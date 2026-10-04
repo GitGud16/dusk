@@ -127,6 +127,20 @@ pub fn frame_to_media(frame: Frame, rate: Rational) -> MediaTime {
     )))
 }
 
+/// The timeline frame on screen at `time`: the last one whose start
+/// ([`frame_to_media`]) is at or before `time`.
+pub fn frame_at(time: MediaTime, rate: Rational) -> Frame {
+    // The exact quotient rounded down never starts after `time`; a start rounded down to
+    // `time` can make the next frame the one on screen.
+    let mut frame = saturate(
+        (i128::from(time.0) * i128::from(rate.num)).div_euclid(MICROS * i128::from(rate.den)),
+    );
+    while frame < i64::MAX && frame_to_media(Frame(frame + 1), rate) <= time {
+        frame += 1;
+    }
+    Frame(frame)
+}
+
 /// The timeline frame nearest to media time `time`, at `rate` frames per second.
 pub fn media_to_frame(time: MediaTime, rate: Rational) -> Frame {
     Frame(saturate(div_round(
@@ -234,6 +248,19 @@ mod tests {
         assert_eq!(media_to_frame(MediaTime(20_000), pal), Frame(1)); // a half rounds up
         assert_eq!(media_to_frame(MediaTime(59_999), pal), Frame(1));
         assert_eq!(media_to_frame(MediaTime(-20_000), pal), Frame(-1)); // and away from zero
+    }
+
+    #[test]
+    fn the_frame_on_screen_is_the_last_one_started() {
+        let ntsc = rate(30000, 1001); // frame 1 starts at 33 366.7 µs
+        assert_eq!(frame_at(MediaTime(0), ntsc), Frame(0));
+        assert_eq!(frame_at(MediaTime(33_366), ntsc), Frame(0));
+        assert_eq!(frame_at(MediaTime(33_367), ntsc), Frame(1));
+        assert_eq!(frame_at(MediaTime(1_001_000), ntsc), Frame(30));
+        assert_eq!(frame_at(MediaTime(-1), ntsc), Frame(-1));
+        for f in 0..2_000 {
+            assert_eq!(frame_at(frame_to_media(Frame(f), ntsc), ntsc), Frame(f));
+        }
     }
 
     #[test]

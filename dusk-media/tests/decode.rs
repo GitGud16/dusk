@@ -4,7 +4,7 @@
 use std::path::{Path, PathBuf};
 
 use dusk_core::{ColorMatrix, ColorRange, MediaTime, PictureLayout};
-use dusk_media::{Acceleration, MediaError, VideoDecoder};
+use dusk_media::{Acceleration, Following, MediaError, VideoDecoder};
 
 fn sample() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../testdata/sample-h264-aac.mp4")
@@ -208,4 +208,16 @@ fn next_frame_ends_after_the_last_frame() {
     let mut decoder = decoder();
     assert_eq!(time_at(&mut decoder, frame_time(29)), frame_time(29));
     assert!(decoder.next_frame().unwrap().is_none());
+}
+
+#[test]
+fn the_decoder_knows_when_the_next_frame_starts() {
+    let mut decoder = decoder();
+    decoder.frame_at(frame_time(5)).unwrap();
+    assert_eq!(decoder.following(), Following::Next(frame_time(6)));
+    decoder.frame_at(frame_time(29)).unwrap();
+    assert_eq!(decoder.following(), Following::End);
+    decoder.seek(frame_time(0)).unwrap();
+    decoder.next_frame().unwrap();
+    assert_eq!(decoder.following(), Following::Unknown);
 }
