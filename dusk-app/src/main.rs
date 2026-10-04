@@ -10,6 +10,12 @@ use dusk_engine::Gpu;
 slint::include_modules!();
 
 fn main() -> anyhow::Result<()> {
+    // Dusk picks the adapter itself and prefers hardware (dusk_render::Gpu). Without any
+    // hardware adapter (a VM, a CI runner) it gets WARP, Windows' software rasterizer, and
+    // Slint renders on such a CPU adapter only when this variable is set.
+    // SAFETY: nothing else runs yet, so no other thread can read the environment meanwhile.
+    unsafe { std::env::set_var("SLINT_WGPU_CPU", "1") };
+
     // The GPU objects live for the whole process, on purpose. Slint keeps its own references
     // in thread-local state that is destroyed at exit after wgpu's thread-locals, and
     // destroying the device there panics (exit code 2170 instead of 0). With this reference
@@ -34,7 +40,7 @@ fn select_renderer() -> anyhow::Result<Gpu> {
         .select()
         .map_err(|e| {
             anyhow!(
-                "Dusk could not start its GPU renderer ({e}). Update the graphics driver and                  try again."
+                "Dusk could not start its GPU renderer ({e}); update the graphics driver and try again."
             )
         })?;
     Ok(gpu)
