@@ -10,6 +10,7 @@ mod insert;
 mod moves;
 mod remove;
 mod sequence;
+mod session;
 mod split;
 #[cfg(test)]
 pub(crate) mod testing;
@@ -28,6 +29,7 @@ pub use insert::InsertClips;
 pub use moves::{MoveClips, nearest_free_position};
 pub use remove::{RemoveClips, remove_one};
 pub use sequence::{SEQUENCE_SIDES, SetSequenceSettings};
+pub use session::ApplyClipSession;
 pub use split::{SplitClips, split_at};
 pub use track::{SetTrackLocked, SetTrackMuted};
 pub use trim::{Edge, TrimClips};
@@ -61,6 +63,8 @@ pub enum Command {
     SetTrackMuted(SetTrackMuted),
     /// Sets the sequence's frame rate and picture size.
     SetSequenceSettings(SetSequenceSettings),
+    /// Sets a link group to the clip editor's draft, in one step.
+    ApplyClipSession(ApplyClipSession),
     /// Several commands applied as one: all of them, or none.
     Batch(Vec<Command>),
 }
@@ -88,6 +92,7 @@ impl Command {
             Command::SetTrackLocked(lock) => lock.apply(project),
             Command::SetTrackMuted(mute) => mute.apply(project),
             Command::SetSequenceSettings(settings) => settings.apply(project),
+            Command::ApplyClipSession(session) => session.apply(project),
             Command::Batch(commands) => {
                 for applied in 0..commands.len() {
                     if let Err(rejection) = commands[applied].apply(project) {
@@ -118,6 +123,7 @@ impl Command {
             Command::SetTrackLocked(lock) => lock.revert(project),
             Command::SetTrackMuted(mute) => mute.revert(project),
             Command::SetSequenceSettings(settings) => settings.revert(project),
+            Command::ApplyClipSession(session) => session.revert(project),
             Command::Batch(commands) => {
                 for command in commands.iter_mut().rev() {
                     command.revert(project);
@@ -131,6 +137,7 @@ impl Command {
         match self {
             Command::TrimClips(trim) => trim.notices.clone(),
             Command::SetSequenceSettings(settings) => settings.notices.clone(),
+            Command::ApplyClipSession(session) => session.notices.clone(),
             Command::Batch(commands) => commands.iter().flat_map(Command::notices).collect(),
             Command::AddMedia(_)
             | Command::InsertClips(_)
@@ -362,6 +369,9 @@ pub enum Rejection {
     /// No clip lies under the playhead on an unlocked track.
     #[error("move the playhead over a clip on an unlocked track to split it")]
     NothingToSplit,
+
+    #[error("the clip was deleted or unlinked in the timeline; open it in the clip editor again")]
+    GroupChanged,
     /// The sequence size is outside what Dusk supports.
     #[error("the sequence must be 16 to 8192 pixels on each side")]
     Resolution,
