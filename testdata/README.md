@@ -28,3 +28,15 @@ portrait phone video is stored (ffprobe reports `rotation=-90`):
 ```powershell
 ffmpeg -hide_banner -y -display_rotation:v:0 -90 -i testdata/sample-h264-aac.mp4 -c copy -map_metadata -1 -fflags +bitexact testdata/sample-rotated.mp4
 ```
+
+## `photo.png` and `photo-turned.jpg`
+
+One frame of `testsrc2` (320x240) as an RGB PNG, and as a full-range JPEG carrying EXIF
+orientation 6 (turn a quarter clockwise), for the still image path. FFmpeg cannot write EXIF,
+so `scripts/exif-orientation.py` adds it:
+
+```powershell
+ffmpeg -hide_banner -y -f lavfi -i "testsrc2=size=320x240:rate=1" -frames:v 1 -pix_fmt rgb24 -map_metadata -1 -fflags +bitexact -flags:v +bitexact testdata/photo.png
+ffmpeg -hide_banner -y -f lavfi -i "testsrc2=size=320x240:rate=1" -frames:v 1 -c:v mjpeg -q:v 3 -pix_fmt yuvj420p -map_metadata -1 -fflags +bitexact -flags:v +bitexact $env:TEMP\dusk-photo.jpg
+python scripts/exif-orientation.py $env:TEMP\dusk-photo.jpg testdata/photo-turned.jpg 6
+```

@@ -9,13 +9,14 @@ use std::time::{Duration, Instant};
 use crossbeam_channel::{Receiver, RecvTimeoutError, Sender};
 use dusk_audio::PlaybackClock;
 use dusk_core::time::{frame_at, frame_to_media};
-use dusk_core::{Frame, MediaId, MediaTime, Picture, Project};
+use dusk_core::{Frame, MediaId, MediaKind, MediaTime, Picture, Project};
 use dusk_media::{Acceleration, Following, VideoDecoder};
 use dusk_render::{Compositor, Gpu, fit_size};
 
 use crate::EngineError;
 use crate::cache::FrameCache;
 use crate::engine::{EngineEvent, EngineOptions, Report, SharedTransport, lock};
+use crate::info::still_size;
 use crate::placement::placement_at;
 
 /// What the front asks of the video thread.
@@ -353,6 +354,12 @@ impl VideoThread {
         let Some(clip) = sequence.visible_video_at(frame) else {
             return Ok(Shown::Black);
         };
+        let still = project
+            .media_ref(clip.media_id)
+            .is_some_and(|media| media.info.kind == MediaKind::Still);
+        if still {
+            return self.still(&project, clip.media_id, fetch);
+        }
         let (media, time) = (
             clip.media_id,
             clip.source_time_at(frame, sequence.frame_rate()),
@@ -369,6 +376,35 @@ impl VideoThread {
             Fetch::Decode => self.decode(&project, media, time),
             Fetch::Gop => self.decode_gop(&project, media, time),
         }
+    }
+
+    /// The picture of the still `media`, at the size the sequence needs: cached once at time
+    /// 0, covering every time, and decoded again when that size changes. While `fetch` allows
+    /// no decoding, any cached size stands in.
+    fn still(
+        &mut self,
+        project: &Project,
+        media: MediaId,
+        fetch: Fetch,
+    ) -> Result<Shown, EngineError> {
+        let Some(media_ref) = project.media_ref(media) else {
+            return Ok(Shown::Black);
+        };
+        let size = still_size(&media_ref.info, project.sequence().resolution());
+        let cached = self.cache.get(media, MediaTime(0));
+        let decode = matches!(fetch, Fetch::Decode | Fetch::Gop);
+        match cached {
+            Some(picture) if (picture.width, picture.height) == size || !decode => {
+                return Ok(Shown::Picture(picture));
+            }
+            None if !decode => return Ok(Shown::Unknown),
+            _ => {}
+        }
+        let picture = dusk_media::decode_still(&media_ref.path, size)?;
+        let picture = self
+            .cache
+            .insert(media, MediaTime(0), Following::End, picture);
+        Ok(Shown::Picture(picture))
     }
 
     /// Decodes the frame of `media` shown at `time` into the cache.

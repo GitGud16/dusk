@@ -124,6 +124,30 @@ fn the_preview_has_the_shape_of_the_sequence() {
 }
 
 #[test]
+fn a_photo_shows_for_as_long_as_its_clip_lasts() {
+    // Stored landscape with EXIF orientation 6: shown upright, a portrait picture.
+    let photo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../testdata/photo-turned.jpg");
+    let info = media_info(&photo).unwrap();
+    assert_eq!((info.width, info.height), (240, 320));
+    let mut project = Project::new(dusk_core::Rational::new(30, 1).unwrap(), (240, 320));
+    import(&project, photo, info, Frame(0))
+        .apply(&mut project)
+        .unwrap();
+    let running = start(Arc::new(project));
+    for at in [0, 100, 149] {
+        running.engine.show(Frame(at));
+        let (frame, texture) = running.next_frame();
+        assert_eq!(frame, Frame(at));
+        let texture = texture.expect("a picture");
+        assert_eq!((texture.width(), texture.height()), (36, 48));
+        let rgba = Compositor::new(&running.gpu).read_rgba(&texture).unwrap();
+        // The test pattern fills the portrait frame: no black bars on either side.
+        let lit = |x: usize| (0..48).any(|y| rgba[(y * 36 + x) * 4..][..3] != [0, 0, 0]);
+        assert!(lit(1) && lit(34));
+    }
+}
+
+#[test]
 fn a_scrub_ends_on_the_exact_frame() {
     let running = start(project_at(Frame(0)));
     for frame in 0..30 {

@@ -13,9 +13,11 @@ mod ffi;
 mod input;
 mod orientation;
 mod probe;
+mod still;
 
 pub use audio::AudioDecoder;
 pub use decode::{Acceleration, DecodedFrame, Following, VideoDecoder};
 pub use encode::{AudioSettings, Mp4Writer, VideoSettings};
 pub use error::MediaError;
 pub use probe::{ProbeInfo, StreamDetail, StreamKind, StreamSummary, probe};
+pub use still::{StillInfo, decode_still, is_still, still_info};
