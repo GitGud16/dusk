@@ -10,8 +10,9 @@ mod picture;
 pub mod time;
 
 pub use command::{
-    Command, Edge, InsertClips, Notice, Rejection, SetAudioEdits, SetClipEnabled, SetTrackLocked,
-    SetTrackMuted, SetVideoEdits, TrimClips, Unlink,
+    Command, Edge, InsertClips, MoveClips, Notice, Rejection, RemoveClips, SetAudioEdits,
+    SetClipEnabled, SetTrackLocked, SetTrackMuted, SetVideoEdits, SplitClips, TrimClips, Unlink,
+    nearest_free_position,
 };
 pub use import::import;
 pub use model::{

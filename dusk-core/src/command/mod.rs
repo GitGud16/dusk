@@ -7,6 +7,9 @@ use std::fmt;
 mod clip;
 mod edits;
 mod insert;
+mod moves;
+mod remove;
+mod split;
 #[cfg(test)]
 mod testing;
 mod track;
@@ -20,6 +23,9 @@ use crate::time::{Frame, MediaTime, length_for};
 pub use clip::{SetClipEnabled, Unlink};
 pub use edits::{SetAudioEdits, SetVideoEdits};
 pub use insert::InsertClips;
+pub use moves::{MoveClips, nearest_free_position};
+pub use remove::RemoveClips;
+pub use split::SplitClips;
 pub use track::{SetTrackLocked, SetTrackMuted};
 pub use trim::{Edge, TrimClips};
 
@@ -32,6 +38,12 @@ pub enum Command {
     InsertClips(InsertClips),
     /// Moves the start or the end of a clip and its linked partners.
     TrimClips(TrimClips),
+    /// Moves a clip and its linked partners along the timeline.
+    MoveClips(MoveClips),
+    /// Splits a clip and its linked partners at a frame.
+    SplitClips(SplitClips),
+    /// Deletes a clip and its linked partners, with or without ripple.
+    RemoveClips(RemoveClips),
     /// Sets the picture edits of a video clip.
     SetVideoEdits(SetVideoEdits),
     /// Sets the sound edits of an audio clip.
@@ -61,6 +73,9 @@ impl Command {
             }
             Command::InsertClips(insert) => insert.apply(project),
             Command::TrimClips(trim) => trim.apply(project),
+            Command::MoveClips(moves) => moves.apply(project),
+            Command::SplitClips(split) => split.apply(project),
+            Command::RemoveClips(remove) => remove.apply(project),
             Command::SetVideoEdits(set) => set.apply(project),
             Command::SetAudioEdits(set) => set.apply(project),
             Command::SetClipEnabled(enable) => enable.apply(project),
@@ -87,6 +102,9 @@ impl Command {
             Command::AddMedia(media) => project.media.retain(|other| other.id != media.id),
             Command::InsertClips(insert) => insert.revert(project),
             Command::TrimClips(trim) => trim.revert(project),
+            Command::MoveClips(moves) => moves.revert(project),
+            Command::SplitClips(split) => split.revert(project),
+            Command::RemoveClips(remove) => remove.revert(project),
             Command::SetVideoEdits(set) => set.revert(project),
             Command::SetAudioEdits(set) => set.revert(project),
             Command::SetClipEnabled(enable) => enable.revert(project),
@@ -108,6 +126,9 @@ impl Command {
             Command::Batch(commands) => commands.iter().flat_map(Command::notices).collect(),
             Command::AddMedia(_)
             | Command::InsertClips(_)
+            | Command::MoveClips(_)
+            | Command::SplitClips(_)
+            | Command::RemoveClips(_)
             | Command::SetVideoEdits(_)
             | Command::SetAudioEdits(_)
             | Command::SetClipEnabled(_)
@@ -305,6 +326,14 @@ pub enum Rejection {
     /// The crop is empty or reaches outside the picture.
     #[error("the crop must lie inside the picture")]
     Crop(ClipId),
+    /// A split was asked for at a frame that is not strictly inside the clip.
+    #[error("move the playhead inside the clip to split it")]
+    SplitOutside(ClipId),
+    /// A ripple delete would move clips onto a clip that overlaps the deleted range.
+    #[error(
+        "a clip on another track overlaps the deleted range; lock that track or use plain delete"
+    )]
+    RippleBlocked(TrackId),
 }
 
 /// Something a command did beyond what was asked.
