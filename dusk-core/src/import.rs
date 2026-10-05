@@ -33,6 +33,44 @@ pub fn place(
     Ok(Command::InsertClips(InsertClips::new(placements)))
 }
 
+/// The command that places media `media` at `position` on the first pair of tracks where it
+/// fits: V1 and A1, then V2 and A2, and so on. When it fits nowhere, the reason it does not
+/// fit on the first pair.
+pub fn place_where_free(
+    project: &Project,
+    media: MediaId,
+    position: Frame,
+) -> Result<Command, Rejection> {
+    let tracks_of = |kind| -> Vec<TrackId> {
+        let tracks = project.sequence().tracks().iter();
+        tracks
+            .filter(|track| track.kind() == kind)
+            .map(|track| track.id())
+            .collect()
+    };
+    let (video, audio) = (tracks_of(TrackKind::Video), tracks_of(TrackKind::Audio));
+    // The i-th track of a kind, or its last one when it has fewer.
+    let pick = |tracks: &[TrackId], i: usize| {
+        tracks
+            .get(i)
+            .or(tracks.last())
+            .copied()
+            .unwrap_or(TrackId(0))
+    };
+    let mut first_refusal = None;
+    for i in 0..video.len().max(audio.len()).max(1) {
+        let (v, a) = (pick(&video, i), pick(&audio, i));
+        let mut trial = project.clone();
+        match place(project, media, position, v, a)?.apply(&mut trial) {
+            Ok(()) => return place(project, media, position, v, a),
+            Err(rejection) => {
+                first_refusal.get_or_insert(rejection);
+            }
+        }
+    }
+    Err(first_refusal.unwrap_or(Rejection::UnknownMedia(media)))
+}
+
 /// The clips that show all of `media` from `position`, on track `video` and track `audio`.
 fn placements(
     project: &Project,
@@ -226,5 +264,93 @@ mod tests {
         command.apply(&mut project).unwrap();
         command.revert(&mut project);
         assert_eq!(project, empty);
+    }
+
+    /// A project with a 2 s file with sound, MediaId(1), already on V1 and A1 from frame 0.
+    fn occupied() -> Project {
+        let mut project = Project::new(fps30(), (1920, 1080));
+        import(&project, "first.mp4".into(), info(true, true), Frame(0))
+            .apply(&mut project)
+            .unwrap();
+        project
+    }
+
+    fn add(project: &mut Project, info: MediaInfo) -> MediaId {
+        let (id, mut command) = add_media(project, "next".into(), info);
+        command.apply(project).unwrap();
+        id
+    }
+
+    /// The tracks (by index) that hold clips of `media`.
+    fn tracks_of(project: &Project, media: MediaId) -> Vec<usize> {
+        let tracks = project.sequence().tracks().iter().enumerate();
+        tracks
+            .filter(|(_, track)| track.clips().iter().any(|clip| clip.media_id == media))
+            .map(|(index, _)| index)
+            .collect()
+    }
+
+    #[test]
+    fn media_goes_on_the_first_pair_of_tracks_with_room() {
+        let mut project = occupied();
+        let media = add(&mut project, info(true, true));
+        place_where_free(&project, media, Frame(30))
+            .unwrap()
+            .apply(&mut project)
+            .unwrap();
+        // V2 and A2: V1 and A1 are taken at frame 30.
+        assert_eq!(tracks_of(&project, media), [1, 3]);
+        let media = add(&mut project, info(true, true));
+        place_where_free(&project, media, Frame(60))
+            .unwrap()
+            .apply(&mut project)
+            .unwrap();
+        assert_eq!(tracks_of(&project, media), [0, 2]);
+    }
+
+    #[test]
+    fn sound_alone_takes_the_first_free_audio_track() {
+        let mut project = occupied();
+        let music = add(&mut project, info(false, true));
+        place_where_free(&project, music, Frame(0))
+            .unwrap()
+            .apply(&mut project)
+            .unwrap();
+        assert_eq!(tracks_of(&project, music), [3]);
+    }
+
+    #[test]
+    fn a_locked_pair_is_passed_over() {
+        let mut project = Project::new(fps30(), (1920, 1080));
+        let v1 = project.sequence().tracks()[0].id();
+        Command::SetTrackLocked(crate::command::SetTrackLocked::new(v1, true))
+            .apply(&mut project)
+            .unwrap();
+        let media = add(&mut project, info(true, true));
+        place_where_free(&project, media, Frame(0))
+            .unwrap()
+            .apply(&mut project)
+            .unwrap();
+        assert_eq!(tracks_of(&project, media), [1, 3]);
+    }
+
+    #[test]
+    fn with_no_room_anywhere_the_first_pair_says_why() {
+        let mut project = occupied();
+        let media = add(&mut project, info(true, true));
+        place_where_free(&project, media, Frame(0))
+            .unwrap()
+            .apply(&mut project)
+            .unwrap();
+        let v1 = project.sequence().tracks()[0].id();
+        let third = add(&mut project, info(true, true));
+        assert_eq!(
+            place_where_free(&project, third, Frame(10)).map(|_| ()),
+            Err(Rejection::Overlap(v1))
+        );
+        assert_eq!(
+            place_where_free(&project, MediaId(99), Frame(0)).map(|_| ()),
+            Err(Rejection::UnknownMedia(MediaId(99)))
+        );
     }
 }

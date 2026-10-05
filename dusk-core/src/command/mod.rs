@@ -26,9 +26,9 @@ pub use clip::{SetClipEnabled, Unlink};
 pub use edits::{SetAudioEdits, SetVideoEdits};
 pub use insert::InsertClips;
 pub use moves::{MoveClips, nearest_free_position};
-pub use remove::RemoveClips;
+pub use remove::{RemoveClips, remove_one};
 pub use sequence::{SEQUENCE_SIDES, SetSequenceSettings};
-pub use split::SplitClips;
+pub use split::{SplitClips, split_at};
 pub use track::{SetTrackLocked, SetTrackMuted};
 pub use trim::{Edge, TrimClips};
 
@@ -359,6 +359,9 @@ pub enum Rejection {
     /// A split was asked for at a frame that is not strictly inside the clip.
     #[error("move the playhead inside the clip to split it")]
     SplitOutside(ClipId),
+    /// No clip lies under the playhead on an unlocked track.
+    #[error("move the playhead over a clip on an unlocked track to split it")]
+    NothingToSplit,
     /// The sequence size is outside what Dusk supports.
     #[error("the sequence must be 16 to 8192 pixels on each side")]
     Resolution,

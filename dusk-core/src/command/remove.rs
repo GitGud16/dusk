@@ -15,6 +15,19 @@ pub struct RemoveClips {
     before: Vec<(TrackId, Vec<Clip>)>,
 }
 
+/// The command that deletes `clip` alone (Alt+Delete): its link group is unlinked first, in
+/// the same step, so its partners stay.
+pub fn remove_one(project: &Project, clip: ClipId) -> super::Command {
+    use super::{Command, Unlink};
+    let remove = Command::RemoveClips(RemoveClips::new(clip, false));
+    match project.find_clip(clip) {
+        Some((_, found)) if found.link.is_some() => {
+            Command::Batch(vec![Command::Unlink(Unlink::new(clip)), remove])
+        }
+        _ => remove,
+    }
+}
+
 impl RemoveClips {
     /// Deletes `clip` and its partners, closing the gap when `ripple` is set.
     pub fn new(clip: ClipId, ripple: bool) -> RemoveClips {
@@ -230,5 +243,30 @@ mod tests {
         assert_eq!(clip(&project, audio).link, None);
         command.revert(&mut project);
         assert_eq!(project, before);
+    }
+
+    #[test]
+    fn one_clip_of_a_pair_goes_and_its_partner_stays_unlinked() {
+        let mut project = project();
+        let (video, audio) = insert_pair(&mut project, 0, (0, SECOND));
+        let before = project.clone();
+        let mut command = remove_one(&project, video);
+        command.apply(&mut project).unwrap();
+        assert!(project.find_clip(video).is_none());
+        assert_eq!(clip(&project, audio).link, None);
+        command.revert(&mut project);
+        assert_eq!(project, before);
+    }
+
+    #[test]
+    fn an_unlinked_clip_is_simply_removed() {
+        let mut project = project();
+        let (video, audio) = insert_pair(&mut project, 0, (0, SECOND));
+        Command::Unlink(crate::command::Unlink::new(video))
+            .apply(&mut project)
+            .unwrap();
+        remove_one(&project, audio).apply(&mut project).unwrap();
+        assert!(project.find_clip(audio).is_none());
+        assert!(project.find_clip(video).is_some());
     }
 }

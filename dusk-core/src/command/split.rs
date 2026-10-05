@@ -1,6 +1,6 @@
 //! Splitting a link group in two at a timeline frame.
 
-use crate::command::{Rejection, clip_indices, group_indices};
+use crate::command::{Command, Rejection, clip_indices, group_indices};
 use crate::model::{Clip, ClipEdits, ClipId, LinkId, MediaKind, Project, TrackId};
 use crate::time::{Frame, MediaTime, Rational, frame_to_media, length_for};
 
@@ -15,6 +15,41 @@ pub struct SplitClips {
     right: Vec<ClipId>,
     right_link: Option<LinkId>,
     before: Vec<(TrackId, Clip)>,
+}
+
+/// The command that splits at frame `at`: `clip` and its partners when a clip is given,
+/// otherwise every clip under `at` whose link group is on unlocked tracks, each group once.
+pub fn split_at(project: &Project, at: Frame, clip: Option<ClipId>) -> Result<Command, Rejection> {
+    if let Some(clip) = clip {
+        return Ok(Command::SplitClips(SplitClips::new(clip, at)));
+    }
+    let on_locked_track = |id: ClipId| {
+        let group = project.link_group(id);
+        project
+            .clips()
+            .any(|(track, clip)| track.locked && group.contains(&clip.id))
+    };
+    let mut groups_seen = Vec::new();
+    let mut splits = Vec::new();
+    for (_, clip) in project.clips() {
+        if !(clip.position < at && at < clip.end()) {
+            continue;
+        }
+        if let Some(link) = clip.link {
+            if groups_seen.contains(&link) {
+                continue;
+            }
+            groups_seen.push(link);
+        }
+        if !on_locked_track(clip.id) {
+            splits.push(Command::SplitClips(SplitClips::new(clip.id, at)));
+        }
+    }
+    match splits.len() {
+        0 => Err(Rejection::NothingToSplit),
+        1 => Ok(splits.remove(0)),
+        _ => Ok(Command::Batch(splits)),
+    }
 }
 
 impl SplitClips {
@@ -269,5 +304,95 @@ mod tests {
             split(&mut project, video, 60).map(|_| ()),
             Err(Rejection::TrackLocked(audio_track))
         );
+    }
+
+    /// Puts a music clip of MediaId(1)'s sound alone on A2, from `position` for `seconds`.
+    fn insert_music(project: &mut Project, position: i64, seconds: i64) -> ClipId {
+        let a2 = project.sequence().tracks()[3].id();
+        let clip = crate::model::Clip::new(
+            project.fresh_ids().clip(),
+            crate::model::MediaId(1),
+            crate::model::TrackKind::Audio,
+            (MediaTime(0), MediaTime(seconds * SECOND)),
+            Frame(position),
+            fps30(),
+        );
+        let id = clip.id;
+        Command::InsertClips(crate::command::InsertClips::new(vec![(a2, clip)]))
+            .apply(project)
+            .unwrap();
+        id
+    }
+
+    fn clip_count(project: &Project) -> usize {
+        project
+            .sequence()
+            .tracks()
+            .iter()
+            .map(|t| t.clips().len())
+            .sum()
+    }
+
+    #[test]
+    fn the_chosen_clip_splits_at_the_playhead() {
+        let mut project = project();
+        let (video, _) = insert_pair(&mut project, 0, (0, 4 * SECOND));
+        insert_music(&mut project, 0, 8);
+        let mut command = split_at(&project, Frame(30), Some(video)).unwrap();
+        command.apply(&mut project).unwrap();
+        // The pair split; the music did not.
+        assert_eq!(clip_count(&project), 5);
+        assert_eq!(clip(&project, video).end(), Frame(30));
+    }
+
+    #[test]
+    fn with_no_clip_chosen_everything_under_the_playhead_splits() {
+        let mut project = project();
+        let (video, audio) = insert_pair(&mut project, 0, (0, 4 * SECOND));
+        let music = insert_music(&mut project, 0, 8);
+        let before = project.clone();
+        let mut command = split_at(&project, Frame(60), None).unwrap();
+        command.apply(&mut project).unwrap();
+        assert_eq!(clip_count(&project), 6);
+        for id in [video, audio, music] {
+            assert_eq!(clip(&project, id).end(), Frame(60));
+        }
+        command.revert(&mut project);
+        assert_eq!(project, before);
+    }
+
+    #[test]
+    fn clips_on_locked_tracks_are_left_whole() {
+        let mut project = project();
+        let (video, _) = insert_pair(&mut project, 0, (0, 4 * SECOND));
+        let music = insert_music(&mut project, 0, 8);
+        let a2 = project.sequence().tracks()[3].id();
+        lock(&mut project, a2);
+        split_at(&project, Frame(60), None)
+            .unwrap()
+            .apply(&mut project)
+            .unwrap();
+        assert_eq!(clip(&project, video).end(), Frame(60));
+        assert_eq!(clip(&project, music).end(), Frame(240));
+        // A link group with a member on a locked track stays whole too.
+        let a1 = project.sequence().tracks()[2].id();
+        lock(&mut project, a1);
+        assert_eq!(
+            split_at(&project, Frame(90), None).map(|_| ()),
+            Err(Rejection::NothingToSplit)
+        );
+    }
+
+    #[test]
+    fn a_playhead_on_an_edge_or_in_a_gap_splits_nothing() {
+        let mut project = project();
+        insert_pair(&mut project, 30, (0, SECOND)); // 30..60
+        for at in [0, 30, 60, 90] {
+            assert_eq!(
+                split_at(&project, Frame(at), None).map(|_| ()),
+                Err(Rejection::NothingToSplit),
+                "at {at}"
+            );
+        }
     }
 }
