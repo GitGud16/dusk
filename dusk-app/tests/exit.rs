@@ -52,6 +52,14 @@ unsafe extern "system" fn visit(window: isize, param: isize) -> i32 {
     1
 }
 
+/// The title of `window`.
+fn title_of(window: isize) -> String {
+    let mut title = [0u16; 256];
+    // SAFETY: reads at most `title.len()` characters into a local buffer.
+    let length = unsafe { GetWindowTextW(window, title.as_mut_ptr(), title.len() as i32) };
+    String::from_utf16_lossy(&title[..usize::try_from(length).unwrap_or(0)])
+}
+
 /// The visible top-level Dusk window that belongs to `process_id`, if any.
 fn main_window_of(process_id: u32) -> Option<isize> {
     let mut search = Search {
@@ -86,7 +94,13 @@ fn closing_with_unsaved_changes_asks_first() {
     // A clip from the command line is imported and placed: changes not yet saved.
     let mut dusk = start(&[sample().as_os_str()], &state);
     let window = wait_for_window(&mut dusk);
-    sleep(Duration::from_millis(2000));
+    // The title marks unsaved changes once the import is done, which takes longer on a
+    // slow runner.
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while !title_of(window).contains('*') {
+        assert!(Instant::now() < deadline, "no unsaved changes within 60 s");
+        sleep(Duration::from_millis(50));
+    }
     // SAFETY: posting a message to a window handle is safe even if the window is gone.
     unsafe { PostMessageW(window, WM_CLOSE, 0, 0) };
     sleep(Duration::from_millis(1500));
