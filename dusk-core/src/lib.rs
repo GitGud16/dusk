@@ -9,7 +9,10 @@ mod model;
 mod picture;
 pub mod time;
 
-pub use command::{Command, Edge, InsertClips, Notice, Rejection, TrimClips};
+pub use command::{
+    Command, Edge, InsertClips, Notice, Rejection, SetClipEnabled, SetTrackLocked, SetTrackMuted,
+    TrimClips, Unlink,
+};
 pub use import::import;
 pub use model::{
     AudioEdits, Clip, ClipEdits, ClipId, FreshIds, LinkId, MediaId, MediaInfo, MediaKind, MediaRef,

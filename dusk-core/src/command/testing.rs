@@ -8,6 +8,17 @@ use crate::time::{Frame, MediaTime, Rational};
 
 pub(crate) const SECOND: i64 = 1_000_000;
 
+/// Locks `track` directly, as a fixture.
+pub(crate) fn lock(project: &mut Project, track: TrackId) {
+    let index = project
+        .sequence
+        .tracks
+        .iter()
+        .position(|candidate| candidate.id == track)
+        .unwrap();
+    project.sequence.tracks[index].locked = true;
+}
+
 pub(crate) fn fps30() -> Rational {
     Rational::new(30, 1).unwrap()
 }

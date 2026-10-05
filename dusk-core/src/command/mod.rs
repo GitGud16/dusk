@@ -4,15 +4,19 @@
 
 use std::fmt;
 
+mod clip;
 mod insert;
 #[cfg(test)]
 mod testing;
+mod track;
 mod trim;
 
 use crate::model::{Clip, ClipId, MediaId, MediaRef, Project, TrackId};
 use crate::time::{Frame, MediaTime, length_for};
 
+pub use clip::{SetClipEnabled, Unlink};
 pub use insert::InsertClips;
+pub use track::{SetTrackLocked, SetTrackMuted};
 pub use trim::{Edge, TrimClips};
 
 /// One edit of a project.
@@ -24,6 +28,14 @@ pub enum Command {
     InsertClips(InsertClips),
     /// Moves the start or the end of a clip and its linked partners.
     TrimClips(TrimClips),
+    /// Enables or disables one clip.
+    SetClipEnabled(SetClipEnabled),
+    /// Separates the clips of a link group.
+    Unlink(Unlink),
+    /// Locks or unlocks a track.
+    SetTrackLocked(SetTrackLocked),
+    /// Mutes or unmutes a track.
+    SetTrackMuted(SetTrackMuted),
     /// Several commands applied as one: all of them, or none.
     Batch(Vec<Command>),
 }
@@ -41,6 +53,10 @@ impl Command {
             }
             Command::InsertClips(insert) => insert.apply(project),
             Command::TrimClips(trim) => trim.apply(project),
+            Command::SetClipEnabled(enable) => enable.apply(project),
+            Command::Unlink(unlink) => unlink.apply(project),
+            Command::SetTrackLocked(lock) => lock.apply(project),
+            Command::SetTrackMuted(mute) => mute.apply(project),
             Command::Batch(commands) => {
                 for applied in 0..commands.len() {
                     if let Err(rejection) = commands[applied].apply(project) {
@@ -61,6 +77,10 @@ impl Command {
             Command::AddMedia(media) => project.media.retain(|other| other.id != media.id),
             Command::InsertClips(insert) => insert.revert(project),
             Command::TrimClips(trim) => trim.revert(project),
+            Command::SetClipEnabled(enable) => enable.revert(project),
+            Command::Unlink(unlink) => unlink.revert(project),
+            Command::SetTrackLocked(lock) => lock.revert(project),
+            Command::SetTrackMuted(mute) => mute.revert(project),
             Command::Batch(commands) => {
                 for command in commands.iter_mut().rev() {
                     command.revert(project);
@@ -74,9 +94,28 @@ impl Command {
         match self {
             Command::TrimClips(trim) => trim.notices.clone(),
             Command::Batch(commands) => commands.iter().flat_map(Command::notices).collect(),
-            Command::AddMedia(_) | Command::InsertClips(_) => Vec::new(),
+            Command::AddMedia(_)
+            | Command::InsertClips(_)
+            | Command::SetClipEnabled(_)
+            | Command::Unlink(_)
+            | Command::SetTrackLocked(_)
+            | Command::SetTrackMuted(_) => Vec::new(),
         }
     }
+}
+
+/// The track and clip index of clip `id`.
+pub(crate) fn clip_indices(project: &Project, id: ClipId) -> Result<(usize, usize), Rejection> {
+    project
+        .sequence
+        .tracks
+        .iter()
+        .enumerate()
+        .find_map(|(t, track)| {
+            let i = track.clips.iter().position(|clip| clip.id == id)?;
+            Some((t, i))
+        })
+        .ok_or(Rejection::UnknownClip(id))
 }
 
 /// The track and clip indices of `id` and every clip linked to it.
@@ -196,6 +235,9 @@ pub enum Rejection {
     /// Linked clips differ in source range, position, length or speed.
     #[error("linked clips must share their source range, position, length and speed")]
     LinkMismatch(ClipId),
+    /// The clip is not linked to another clip.
+    #[error("that clip is not linked to another clip")]
+    NotLinked(ClipId),
 }
 
 /// Something a command did beyond what was asked.
