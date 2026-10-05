@@ -1,12 +1,13 @@
 //! What differs between operating systems (CLAUDE.md: Windows first, behind a thin layer):
-//! where Dusk keeps its own files, the system's file dialogs, and files dropped on the
-//! window. Linux and macOS add theirs with their builds.
+//! where Dusk keeps its own files, the system's file dialogs, files dropped on the window,
+//! and which letter a key stands for. Linux and macOS add theirs with their builds.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::Duration;
 
+use slint::winit_030::winit::event::{ElementState, WindowEvent};
 use slint::winit_030::{EventResult, WinitWindowAccessor, winit};
 
 #[cfg(windows)]
@@ -80,11 +81,25 @@ fn window_handle(window: &slint::Window) -> Option<isize> {
         .flatten()
 }
 
+thread_local! {
+    /// The letter or digit of the key pressed last, until a shortcut takes it.
+    static PRESSED: Cell<Option<char>> = const { Cell::new(None) };
+}
+
+/// The letter or digit of the key whose press Slint is handing on, if it has one: the
+/// character of its virtual-key code, as Windows' own shortcuts take it. That is the letter
+/// on the key under Latin keyboard layouts, and the Latin letter at its place under others
+/// (Arabic, Cyrillic, Greek), whose letters no shortcut is defined for.
+pub fn pressed_key() -> Option<char> {
+    PRESSED.take()
+}
+
 /// Calls `dropped` with the files dropped on `window` from another application, all files of
-/// one drop at once, and `hovering` with whether files are being dragged over it. Slint does
-/// not pass these on, so they are taken from winit's window events (docs/ARCHITECTURE.md,
+/// one drop at once, and `hovering` with whether files are being dragged over it, and notes
+/// every key pressed for [`pressed_key`]. Slint passes on neither, so they are taken from
+/// winit's window events, which come before Slint handles them (docs/ARCHITECTURE.md,
 /// "Slint specifics").
-pub fn on_files_dropped(
+pub fn watch_window(
     window: &slint::Window,
     dropped: impl Fn(Vec<PathBuf>) + 'static,
     hovering: impl Fn(bool) + 'static,
@@ -93,9 +108,12 @@ pub fn on_files_dropped(
     let waiting: Rc<RefCell<Vec<PathBuf>>> = Rc::default();
     window.on_winit_window_event(move |_, event| {
         match event {
-            winit::event::WindowEvent::HoveredFile(_) => hovering(true),
-            winit::event::WindowEvent::HoveredFileCancelled => hovering(false),
-            winit::event::WindowEvent::DroppedFile(path) => {
+            WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed => {
+                PRESSED.set(key_character(event.physical_key));
+            }
+            WindowEvent::HoveredFile(_) => hovering(true),
+            WindowEvent::HoveredFileCancelled => hovering(false),
+            WindowEvent::DroppedFile(path) => {
                 hovering(false);
                 let first = waiting.borrow().is_empty();
                 waiting.borrow_mut().push(path.clone());
@@ -109,4 +127,19 @@ pub fn on_files_dropped(
         }
         EventResult::Propagate
     });
+}
+
+/// The letter or digit `key` stands for in the keyboard layout in use, from its virtual-key
+/// code; `None` for every other key.
+fn key_character(key: winit::keyboard::PhysicalKey) -> Option<char> {
+    #[cfg(windows)]
+    {
+        use winit::platform::scancode::PhysicalKeyExtScancode;
+        key.to_scancode().and_then(windows::key_character)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = key;
+        None
+    }
 }

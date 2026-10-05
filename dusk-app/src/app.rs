@@ -225,7 +225,8 @@ impl App {
             }
             return true;
         }
-        let Some(action) = crate::shortcuts::action_for(text, ctrl, shift, alt) else {
+        let key = crate::platform::pressed_key();
+        let Some(action) = crate::shortcuts::action_for_key(text, key, ctrl, shift, alt) else {
             return false;
         };
         self.act(action);

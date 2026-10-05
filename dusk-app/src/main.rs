@@ -173,7 +173,7 @@ fn connect(window: &MainWindow) {
         }
     });
     let weak = window.as_weak();
-    platform::on_files_dropped(
+    platform::watch_window(
         window.window(),
         |paths| {
             with_app(|app| app.import_dropped(paths));

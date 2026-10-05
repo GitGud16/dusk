@@ -279,6 +279,22 @@ pub fn action_for(text: &str, ctrl: bool, shift: bool, alt: bool) -> Option<Acti
         .map(|shortcut| shortcut.action)
 }
 
+/// The action for a key press: by `key`, the letter or digit of the key pressed when it has
+/// one (see `platform::pressed_key`), otherwise by `text`. Letter shortcuts so work under any
+/// keyboard layout, as Windows' own do: under Arabic (101), L types م, and Shift+L a slash.
+pub fn action_for_key(
+    text: &str,
+    key: Option<char>,
+    ctrl: bool,
+    shift: bool,
+    alt: bool,
+) -> Option<Action> {
+    match key {
+        Some(key) => action_for(key.encode_utf8(&mut [0; 4]), ctrl, shift, alt),
+        None => action_for(text, ctrl, shift, alt),
+    }
+}
+
 /// The action a menu item or button names (see `root.action(...)` in ui/app.slint).
 pub fn action_named(name: &str) -> Option<Action> {
     Some(match name {
@@ -355,6 +371,32 @@ mod tests {
         assert_eq!(action_for("x", false, false, false), None);
         assert_eq!(action_for("s", true, false, false), Some(Action::Save));
         assert_eq!(action_for("s", true, true, false), Some(Action::SaveAs));
+    }
+
+    #[test]
+    fn letter_keys_work_under_any_keyboard_layout() {
+        // Arabic (101): L types م, and Shift+L a slash; the key is L either way.
+        assert_eq!(
+            action_for_key("م", Some('l'), false, false, false),
+            Some(Action::PlayForward)
+        );
+        assert_eq!(
+            action_for_key("/", Some('l'), false, true, false),
+            Some(Action::PlaySlowForward)
+        );
+        assert_eq!(
+            action_for_key("س", Some('s'), true, false, false),
+            Some(Action::Save)
+        );
+        // Keys without a letter or digit go by their text.
+        assert_eq!(
+            action_for_key(" ", None, false, false, false),
+            Some(Action::PlayPause)
+        );
+        assert_eq!(
+            action_for_key(&named(Key::Delete), None, false, false, false),
+            action_for(&named(Key::Delete), false, false, false)
+        );
     }
 
     #[test]

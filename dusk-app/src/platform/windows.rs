@@ -1,4 +1,5 @@
-//! The Windows file dialogs: `IFileOpenDialog` and `IFileSaveDialog`.
+//! The Windows file dialogs, `IFileOpenDialog` and `IFileSaveDialog`, and keys' virtual-key
+//! codes.
 
 use std::ffi::{OsString, c_void};
 use std::os::windows::ffi::OsStringExt;
@@ -8,6 +9,9 @@ use windows::Win32::Foundation::HWND;
 use windows::Win32::System::Com::{
     CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE, CoCreateInstance,
     CoInitializeEx, CoTaskMemFree, CoUninitialize,
+};
+use windows::Win32::UI::Input::KeyboardAndMouse::{
+    GetKeyboardLayout, MAPVK_VSC_TO_VK_EX, MapVirtualKeyExW,
 };
 use windows::Win32::UI::Shell::Common::COMDLG_FILTERSPEC;
 use windows::Win32::UI::Shell::{
@@ -128,5 +132,38 @@ unsafe fn path_of(item: &IShellItem) -> windows::core::Result<PathBuf> {
         let path = PathBuf::from(OsString::from_wide(name.as_wide()));
         CoTaskMemFree(Some(name.0 as *const c_void));
         Ok(path)
+    }
+}
+
+/// The letter or digit of the key at `scancode` in the calling thread's keyboard layout,
+/// lowercase, from its virtual-key code; `None` for every other key.
+pub fn key_character(scancode: u32) -> Option<char> {
+    // SAFETY: both calls only read the keyboard layout of the calling thread, the UI thread,
+    // whose layout is the one the user picked for Dusk's window.
+    let code =
+        unsafe { MapVirtualKeyExW(scancode, MAPVK_VSC_TO_VK_EX, Some(GetKeyboardLayout(0))) };
+    character_of(code)
+}
+
+/// The character of virtual-key code `code` if it is a letter or a digit, lowercase.
+fn character_of(code: u32) -> Option<char> {
+    match code {
+        0x30..=0x39 | 0x41..=0x5A => char::from_u32(code).map(|c| c.to_ascii_lowercase()),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_letters_and_digits_have_a_character() {
+        assert_eq!(character_of(0x4C), Some('l'));
+        assert_eq!(character_of(0x31), Some('1'));
+        // The space bar, the slash key and the numeric keypad's 1.
+        for code in [0x20, 0xBF, 0x61] {
+            assert_eq!(character_of(code), None);
+        }
     }
 }
