@@ -284,6 +284,26 @@ fn fast_playback_backwards_stops_at_the_start() {
 }
 
 #[test]
+fn playing_backwards_with_a_small_cache_still_reaches_the_start() {
+    // Room for five of the sample's 115 KB frames, so half of it holds two: its one group of
+    // pictures is decoded again from the keyframe every two frames.
+    let options = EngineOptions {
+        sound: false,
+        cache_cap: 600_000,
+        ..EngineOptions::default()
+    };
+    let running = start_with(options, project_at(Frame(0)));
+    running.engine.play(Frame(29), -1.0);
+    let (frames, stopped) = running.play_through();
+    assert_eq!(stopped, Frame(0));
+    assert!(
+        frames.windows(2).all(|pair| pair[0] > pair[1]),
+        "{frames:?}"
+    );
+    assert!(frames.len() > 10, "only {} frames shown", frames.len());
+}
+
+#[test]
 fn playing_backwards_stops_at_the_start() {
     let running = start(project_at(Frame(0)));
     running.engine.play(Frame(20), -1.0);

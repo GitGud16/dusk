@@ -72,6 +72,11 @@ impl FrameCache {
         Some(Arc::clone(&entry.picture))
     }
 
+    /// The most bytes of pictures it holds.
+    pub fn cap(&self) -> usize {
+        self.cap
+    }
+
     /// Keeps the frame of `media` that starts at `time`, followed by `following`, and makes
     /// room for it by dropping the least recently used frames.
     pub fn insert(

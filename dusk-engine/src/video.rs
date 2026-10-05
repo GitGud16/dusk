@@ -11,7 +11,7 @@ use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, TryRecvError};
 use dusk_audio::PlaybackClock;
 use dusk_core::time::{frame_at, frame_to_media};
 use dusk_core::{ClipId, Frame, MediaId, MediaInfo, MediaKind, MediaTime, Picture, Project};
-use dusk_media::{Acceleration, DecodedFrame, Following, VideoDecoder};
+use dusk_media::{Acceleration, DecodedFrame, Following, Step, VideoDecoder};
 use dusk_render::{Compositor, Gpu, fit_size};
 
 use crate::EngineError;
@@ -107,6 +107,15 @@ enum Fetch {
     Gop,
     /// Take the keyframe at or before it, for playing too fast to decode every frame.
     Keyframe,
+}
+
+/// Where the frames kept from a group of pictures decoded for playing backwards start: as
+/// many as fit in half of a cache of `cap` bytes, frames of `frame_bytes` each and `frame`
+/// long, ending with the one at `time`; at least that one (docs/ARCHITECTURE.md, "Playback").
+fn reverse_window(time: MediaTime, frame_bytes: usize, cap: usize, frame: MediaTime) -> MediaTime {
+    let kept = (cap / 2 / frame_bytes.max(1)).max(1);
+    let before = i64::try_from(kept - 1).unwrap_or(i64::MAX);
+    MediaTime(time.0.saturating_sub(before.saturating_mul(frame.0)))
 }
 
 /// How frames are fetched while playing at `rate`, the playback factor times the clip's
@@ -737,21 +746,41 @@ impl VideoThread {
         Ok(Shown::Picture(picture))
     }
 
-    /// Decodes every frame of `media` from the keyframe before `time` up to the frame shown
-    /// at `time` into the cache, so that playing backwards finds the frames before it there.
+    /// Decodes the frames of `media` from the keyframe before `time` up to the frame shown at
+    /// `time` into the cache, so that playing backwards finds the frames before it there. Of
+    /// a group too long for half the cache, only the last frames that fit are kept; the ones
+    /// before them are decoded without a copy, and decoded again from the keyframe once
+    /// playback gets to them.
     fn decode_gop(
         &mut self,
         project: &Project,
         media: MediaId,
         time: MediaTime,
     ) -> Result<Shown, EngineError> {
+        // The length of a frame, from the snapped rate, to count frames back from `time`.
+        let frame = project
+            .media_ref(media)
+            .and_then(|media| media.info.frame_rate)
+            .map_or(MediaTime(33_333), |rate| frame_to_media(Frame(1), rate));
+        let cap = self.cache.cap();
         let index = self.decoder(project, media)?;
         let decoder = &mut self.decoders[index].decoder;
         decoder.seek(time)?;
-        let mut at = match decoder.next_frame()? {
-            Some(first) if first.time <= time => first.time,
+        let first = match decoder.next_frame()? {
+            Some(first) if first.time <= time => first,
             _ => return Ok(Shown::Black),
         };
+        let start = reverse_window(time, first.picture.byte_size(), cap, frame);
+        let mut at = first.time;
+        if at < start {
+            at = loop {
+                match decoder.step_to(start)? {
+                    Step::Working => {}
+                    Step::Done(Some(frame)) => break frame.time,
+                    Step::Done(None) => return Ok(Shown::Black),
+                }
+            };
+        }
         loop {
             let Some(decoded) = decoder.frame_at(at)? else {
                 return Ok(Shown::Black);
@@ -854,6 +883,17 @@ mod tests {
             Fetch::Gop => "groups of pictures",
             Fetch::Keyframe => "keyframes",
         }
+    }
+
+    #[test]
+    fn a_long_group_keeps_only_what_fits_in_half_the_cache() {
+        let frame = MediaTime(33_333);
+        // 10 MB of cache, 1 MB frames: 5 frames, the one asked for and 4 before it.
+        let start = reverse_window(MediaTime(1_000_000), 1_000_000, 10_000_000, frame);
+        assert_eq!(start, MediaTime(1_000_000 - 4 * 33_333));
+        // Always at least the frame asked for.
+        let start = reverse_window(MediaTime(1_000_000), 8_000_000, 10_000_000, frame);
+        assert_eq!(start, MediaTime(1_000_000));
     }
 
     #[test]
