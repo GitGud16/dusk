@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, mpsc};
 
 use dusk_core::color::{self, Primaries, Transfer};
-use dusk_core::{ColorMatrix, ColorRange, Picture, PictureLayout};
+use dusk_core::{Picture, PictureLayout};
 use wgpu::util::DeviceExt;
 
 use crate::Gpu;
@@ -321,7 +321,8 @@ impl Compositor {
         let bits = if ten_bit { 10 } else { 8 };
         let convert = Convert {
             rect: map.rect,
-            to_rgb: yuv_to_rgb(picture.matrix, picture.range, bits),
+            to_rgb: dusk_core::yuv_to_rgb(picture.matrix, picture.range, bits)
+                .map(|row| row.map(|factor| factor as f32)),
             color: ColorStep::of(picture),
             luma_down: Pass::new(down_window, map.y_step, map.y_origin, false),
             chroma_down: Pass::new(
@@ -832,91 +833,5 @@ impl Convert {
             .collect();
         bytes.extend(self.color.bytes());
         bytes
-    }
-}
-
-/// The rows that turn (Y, U, V, 1), in codes of a `bits`-deep picture, into R', G' and B'
-/// from 0 to 1.
-fn yuv_to_rgb(matrix: ColorMatrix, range: ColorRange, bits: u32) -> [[f32; 4]; 3] {
-    let (kr, kb) = match matrix {
-        ColorMatrix::Bt601 => (0.299, 0.114),
-        ColorMatrix::Bt709 => (0.2126, 0.0722),
-        ColorMatrix::Bt2020 => (0.2627, 0.0593),
-    };
-    let kg = 1.0 - kr - kb;
-    let max = f64::from((1u32 << bits) - 1);
-    let k = f64::from(1u32 << (bits - 8));
-    // Y' = (Y - y_zero) / y_span; Cb and Cr = (U or V - c_zero) / c_span.
-    let (y_zero, y_span, c_zero, c_span) = match range {
-        ColorRange::Limited => (16.0 * k, 219.0 * k, 128.0 * k, 224.0 * k),
-        ColorRange::Full => (0.0, max, f64::from(1u32 << (bits - 1)), max),
-    };
-    let rows: [[f64; 3]; 3] = [
-        [1.0, 0.0, 2.0 * (1.0 - kr)],
-        [
-            1.0,
-            -2.0 * kb * (1.0 - kb) / kg,
-            -2.0 * kr * (1.0 - kr) / kg,
-        ],
-        [1.0, 2.0 * (1.0 - kb), 0.0],
-    ];
-    rows.map(|[y, cb, cr]| {
-        let (y, cb, cr) = (y / y_span, cb / c_span, cr / c_span);
-        let constant = -y * y_zero - (cb + cr) * c_zero;
-        [y as f32, cb as f32, cr as f32, constant as f32]
-    })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn apply(rows: [[f32; 4]; 3], yuv: [f32; 3]) -> [f32; 3] {
-        rows.map(|[a, b, c, d]| a * yuv[0] + b * yuv[1] + c * yuv[2] + d)
-    }
-
-    fn near(actual: [f32; 3], expected: [f32; 3], tolerance: f32) -> bool {
-        actual
-            .iter()
-            .zip(expected)
-            .all(|(a, e)| (a - e).abs() <= tolerance)
-    }
-
-    #[test]
-    fn limited_range_maps_16_and_235_to_black_and_white() {
-        let rows = yuv_to_rgb(ColorMatrix::Bt709, ColorRange::Limited, 8);
-        assert!(near(apply(rows, [16.0, 128.0, 128.0]), [0.0; 3], 1e-6));
-        assert!(near(apply(rows, [235.0, 128.0, 128.0]), [1.0; 3], 1e-6));
-    }
-
-    #[test]
-    fn the_textbook_reds_come_out_red() {
-        let bt601 = yuv_to_rgb(ColorMatrix::Bt601, ColorRange::Limited, 8);
-        let bt709 = yuv_to_rgb(ColorMatrix::Bt709, ColorRange::Limited, 8);
-        assert!(near(
-            apply(bt601, [81.0, 90.0, 240.0]),
-            [1.0, 0.0, 0.0],
-            0.01
-        ));
-        assert!(near(
-            apply(bt709, [63.0, 102.0, 240.0]),
-            [1.0, 0.0, 0.0],
-            0.01
-        ));
-    }
-
-    #[test]
-    fn ten_bit_codes_are_four_times_eight_bit_ones() {
-        let eight = yuv_to_rgb(ColorMatrix::Bt709, ColorRange::Limited, 8);
-        let ten = yuv_to_rgb(ColorMatrix::Bt709, ColorRange::Limited, 10);
-        let rgb = apply(eight, [63.0, 102.0, 240.0]);
-        assert!(near(apply(ten, [252.0, 408.0, 960.0]), rgb, 1e-5));
-    }
-
-    #[test]
-    fn full_range_spans_every_code() {
-        let rows = yuv_to_rgb(ColorMatrix::Bt601, ColorRange::Full, 8);
-        assert!(near(apply(rows, [0.0, 128.0, 128.0]), [0.0; 3], 1e-6));
-        assert!(near(apply(rows, [255.0, 128.0, 128.0]), [1.0; 3], 1e-6));
     }
 }

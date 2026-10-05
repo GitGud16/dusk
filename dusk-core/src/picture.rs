@@ -70,6 +70,39 @@ pub struct Picture {
     pub chroma: Vec<u8>,
 }
 
+/// The rows of the affine map from `bits`-bit YUV sample values to full-range RGB from 0 to
+/// 1 for `matrix` and `range` (docs/ARCHITECTURE.md, color and scaling step 2): each row
+/// holds the factors for Y, U and V, then a constant.
+pub fn yuv_to_rgb(matrix: ColorMatrix, range: ColorRange, bits: u32) -> [[f64; 4]; 3] {
+    let (kr, kb) = match matrix {
+        ColorMatrix::Bt601 => (0.299, 0.114),
+        ColorMatrix::Bt709 => (0.2126, 0.0722),
+        ColorMatrix::Bt2020 => (0.2627, 0.0593),
+    };
+    let kg = 1.0 - kr - kb;
+    let max = f64::from((1u32 << bits) - 1);
+    let k = f64::from(1u32 << (bits - 8));
+    // Y' = (Y - y_zero) / y_span; Cb and Cr = (U or V - c_zero) / c_span.
+    let (y_zero, y_span, c_zero, c_span) = match range {
+        ColorRange::Limited => (16.0 * k, 219.0 * k, 128.0 * k, 224.0 * k),
+        ColorRange::Full => (0.0, max, f64::from(1u32 << (bits - 1)), max),
+    };
+    let rows: [[f64; 3]; 3] = [
+        [1.0, 0.0, 2.0 * (1.0 - kr)],
+        [
+            1.0,
+            -2.0 * kb * (1.0 - kb) / kg,
+            -2.0 * kr * (1.0 - kr) / kg,
+        ],
+        [1.0, 2.0 * (1.0 - kb), 0.0],
+    ];
+    rows.map(|[y, cb, cr]| {
+        let (y, cb, cr) = (y / y_span, cb / c_span, cr / c_span);
+        let constant = -y * y_zero - (cb + cr) * c_zero;
+        [y, cb, cr, constant]
+    })
+}
+
 impl Picture {
     /// The chroma plane's width (in U, V pairs) and height: half the picture's, rounded up.
     pub fn chroma_size(&self) -> (u32, u32) {
@@ -85,6 +118,55 @@ impl Picture {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn apply(rows: [[f64; 4]; 3], yuv: [f64; 3]) -> [f64; 3] {
+        rows.map(|[a, b, c, d]| a * yuv[0] + b * yuv[1] + c * yuv[2] + d)
+    }
+
+    fn near(actual: [f64; 3], expected: [f64; 3], tolerance: f64) -> bool {
+        actual
+            .iter()
+            .zip(expected)
+            .all(|(a, e)| (a - e).abs() <= tolerance)
+    }
+
+    #[test]
+    fn limited_range_maps_16_and_235_to_black_and_white() {
+        let rows = yuv_to_rgb(ColorMatrix::Bt709, ColorRange::Limited, 8);
+        assert!(near(apply(rows, [16.0, 128.0, 128.0]), [0.0; 3], 1e-9));
+        assert!(near(apply(rows, [235.0, 128.0, 128.0]), [1.0; 3], 1e-9));
+    }
+
+    #[test]
+    fn the_textbook_reds_come_out_red() {
+        let bt601 = yuv_to_rgb(ColorMatrix::Bt601, ColorRange::Limited, 8);
+        let bt709 = yuv_to_rgb(ColorMatrix::Bt709, ColorRange::Limited, 8);
+        assert!(near(
+            apply(bt601, [81.0, 90.0, 240.0]),
+            [1.0, 0.0, 0.0],
+            0.01
+        ));
+        assert!(near(
+            apply(bt709, [63.0, 102.0, 240.0]),
+            [1.0, 0.0, 0.0],
+            0.01
+        ));
+    }
+
+    #[test]
+    fn ten_bit_codes_are_four_times_eight_bit_ones() {
+        let eight = yuv_to_rgb(ColorMatrix::Bt709, ColorRange::Limited, 8);
+        let ten = yuv_to_rgb(ColorMatrix::Bt709, ColorRange::Limited, 10);
+        let rgb = apply(eight, [63.0, 102.0, 240.0]);
+        assert!(near(apply(ten, [252.0, 408.0, 960.0]), rgb, 1e-9));
+    }
+
+    #[test]
+    fn full_range_spans_every_code() {
+        let rows = yuv_to_rgb(ColorMatrix::Bt601, ColorRange::Full, 8);
+        assert!(near(apply(rows, [0.0, 128.0, 128.0]), [0.0; 3], 1e-9));
+        assert!(near(apply(rows, [255.0, 128.0, 128.0]), [1.0; 3], 1e-9));
+    }
 
     fn picture(width: u32, height: u32, layout: PictureLayout) -> Picture {
         let samples = width as usize * height as usize * layout.bytes_per_sample();

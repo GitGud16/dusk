@@ -210,6 +210,37 @@ pub fn tone_map(nits: [f64; 3], source_peak: f64) -> [f64; 3] {
     nits.map(|light| light * scale)
 }
 
+/// Color step 3 (docs/ARCHITECTURE.md) for one pixel of full-range RGB from 0 to 1 with
+/// `primaries` and `transfer`: into SDR BT.709, HDR tone-mapped from `source_peak` nits (PQ;
+/// HLG is shown at its 1000-nit reference). BT.709 SDR comes back as it is. The CPU twin of
+/// the compositor's shader, for pictures too small to send to the GPU, such as thumbnails.
+pub fn to_sdr_bt709(
+    rgb: [f64; 3],
+    primaries: Primaries,
+    transfer: Transfer,
+    source_peak: f64,
+) -> [f64; 3] {
+    if primaries == Primaries::Bt709 && !transfer.is_hdr() {
+        return rgb;
+    }
+    let light = match transfer {
+        Transfer::Pq => tone_map(rgb.map(pq_to_nits), source_peak),
+        Transfer::Hlg => tone_map(hlg_ootf(rgb.map(hlg_to_scene)), DEFAULT_HDR_PEAK),
+        Transfer::Bt1886 | Transfer::Srgb => rgb.map(|value| sdr_to_linear(transfer, value)),
+    };
+    let bt709 = to_bt709(primaries).map(|row| {
+        let light = row[0] * light[0] + row[1] * light[1] + row[2] * light[2];
+        light.clamp(0.0, 1.0)
+    });
+    // SDR goes back through its own curve; HDR comes out as SDR video, BT.1886.
+    let curve = if transfer.is_hdr() {
+        Transfer::Bt1886
+    } else {
+        transfer
+    };
+    bt709.map(|light| linear_to_sdr(curve, light))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -220,6 +251,64 @@ mod tests {
 
     fn apply(matrix: [[f64; 3]; 3], rgb: [f64; 3]) -> [f64; 3] {
         matrix.map(|row| row.iter().zip(rgb).map(|(m, v)| m * v).sum())
+    }
+
+    fn near_rgb(actual: [f64; 3], expected: [f64; 3], tolerance: f64) -> bool {
+        actual
+            .iter()
+            .zip(expected)
+            .all(|(a, e)| (a - e).abs() <= tolerance)
+    }
+
+    #[test]
+    fn bt709_sdr_skips_step_3() {
+        let rgb = [0.2, 0.5, 0.8];
+        assert_eq!(
+            to_sdr_bt709(rgb, Primaries::Bt709, Transfer::Bt1886, 0.0),
+            rgb
+        );
+        assert_eq!(
+            to_sdr_bt709(rgb, Primaries::Bt709, Transfer::Srgb, 0.0),
+            rgb
+        );
+    }
+
+    #[test]
+    fn a_display_p3_color_is_more_saturated_in_bt709() {
+        // Gray stays gray; a warm color gets warmer, as P3's primaries lie outside BT.709's.
+        let gray = to_sdr_bt709([0.5; 3], Primaries::DisplayP3, Transfer::Srgb, 0.0);
+        assert!(near_rgb(gray, [0.5; 3], 1e-9), "{gray:?}");
+        let [red, green, blue] =
+            to_sdr_bt709([0.8, 0.5, 0.3], Primaries::DisplayP3, Transfer::Srgb, 0.0);
+        assert!(
+            red > 0.8 && green < 0.51 && blue < 0.3,
+            "{red} {green} {blue}"
+        );
+    }
+
+    #[test]
+    fn hdr_peaks_reach_sdr_white_and_black_stays_black() {
+        let peak = 1000.0;
+        let pq_peak = [nits_to_pq(peak); 3];
+        let white = to_sdr_bt709(pq_peak, Primaries::Bt2020, Transfer::Pq, peak);
+        assert!(near_rgb(white, [1.0; 3], 1e-6), "{white:?}");
+        let hlg_white = to_sdr_bt709([1.0; 3], Primaries::Bt2020, Transfer::Hlg, peak);
+        assert!(near_rgb(hlg_white, [1.0; 3], 1e-6), "{hlg_white:?}");
+        for transfer in [Transfer::Pq, Transfer::Hlg] {
+            let black = to_sdr_bt709([0.0; 3], Primaries::Bt2020, transfer, peak);
+            assert!(near_rgb(black, [0.0; 3], 1e-9), "{black:?}");
+        }
+        // Brighter in, brighter out: 100 nits stays below the peak's white.
+        let reference = to_sdr_bt709(
+            [nits_to_pq(100.0); 3],
+            Primaries::Bt2020,
+            Transfer::Pq,
+            peak,
+        );
+        assert!(
+            reference[0] > 0.5 && reference[0] < white[0],
+            "{reference:?}"
+        );
     }
 
     #[test]
