@@ -36,6 +36,7 @@ export component ClipProperties inherits Rectangle {
     callback set-volume(decibels: float);
     callback set-fades(fade-in: int, fade-out: int);
     callback unlink();
+    callback open-editor();
     // Typing in a field is over.
     callback finished();
 
@@ -257,6 +258,13 @@ export component ClipProperties inherits Rectangle {
                 enabled: !root.props.locked;
                 clicked => {
                     root.unlink();
+                }
+            }
+
+            ToolButton {
+                text: "Open in the clip editor";
+                clicked => {
+                    root.open-editor();
                 }
             }
         }

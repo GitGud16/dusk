@@ -94,6 +94,31 @@ pub fn pressed_key() -> Option<char> {
     PRESSED.take()
 }
 
+/// Brings `window` to the front, out of the taskbar if it was minimized, with the keyboard.
+pub fn bring_to_front(window: &slint::Window) {
+    window.with_winit_window(|window| {
+        window.set_minimized(false);
+        window.focus_window();
+    });
+}
+
+/// Notes every key pressed in `window` for [`pressed_key`] (see [`watch_window`]).
+pub fn watch_keys(window: &slint::Window) {
+    window.on_winit_window_event(|_, event| {
+        note_key(event);
+        EventResult::Propagate
+    });
+}
+
+/// Keeps the letter or digit of a key press for [`pressed_key`].
+fn note_key(event: &WindowEvent) {
+    if let WindowEvent::KeyboardInput { event, .. } = event
+        && event.state == ElementState::Pressed
+    {
+        PRESSED.set(key_character(event.physical_key));
+    }
+}
+
 /// Calls `dropped` with the files dropped on `window` from another application, all files of
 /// one drop at once, and `hovering` with whether files are being dragged over it, and notes
 /// every key pressed for [`pressed_key`]. Slint passes on neither, so they are taken from
@@ -107,10 +132,8 @@ pub fn watch_window(
     let dropped = Rc::new(dropped);
     let waiting: Rc<RefCell<Vec<PathBuf>>> = Rc::default();
     window.on_winit_window_event(move |_, event| {
+        note_key(event);
         match event {
-            WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed => {
-                PRESSED.set(key_character(event.physical_key));
-            }
             WindowEvent::HoveredFile(_) => hovering(true),
             WindowEvent::HoveredFileCancelled => hovering(false),
             WindowEvent::DroppedFile(path) => {

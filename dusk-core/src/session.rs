@@ -112,6 +112,16 @@ impl ClipEditSession {
         })
     }
 
+    /// Whether the draft differs from the group as the session last saw it.
+    pub fn changed(&self) -> bool {
+        self.draft != ClipDraft::of(&self.seen)
+    }
+
+    /// The group's clips as the session last saw them, in timeline order.
+    pub fn clips(&self) -> &[Clip] {
+        &self.seen
+    }
+
     /// The clips the session edits.
     pub fn group(&self) -> Vec<ClipId> {
         self.seen.iter().map(|clip| clip.id).collect()
@@ -289,6 +299,20 @@ mod tests {
             ClipEditSession::open(&project, ClipId(7)).map(|_| ()),
             Err(Rejection::UnknownClip(ClipId(7)))
         );
+    }
+
+    #[test]
+    fn a_session_knows_whether_its_draft_differs_from_the_clips() {
+        let mut project = project();
+        let (video, _) = insert_pair(&mut project, 0, (0, SECOND));
+        let mut session = ClipEditSession::open(&project, video).unwrap();
+        assert!(!session.changed());
+        session.draft.speed = 2.0;
+        assert!(session.changed());
+        session.draft.speed = 1.0;
+        assert!(!session.changed());
+        session.draft.audio.as_mut().unwrap().volume_db = -6.0;
+        assert!(session.changed());
     }
 
     #[test]

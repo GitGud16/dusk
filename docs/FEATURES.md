@@ -31,7 +31,7 @@ Written as user stories. **MVP** is what the first usable version must do. **Lat
 - I can take a video and export only its audio to a file (MP3 / AAC / Opus / WAV).
 
 ### In-place clip editor (the signature feature)
-- I click a clip in the timeline and a pop-out window opens for just that clip, including its linked audio or video.
+- I double-click a clip in the timeline (or press Enter on the selected one) and a pop-out window opens for just that clip, including its linked audio or video.
 - In it I can trim, crop, rotate / flip, change speed, adjust volume and fades, or set a still image's duration.
 - If I change the clip in the main window meanwhile, the pop-out tells me and lets me reload or keep my draft.
 - I can **Apply to project** (the clip in the timeline updates) or **Export as file** (a standalone file is written), without leaving the main project.

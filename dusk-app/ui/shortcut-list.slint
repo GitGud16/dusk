@@ -1,0 +1,56 @@
+// The shortcut list, the same in every window: each key and what it does.
+
+import { Theme } from "theme.slint";
+
+// A line of the shortcut list.
+export struct ShortcutView {
+    keys: string,
+    description: string,
+}
+
+// The list on a panel at most `available-height` tall; longer, it scrolls.
+export component ShortcutPanel inherits Rectangle {
+    in property <[ShortcutView]> shortcuts;
+    in property <length> available-height;
+
+    height: Math.min(content.preferred-height, root.available-height);
+    background: Theme.bg-2;
+    border-color: Theme.border;
+    border-width: Theme.border-width;
+    border-radius: Theme.radius-panel;
+
+    flick := Flickable {
+        content-width: self.width;
+        content-height: content.preferred-height;
+
+        content := VerticalLayout {
+            width: flick.width;
+            padding: Theme.panel-padding;
+            spacing: Theme.space-1;
+
+            Text {
+                text: "Keyboard shortcuts";
+                color: Theme.text-1;
+                font-size: Theme.font-dialog;
+                font-weight: Theme.weight-semibold;
+            }
+
+            for shortcut in root.shortcuts: HorizontalLayout {
+                spacing: Theme.space-3;
+
+                Text {
+                    width: 120px;
+                    text: shortcut.keys;
+                    color: Theme.primary-bright;
+                    font-family: Theme.font-numeric;
+                }
+
+                Text {
+                    text: shortcut.description;
+                    color: Theme.text-2;
+                    wrap: word-wrap;
+                }
+            }
+        }
+    }
+}

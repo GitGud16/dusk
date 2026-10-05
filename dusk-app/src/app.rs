@@ -14,6 +14,7 @@ use dusk_core::{ClipId, Command, Frame, MediaId, Project};
 use dusk_engine::{Engine, EngineEvent, ExportEvent, ExportJob, Preview};
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 
+use crate::clip_editor::ClipEditor;
 use crate::document::{Document, Question};
 use crate::files::{Worker, export_path};
 use crate::history::History;
@@ -23,7 +24,7 @@ use crate::speed::{SpeedKey, next_factor};
 use crate::stats::Stats;
 use crate::thumbnails::{THUMBNAIL_CAP, Thumbnails};
 use crate::timeline::{self, View};
-use crate::{ClipProps, ClipView, MainWindow, MediaView, TickView, TrackView};
+use crate::{ClipEditorWindow, ClipProps, ClipView, MainWindow, MediaView, TickView, TrackView};
 
 thread_local! {
     /// The editor, owned by the UI thread.
@@ -118,6 +119,10 @@ pub struct App {
     thumbnails: Thumbnails<slint::Image>,
     /// Preview statistics, when `DUSK_STATS` is set.
     stats: Option<Stats>,
+    /// The clip editor's work, while it is open.
+    pub(crate) editor: Option<ClipEditor>,
+    /// The clip editor's window, made when it first opens and kept for the next time.
+    pub(crate) editor_window: Option<ClipEditorWindow>,
 }
 
 impl App {
@@ -154,6 +159,8 @@ impl App {
             models,
             thumbnails: Thumbnails::new(THUMBNAIL_CAP),
             stats: Stats::start(window),
+            editor: None,
+            editor_window: None,
         };
         app.set_project(Project::clone(&app.project));
         app
@@ -183,24 +190,36 @@ impl App {
         self.playhead = self.clamp(self.playhead);
         self.engine.show(Preview::Main, self.playhead);
         self.refresh_all();
+        self.editor_follow_project();
     }
 
     /// Applies `command` as one undoable edit and says what it did beyond what was asked, or
     /// why it was refused. True when it was applied.
     pub(crate) fn edit(&mut self, command: Command) -> bool {
+        match self.try_edit(command) {
+            Ok(notices) => {
+                self.say(&notices);
+                true
+            }
+            Err(reason) => {
+                self.fail(&reason);
+                false
+            }
+        }
+    }
+
+    /// Applies `command` as one undoable edit: what it did beyond what was asked, or why it
+    /// was refused.
+    pub(crate) fn try_edit(&mut self, command: Command) -> Result<String, String> {
         let mut next = Project::clone(&self.project);
         match self.history.apply(command, &mut next) {
             Ok(applied) => {
                 let notices: Vec<String> =
                     applied.notices().iter().map(|n| n.to_string()).collect();
                 self.set_project(next);
-                self.say(&notices.join(" "));
-                true
+                Ok(notices.join(" "))
             }
-            Err(rejection) => {
-                self.fail(&sentence(&rejection.to_string()));
-                false
-            }
+            Err(rejection) => Err(sentence(&rejection.to_string())),
         }
     }
 
@@ -293,6 +312,17 @@ impl App {
                     window.invoke_show_shortcut_list();
                 }
             }
+            Action::ToggleFill => self.toggle_fill(),
+            Action::OpenClipEditor => self.open_selected_clip(),
+            // The clip editor's own keys mean nothing in the main window.
+            Action::MarkIn
+            | Action::MarkOut
+            | Action::TurnLeft
+            | Action::TurnRight
+            | Action::MirrorLeftRight
+            | Action::MirrorTopBottom
+            | Action::ApplyClip
+            | Action::CloseClipEditor => {}
         }
     }
 
@@ -412,7 +442,7 @@ impl App {
     fn stopped(&mut self, preview: Preview, frame: Frame) {
         match preview {
             Preview::Main => self.playhead = frame,
-            Preview::ClipEditor => {}
+            Preview::ClipEditor => self.editor_stopped(frame),
         }
     }
 
@@ -475,18 +505,16 @@ impl App {
         texture: Option<dusk_engine::wgpu::Texture>,
     ) {
         let started = Instant::now();
-        if preview != Preview::Main {
-            return;
+        if preview == Preview::ClipEditor {
+            return self.editor_show_frame(frame, texture);
         }
         let Some(window) = self.window() else {
             return;
         };
-        let image = match texture.map(slint::Image::try_from) {
-            None => slint::Image::default(),
-            Some(Ok(image)) => image,
-            Some(Err(error)) => return self.fail(&error.to_string()),
-        };
-        window.set_preview_image(image);
+        match texture_image(texture) {
+            Ok(image) => window.set_preview_image(image),
+            Err(error) => return self.fail(&error),
+        }
         if self.playing(Preview::Main).is_some() {
             self.playhead = frame;
             self.refresh_transport();
@@ -679,11 +707,7 @@ impl App {
         window.set_playhead(frame_int(self.playhead));
         window.set_position_timecode(timeline::timecode(self.playhead, rate).into());
         window.set_playing(playing.is_some());
-        let speed = match playing {
-            Some(factor) if factor != 1.0 => format!("{factor}x"),
-            _ => String::new(),
-        };
-        window.set_speed(speed.into());
+        window.set_speed(factor_label(playing).into());
     }
 
     /// The window title: the project's name, marked while it has unsaved changes.
@@ -727,6 +751,26 @@ impl App {
             .iter()
             .find(|media| media.id == id)
             .unwrap_or_default()
+    }
+}
+
+/// A preview frame as an image for Slint; none is a black frame.
+pub(crate) fn texture_image(
+    texture: Option<dusk_engine::wgpu::Texture>,
+) -> Result<slint::Image, String> {
+    match texture.map(slint::Image::try_from) {
+        None => Ok(slint::Image::default()),
+        Some(Ok(image)) => Ok(image),
+        Some(Err(error)) => Err(error.to_string()),
+    }
+}
+
+/// The playback factor beside the play button, such as "2x"; nothing at normal speed or
+/// while stopped.
+pub(crate) fn factor_label(playing: Option<f64>) -> String {
+    match playing {
+        Some(factor) if factor != 1.0 => format!("{factor}x"),
+        _ => String::new(),
     }
 }
 

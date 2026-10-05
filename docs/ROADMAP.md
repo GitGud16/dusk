@@ -43,7 +43,7 @@ Import one file, see it as a linked video clip and audio clip on one video track
 
 ## M3 — Pop-out clip editor (signature feature)
 
-- Click a clip → second window previewing its whole link group (video + audio).
+- Double-click a clip → second window previewing its whole link group (video + audio).
 - Trim, crop, rotate/flip, fit/fill, speed, volume and fades, still duration in the pop-out, applied as one undoable `ApplyClipSession` command.
 - *Apply to project* (undoable) and *Export as file*.
 - Both windows stay responsive; edits in the pop-out preview live. Stale-session banner and deleted-clip handling work.

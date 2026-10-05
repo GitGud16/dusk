@@ -1,0 +1,770 @@
+// The pop-out clip editor (docs/ARCHITECTURE.md, "Pop-out clip editor"): one clip and the
+// clips linked to it, previewed alone with the draft applied. Trim, crop, turn and mirror,
+// fit or fill, speed, volume and fades, or a photo's length; then apply it all to the project
+// as one undoable step.
+
+import { Theme } from "theme.slint";
+import { FieldLabel, NumberField, PanelTitle, Segmented, Slider, Switch, Timecode, ToolButton } from "widgets.slint";
+import { Prompt } from "dialogs.slint";
+import { ShortcutPanel, ShortcutView } from "shortcut-list.slint";
+
+// Pixels cut from each side of the picture as it shows.
+export struct EditorSides {
+    left: int,
+    top: int,
+    right: int,
+    bottom: int,
+}
+
+// The draft as the window shows it.
+export struct EditorProps {
+    name: string,
+    // What the clips are and where, such as "Video and audio on V1 and A1".
+    place: string,
+    video: bool,
+    audio: bool,
+    still: bool,
+    // Where the clips start and end in their source, as fractions of it and as timecodes.
+    in-point: float,
+    out-point: float,
+    source-in: string,
+    source-out: string,
+    length: string,
+    // Speed in percent; a photo's length in frames.
+    speed: int,
+    frames: int,
+    // Turned clockwise by this many degrees.
+    turn: int,
+    flip-h: bool,
+    flip-v: bool,
+    fill: bool,
+    crop: EditorSides,
+    // The picture's size after the crop and the turn.
+    picture: string,
+    volume: float,
+    fade-in: int,
+    fade-out: int,
+    // On a locked track the draft cannot be applied.
+    locked: bool,
+    // The draft differs from the clips.
+    changed: bool,
+}
+
+// The source as a bar: the part kept between the in and out handles, and the playhead.
+// Dragging a handle trims; dragging inside the kept part moves the playhead.
+component TrimBar inherits Rectangle {
+    in property <float> in-point;
+    in property <float> out-point;
+    // Where the playhead is, as a fraction of the source.
+    in property <float> playhead;
+    // A handle is dragged to `at`, a fraction of the source; `done` when it is let go.
+    callback trim(start: bool, at: float, done: bool);
+    // The playhead is dragged to `at`; `done` when it is let go.
+    callback scrub(at: float, done: bool);
+
+    // What the press took: 0 nothing, 1 the in handle, 2 the out handle, 3 the playhead.
+    property <int> grabbed;
+    property <length> inset: 6px;
+    property <length> reach: 6px;
+    property <bool> over-handle: touch.has-hover
+        && (Math.abs(touch.mouse-x - root.x-of(root.in-point)) <= root.reach
+            || Math.abs(touch.mouse-x - root.x-of(root.out-point)) <= root.reach);
+
+    height: 32px;
+
+    pure function at(x: length) -> float {
+        return Math.clamp((x - root.inset) / Math.max(1px, root.width - 2 * root.inset), 0, 1);
+    }
+    pure function x-of(fraction: float) -> length {
+        return root.inset + fraction * (root.width - 2 * root.inset);
+    }
+
+    // The whole source.
+    Rectangle {
+        x: root.inset;
+        width: parent.width - 2 * root.inset;
+        y: (parent.height - self.height) / 2;
+        height: 12px;
+        border-radius: Theme.radius-clip;
+        background: Theme.bg-3;
+    }
+
+    // The part kept.
+    Rectangle {
+        x: root.x-of(root.in-point);
+        width: Math.max(1px, root.x-of(root.out-point) - self.x);
+        y: (parent.height - self.height) / 2;
+        height: 12px;
+        border-radius: Theme.radius-clip;
+        background: Theme.primary;
+    }
+
+    // The in and out points.
+    for start in [true, false]: Rectangle {
+        x: root.x-of(start ? root.in-point : root.out-point) - self.width / 2;
+        width: 4px;
+        y: (parent.height - self.height) / 2;
+        height: 24px;
+        border-radius: 2px;
+        background: Theme.signal;
+    }
+
+    // The playhead.
+    Rectangle {
+        x: root.x-of(root.playhead) - self.width / 2;
+        width: Theme.playhead-width;
+        background: Theme.alert;
+    }
+
+    touch := TouchArea {
+        mouse-cursor: root.grabbed == 1 || root.grabbed == 2 || root.over-handle ? MouseCursor.ew-resize : MouseCursor.default;
+        pointer-event(event) => {
+            if event.button == PointerEventButton.left && event.kind == PointerEventKind.down {
+                let from-in = Math.abs(self.mouse-x - root.x-of(root.in-point));
+                let from-out = Math.abs(self.mouse-x - root.x-of(root.out-point));
+                if from-in <= root.reach && from-in <= from-out {
+                    root.grabbed = 1;
+                } else if from-out <= root.reach {
+                    root.grabbed = 2;
+                } else if self.mouse-x > root.x-of(root.in-point) && self.mouse-x < root.x-of(root.out-point) {
+                    root.grabbed = 3;
+                    root.scrub(root.at(self.mouse-x), false);
+                } else {
+                    root.grabbed = 0;
+                }
+            }
+            if event.button == PointerEventButton.left && event.kind == PointerEventKind.up {
+                if root.grabbed == 1 || root.grabbed == 2 {
+                    root.trim(root.grabbed == 1, root.at(self.mouse-x), true);
+                } else if root.grabbed == 3 {
+                    root.scrub(root.at(self.mouse-x), true);
+                }
+                root.grabbed = 0;
+            }
+        }
+        moved => {
+            if root.grabbed == 1 || root.grabbed == 2 {
+                root.trim(root.grabbed == 1, root.at(self.mouse-x), false);
+            } else if root.grabbed == 3 {
+                root.scrub(root.at(self.mouse-x), false);
+            }
+        }
+    }
+}
+
+// A number of pixels cut from one side of the picture.
+component SideField inherits VerticalLayout {
+    in property <string> label;
+    in property <int> value;
+    callback edited(value: int);
+    callback finished();
+
+    spacing: Theme.space-1;
+
+    FieldLabel {
+        text: root.label;
+    }
+
+    NumberField {
+        value: root.value;
+        suffix: "px";
+        edited(value) => {
+            root.edited(value);
+        }
+        finished => {
+            root.finished();
+        }
+    }
+}
+
+export component ClipEditorWindow inherits Window {
+    title: root.window-title;
+    preferred-width: 1040px;
+    preferred-height: 700px;
+    min-width: 760px;
+    min-height: 540px;
+    background: Theme.bg-0;
+    default-font-family: Theme.font-ui;
+    default-font-size: Theme.font-body;
+    forward-focus: keys;
+
+    in property <string> window-title: "Clip editor";
+    in property <EditorProps> props;
+
+    // The latest preview frame, drawn by dusk-render at the preview's size in physical pixels.
+    in property <image> preview-image;
+    // Shown over the preview instead of a frame.
+    in property <string> preview-message;
+    out property <int> preview-pixel-width: Math.round(preview.width / 1phx);
+    out property <int> preview-pixel-height: Math.round(preview.height / 1phx);
+    callback preview-resized(width: int, height: int);
+
+    // The transport: the playhead counts from the clip's start; on the trim bar it is a
+    // fraction of the source.
+    in property <string> position-timecode: "00:00:00:00";
+    in property <bool> playing;
+    // The playback factor while playing, such as "2x"; empty at normal speed.
+    in property <string> speed;
+    in property <float> playhead;
+    callback play-pause();
+    callback scrub(at: float, done: bool);
+    callback trim(start: bool, at: float, done: bool);
+
+    // Changes to the draft.
+    callback set-speed(percent: int);
+    callback set-length(frames: int);
+    callback turn(clockwise: bool);
+    callback flip(horizontal: bool);
+    callback set-fill(fill: bool);
+    callback set-crop(sides: EditorSides);
+    callback set-volume(decibels: float);
+    callback set-fades(fade-in: int, fade-out: int);
+
+    // The status line: what just happened, or why a change was refused.
+    in property <string> status;
+    in property <bool> status-is-error;
+
+    // A question over the window.
+    in property <bool> prompt-open;
+    in property <string> prompt-title;
+    in property <string> prompt-message;
+    in property <[string]> prompt-answers;
+    in property <int> prompt-destructive: -1;
+    callback prompt-answered(index: int);
+
+    // A button stands for the action named `name` (see shortcuts.rs).
+    callback action(name: string);
+    // Every key press goes to the shortcut table; true when it was a shortcut.
+    callback key(text: string, ctrl: bool, shift: bool, alt: bool) -> bool;
+    in property <[ShortcutView]> shortcuts;
+
+    public function show-shortcut-list() {
+        shortcut-list.show();
+    }
+
+    // Gives the keyboard back to the shortcuts after a field or a button had it.
+    public function take-keys() {
+        keys.focus();
+    }
+
+    keys := FocusScope {
+        key-pressed(event) => {
+            return root.key(event.text, event.modifiers.control, event.modifiers.shift, event.modifiers.alt) ? EventResult.accept : EventResult.reject;
+        }
+
+        VerticalLayout {
+            HorizontalLayout {
+                vertical-stretch: 1;
+
+                VerticalLayout {
+                    horizontal-stretch: 1;
+
+                    preview := Rectangle {
+                        vertical-stretch: 1;
+                        background: Theme.bg-0;
+
+                        Image {
+                            width: 100%;
+                            height: 100%;
+                            source: root.preview-image;
+                            image-fit: contain;
+                        }
+
+                        Text {
+                            x: Theme.space-6;
+                            width: parent.width - 2 * Theme.space-6;
+                            text: root.preview-message;
+                            color: Theme.text-2;
+                            wrap: word-wrap;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+
+                        changed width => {
+                            root.preview-resized(root.preview-pixel-width, root.preview-pixel-height);
+                        }
+                        changed height => {
+                            root.preview-resized(root.preview-pixel-width, root.preview-pixel-height);
+                        }
+                    }
+
+                    // The transport and the trim bar.
+                    Rectangle {
+                        background: Theme.bg-2;
+
+                        Rectangle {
+                            y: 0;
+                            height: Theme.border-width;
+                            background: Theme.border;
+                        }
+
+                        VerticalLayout {
+                            padding-left: Theme.panel-padding;
+                            padding-right: Theme.panel-padding;
+                            padding-bottom: Theme.space-2;
+
+                            HorizontalLayout {
+                                height: Theme.toolbar-height + Theme.space-2;
+                                spacing: Theme.space-3;
+
+                                Timecode {
+                                    text: root.position-timecode;
+                                    color: Theme.text-1;
+                                }
+
+                                ToolButton {
+                                    y: (parent.height - self.height) / 2;
+                                    text: root.playing ? "Pause" : "Play";
+                                    clicked => {
+                                        root.play-pause();
+                                        keys.focus();
+                                    }
+                                }
+
+                                Text {
+                                    text: root.speed;
+                                    color: Theme.signal;
+                                    font-family: Theme.font-numeric;
+                                    vertical-alignment: center;
+                                }
+
+                                Rectangle {
+                                    horizontal-stretch: 1;
+                                }
+
+                                Timecode {
+                                    text: root.props.length;
+                                    color: Theme.text-2;
+                                }
+                            }
+
+                            if !root.props.still: TrimBar {
+                                in-point: root.props.in-point;
+                                out-point: root.props.out-point;
+                                playhead: root.playhead;
+                                trim(start, at, done) => {
+                                    root.trim(start, at, done);
+                                }
+                                scrub(at, done) => {
+                                    root.scrub(at, done);
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // The draft's settings.
+                Rectangle {
+                    width: Theme.side-panel-width + 2 * Theme.space-6;
+                    background: Theme.bg-2;
+
+                    Rectangle {
+                        x: 0;
+                        width: Theme.border-width;
+                        background: Theme.border;
+                    }
+
+                    flick := Flickable {
+                        content-width: self.width;
+                        content-height: settings.preferred-height;
+
+                        settings := VerticalLayout {
+                            width: flick.width;
+                            padding: Theme.panel-padding;
+                            spacing: Theme.space-4;
+                            alignment: start;
+
+                            VerticalLayout {
+                                spacing: 2px;
+
+                                Text {
+                                    text: root.props.name;
+                                    color: Theme.text-1;
+                                    font-size: Theme.font-title;
+                                    overflow: elide;
+                                }
+
+                                Text {
+                                    text: root.props.locked ? root.props.place + " · locked track" : root.props.place;
+                                    color: Theme.text-2;
+                                    font-size: Theme.font-tiny;
+                                    wrap: word-wrap;
+                                }
+                            }
+
+                            HorizontalLayout {
+                                spacing: Theme.space-3;
+
+                                if !root.props.still: VerticalLayout {
+                                    FieldLabel {
+                                        text: "In";
+                                    }
+
+                                    Timecode {
+                                        text: root.props.source-in;
+                                        color: Theme.text-1;
+                                        font-size: Theme.font-body;
+                                    }
+                                }
+
+                                if !root.props.still: VerticalLayout {
+                                    FieldLabel {
+                                        text: "Out";
+                                    }
+
+                                    Timecode {
+                                        text: root.props.source-out;
+                                        color: Theme.text-1;
+                                        font-size: Theme.font-body;
+                                    }
+                                }
+
+                                VerticalLayout {
+                                    FieldLabel {
+                                        text: "Length";
+                                    }
+
+                                    Timecode {
+                                        text: root.props.length;
+                                        color: Theme.text-1;
+                                        font-size: Theme.font-body;
+                                    }
+                                }
+                            }
+
+                            if !root.props.still: VerticalLayout {
+                                spacing: Theme.space-1;
+
+                                FieldLabel {
+                                    text: "Speed";
+                                }
+
+                                NumberField {
+                                    value: root.props.speed;
+                                    minimum: 10;
+                                    maximum: 3200;
+                                    suffix: "%";
+                                    edited(percent) => {
+                                        root.set-speed(percent);
+                                    }
+                                    finished => {
+                                        keys.focus();
+                                    }
+                                }
+                            }
+
+                            if root.props.still: VerticalLayout {
+                                spacing: Theme.space-1;
+
+                                FieldLabel {
+                                    text: "Duration";
+                                }
+
+                                NumberField {
+                                    value: root.props.frames;
+                                    minimum: 1;
+                                    suffix: "frames";
+                                    edited(frames) => {
+                                        root.set-length(frames);
+                                    }
+                                    finished => {
+                                        keys.focus();
+                                    }
+                                }
+                            }
+
+                            if root.props.video: VerticalLayout {
+                                spacing: Theme.space-2;
+
+                                HorizontalLayout {
+                                    PanelTitle {
+                                        text: "Picture";
+                                        horizontal-stretch: 1;
+                                    }
+
+                                    Text {
+                                        text: root.props.picture;
+                                        color: Theme.text-2;
+                                        font-family: Theme.font-numeric;
+                                        font-size: Theme.font-tiny;
+                                        vertical-alignment: center;
+                                    }
+                                }
+
+                                HorizontalLayout {
+                                    spacing: Theme.space-2;
+
+                                    ToolButton {
+                                        text: "Turn left";
+                                        clicked => {
+                                            root.turn(false);
+                                            keys.focus();
+                                        }
+                                    }
+
+                                    ToolButton {
+                                        text: "Turn right";
+                                        clicked => {
+                                            root.turn(true);
+                                            keys.focus();
+                                        }
+                                    }
+
+                                    Text {
+                                        text: root.props.turn + "°";
+                                        color: Theme.text-2;
+                                        font-family: Theme.font-numeric;
+                                        vertical-alignment: center;
+                                        horizontal-alignment: right;
+                                        horizontal-stretch: 1;
+                                    }
+                                }
+
+                                HorizontalLayout {
+                                    Text {
+                                        text: "Mirror left to right";
+                                        color: Theme.text-2;
+                                        vertical-alignment: center;
+                                        horizontal-stretch: 1;
+                                    }
+
+                                    Switch {
+                                        checked: root.props.flip-h;
+                                        toggled => {
+                                            root.flip(true);
+                                            keys.focus();
+                                        }
+                                    }
+                                }
+
+                                HorizontalLayout {
+                                    Text {
+                                        text: "Mirror top to bottom";
+                                        color: Theme.text-2;
+                                        vertical-alignment: center;
+                                        horizontal-stretch: 1;
+                                    }
+
+                                    Switch {
+                                        checked: root.props.flip-v;
+                                        toggled => {
+                                            root.flip(false);
+                                            keys.focus();
+                                        }
+                                    }
+                                }
+
+                                VerticalLayout {
+                                    spacing: Theme.space-1;
+
+                                    FieldLabel {
+                                        text: "When its shape differs from the sequence";
+                                    }
+
+                                    Segmented {
+                                        options: ["Fit with bars", "Fill and crop"];
+                                        selected: root.props.fill ? 1 : 0;
+                                        chosen(index) => {
+                                            root.set-fill(index == 1);
+                                            keys.focus();
+                                        }
+                                    }
+                                }
+
+                                FieldLabel {
+                                    text: "Crop: pixels cut from each side as it shows";
+                                    wrap: word-wrap;
+                                }
+
+                                HorizontalLayout {
+                                    spacing: Theme.space-2;
+
+                                    SideField {
+                                        label: "Left";
+                                        value: root.props.crop.left;
+                                        edited(value) => {
+                                            root.set-crop({ left: value, top: root.props.crop.top, right: root.props.crop.right, bottom: root.props.crop.bottom });
+                                        }
+                                        finished => {
+                                            keys.focus();
+                                        }
+                                    }
+
+                                    SideField {
+                                        label: "Right";
+                                        value: root.props.crop.right;
+                                        edited(value) => {
+                                            root.set-crop({ left: root.props.crop.left, top: root.props.crop.top, right: value, bottom: root.props.crop.bottom });
+                                        }
+                                        finished => {
+                                            keys.focus();
+                                        }
+                                    }
+                                }
+
+                                HorizontalLayout {
+                                    spacing: Theme.space-2;
+
+                                    SideField {
+                                        label: "Top";
+                                        value: root.props.crop.top;
+                                        edited(value) => {
+                                            root.set-crop({ left: root.props.crop.left, top: value, right: root.props.crop.right, bottom: root.props.crop.bottom });
+                                        }
+                                        finished => {
+                                            keys.focus();
+                                        }
+                                    }
+
+                                    SideField {
+                                        label: "Bottom";
+                                        value: root.props.crop.bottom;
+                                        edited(value) => {
+                                            root.set-crop({ left: root.props.crop.left, top: root.props.crop.top, right: root.props.crop.right, bottom: value });
+                                        }
+                                        finished => {
+                                            keys.focus();
+                                        }
+                                    }
+                                }
+                            }
+
+                            if root.props.audio: VerticalLayout {
+                                spacing: Theme.space-2;
+
+                                HorizontalLayout {
+                                    PanelTitle {
+                                        text: "Sound";
+                                        horizontal-stretch: 1;
+                                    }
+
+                                    Text {
+                                        text: (volume.shown > 0 ? "+" : "") + (Math.round(volume.shown * 10) / 10) + " dB";
+                                        color: Theme.text-1;
+                                        font-family: Theme.font-numeric;
+                                        font-size: Theme.font-tiny;
+                                        vertical-alignment: center;
+                                    }
+                                }
+
+                                volume := Slider {
+                                    minimum: -60;
+                                    maximum: 12;
+                                    value: root.props.volume;
+                                    changed(decibels) => {
+                                        root.set-volume(Math.round(decibels * 10) / 10);
+                                        keys.focus();
+                                    }
+                                    reset => {
+                                        root.set-volume(0);
+                                        keys.focus();
+                                    }
+                                }
+
+                                HorizontalLayout {
+                                    spacing: Theme.space-2;
+
+                                    VerticalLayout {
+                                        spacing: Theme.space-1;
+
+                                        FieldLabel {
+                                            text: "Fade in";
+                                        }
+
+                                        NumberField {
+                                            value: root.props.fade-in;
+                                            suffix: "frames";
+                                            edited(frames) => {
+                                                root.set-fades(frames, root.props.fade-out);
+                                            }
+                                            finished => {
+                                                keys.focus();
+                                            }
+                                        }
+                                    }
+
+                                    VerticalLayout {
+                                        spacing: Theme.space-1;
+
+                                        FieldLabel {
+                                            text: "Fade out";
+                                        }
+
+                                        NumberField {
+                                            value: root.props.fade-out;
+                                            suffix: "frames";
+                                            edited(frames) => {
+                                                root.set-fades(root.props.fade-in, frames);
+                                            }
+                                            finished => {
+                                                keys.focus();
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // The status line and what to do with the draft.
+            Rectangle {
+                height: Theme.toolbar-height + Theme.space-2;
+                background: Theme.bg-2;
+
+                Rectangle {
+                    y: 0;
+                    height: Theme.border-width;
+                    background: Theme.border;
+                }
+
+                HorizontalLayout {
+                    padding-left: Theme.panel-padding;
+                    padding-right: Theme.panel-padding;
+                    spacing: Theme.space-2;
+
+                    Text {
+                        text: root.status;
+                        color: root.status-is-error ? Theme.alert : Theme.text-2;
+                        vertical-alignment: center;
+                        overflow: elide;
+                        horizontal-stretch: 1;
+                    }
+
+                    ToolButton {
+                        y: (parent.height - self.height) / 2;
+                        text: "Apply to project";
+                        primary: true;
+                        enabled: root.props.changed && !root.props.locked;
+                        clicked => {
+                            root.action("apply-clip");
+                            keys.focus();
+                        }
+                    }
+                }
+            }
+        }
+
+        if root.prompt-open: Prompt {
+            title: root.prompt-title;
+            message: root.prompt-message;
+            answers: root.prompt-answers;
+            destructive: root.prompt-destructive;
+            answered(index) => {
+                root.prompt-answered(index);
+            }
+        }
+    }
+
+    shortcut-list := PopupWindow {
+        width: 360px;
+        x: (root.width - self.width) / 2;
+        y: Theme.space-6;
+
+        ShortcutPanel {
+            shortcuts: root.shortcuts;
+            available-height: root.height - 2 * Theme.space-6;
+        }
+    }
+}

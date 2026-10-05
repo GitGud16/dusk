@@ -5,14 +5,11 @@ import { ClipView, Timeline, TickView, TrackView } from "timeline.slint";
 import { MediaBin, MediaView } from "media-bin.slint";
 import { ClipProperties, ClipProps } from "properties.slint";
 import { Prompt, SequenceSettings } from "dialogs.slint";
+import { ShortcutPanel, ShortcutView } from "shortcut-list.slint";
+import { ClipEditorWindow, EditorProps, EditorSides } from "clip-editor.slint";
 
-export { ClipView, TickView, TrackView, MediaView, ClipProps }
-
-// A line of the shortcut list.
-export struct ShortcutView {
-    keys: string,
-    description: string,
-}
+export { ClipView, TickView, TrackView, MediaView, ClipProps, ShortcutView }
+export { ClipEditorWindow, EditorProps, EditorSides }
 
 export component MainWindow inherits Window {
     title: root.window-title;
@@ -71,6 +68,8 @@ export component MainWindow inherits Window {
     callback scrub(frame: int);
     callback scrub-end(frame: int);
     callback select-clip(clip: int);
+    // A clip was double-clicked: it opens in the clip editor.
+    callback open-clip(clip: int);
     callback trim(clip: int, start: bool, frame: int);
     callback snap-move(clip: int, frame: int, row: int) -> int;
     callback move-clip(clip: int, frame: int, row: int);
@@ -232,6 +231,18 @@ export component MainWindow inherits Window {
                 title: "Enable or disable the clip";
                 activated => {
                     root.action("toggle-enabled");
+                }
+            }
+            MenuItem {
+                title: "Fit with bars or fill and crop";
+                activated => {
+                    root.action("toggle-fill");
+                }
+            }
+            MenuItem {
+                title: "Open in the clip editor";
+                activated => {
+                    root.action("open-clip-editor");
                 }
             }
             MenuSeparator { }
@@ -416,6 +427,10 @@ export component MainWindow inherits Window {
                         root.unlink-clip();
                         keys.focus();
                     }
+                    open-editor => {
+                        root.action("open-clip-editor");
+                        keys.focus();
+                    }
                     finished => {
                         keys.focus();
                     }
@@ -493,6 +508,9 @@ export component MainWindow inherits Window {
                 select-clip(clip) => {
                     root.select-clip(clip);
                     keys.focus();
+                }
+                open-clip(clip) => {
+                    root.open-clip(clip);
                 }
                 trim(clip, start, frame) => {
                     root.trim(clip, start, frame);
@@ -659,40 +677,9 @@ export component MainWindow inherits Window {
         x: (root.width - self.width) / 2;
         y: Theme.space-6;
 
-        Rectangle {
-            background: Theme.bg-2;
-            border-color: Theme.border;
-            border-width: Theme.border-width;
-            border-radius: Theme.radius-panel;
-
-            VerticalLayout {
-                padding: Theme.panel-padding;
-                spacing: Theme.space-1;
-
-                Text {
-                    text: "Keyboard shortcuts";
-                    color: Theme.text-1;
-                    font-size: Theme.font-dialog;
-                    font-weight: Theme.weight-semibold;
-                }
-
-                for shortcut in root.shortcuts: HorizontalLayout {
-                    spacing: Theme.space-3;
-
-                    Text {
-                        width: 120px;
-                        text: shortcut.keys;
-                        color: Theme.primary-bright;
-                        font-family: Theme.font-numeric;
-                    }
-
-                    Text {
-                        text: shortcut.description;
-                        color: Theme.text-2;
-                        wrap: word-wrap;
-                    }
-                }
-            }
+        ShortcutPanel {
+            shortcuts: root.shortcuts;
+            available-height: root.height - 2 * Theme.space-6;
         }
     }
 

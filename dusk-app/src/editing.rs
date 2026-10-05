@@ -435,6 +435,21 @@ impl App {
         self.edit(Command::SetVideoEdits(SetVideoEdits::new(id, edits)));
     }
 
+    /// F: fits the selected clip's picture with bars, or fills the frame with it.
+    pub(crate) fn toggle_fill(&mut self) {
+        let fill = self
+            .selected_clip
+            .and_then(|clip| self.project.find_clip(clip))
+            .and_then(|(_, clip)| match &clip.edits {
+                ClipEdits::Video(edits) => Some(edits.fit != dusk_core::Fit::Fill),
+                ClipEdits::Audio(_) => None,
+            });
+        match fill {
+            Some(fill) => self.set_clip_fill(fill),
+            None => self.say("Select a video clip to fit or fill its picture."),
+        }
+    }
+
     /// Gives the selected photo a length of `frames`.
     pub fn set_clip_length(&mut self, frames: i32) {
         let Some((_, clip)) = self

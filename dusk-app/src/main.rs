@@ -5,7 +5,9 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod app;
+mod clip_editor;
 mod document;
+mod draft;
 mod editing;
 mod files;
 mod history;
@@ -26,7 +28,6 @@ use slint::{CloseRequestResponse, ComponentHandle};
 use crate::app::{App, with_app};
 use crate::document::AUTOSAVE_EVERY;
 use crate::files::Worker;
-use crate::shortcuts::SHORTCUTS;
 
 slint::include_modules!();
 
@@ -87,6 +88,9 @@ fn connect(window: &MainWindow) {
     });
     window.on_select_clip(|clip| {
         with_app(|app| app.select_clip(clip));
+    });
+    window.on_open_clip(|clip| {
+        with_app(|app| app.open_clip_id(clip));
     });
     window.on_trim(|clip, start, frame| {
         with_app(|app| app.trim(clip, start, frame));
@@ -154,14 +158,7 @@ fn connect(window: &MainWindow) {
             with_app(|app| app.act(action));
         }
     });
-    let list: Vec<ShortcutView> = SHORTCUTS
-        .iter()
-        .map(|shortcut| ShortcutView {
-            keys: shortcut.keys().into(),
-            description: shortcut.description.into(),
-        })
-        .collect();
-    window.set_shortcuts(std::rc::Rc::new(slint::VecModel::from(list)).into());
+    window.set_shortcuts(shortcuts::shortcut_list());
     window.on_key(|text, ctrl, shift, alt| {
         with_app(|app| app.key(&text, ctrl, shift, alt)).unwrap_or(false)
     });
