@@ -1,0 +1,423 @@
+// The timeline: track headers, the ruler, the clips and the playhead (docs/THEME.md, "Timeline
+// color rules"). Clips move by dragging their middle and trim by dragging their edges; media
+// dragged in from the bin lands where it fits nearest the pointer.
+
+import { Theme } from "theme.slint";
+import { IconToggle } from "widgets.slint";
+
+// A clip as the timeline draws it; positions and lengths in timeline frames.
+export struct ClipView {
+    id: int,
+    // The row it is drawn in.
+    row: int,
+    start: int,
+    length: int,
+    name: string,
+    // Its link group; 0 when unlinked.
+    link: int,
+    video: bool,
+    enabled: bool,
+}
+
+// A track as a row of the timeline. Rows run top to bottom: the video tracks, the one drawn
+// over the others first, then the audio tracks.
+export struct TrackView {
+    id: int,
+    name: string,
+    video: bool,
+    locked: bool,
+    muted: bool,
+}
+
+// A labeled mark on the ruler.
+export struct TickView {
+    frame: int,
+    label: string,
+}
+
+export component Timeline inherits Rectangle {
+    in property <[TrackView]> tracks;
+    in property <[ClipView]> clips;
+    in property <[TickView]> ticks;
+    // How many of the rows are video tracks.
+    in property <int> video-rows;
+    in property <int> playhead;
+    // Pixels per frame, and the frame at the left edge.
+    in property <float> zoom: 1;
+    in property <int> scroll;
+    in property <int> selected-clip: -1;
+    // The link group of the selected clip, or 0; its other clips get a thin outline.
+    in property <int> selected-link;
+    // The width clips are laid out in.
+    out property <length> tracks-width: tracks-area.width;
+
+    // The playhead is dragged to `frame`; `scrub-end` when the drag ends.
+    callback scrub(frame: int);
+    callback scrub-end(frame: int);
+    // A clip was clicked, or empty track space (-1).
+    callback select-clip(clip: int);
+    // A trim handle was let go: the clip, whether its start edge, and the frame.
+    callback trim(clip: int, start: bool, frame: int);
+    // Where `clip` would start if dropped at `frame` on `row`: the nearest free frame, or -1.
+    callback snap-move(clip: int, frame: int, row: int) -> int;
+    callback move-clip(clip: int, frame: int, row: int);
+    // Where the media dragged in would start if dropped at `frame` on `row`, or -1.
+    callback snap-place(row: int, frame: int) -> int;
+    callback place-media(row: int, frame: int);
+    callback toggle-lock(track: int);
+    callback toggle-mute(track: int);
+    // The mouse wheel: scroll by `frames`, or zoom by `factor` around `frame`.
+    callback scroll-by(frames: int);
+    callback zoom-by(factor: float, frame: int);
+
+    // Media dragged in from the bin: its length and streams, and where it would land.
+    in property <int> media-length;
+    in property <bool> media-video;
+    in property <bool> media-audio;
+    property <int> media-row: -1;
+    property <int> media-frame: -1;
+
+    // The drag on a clip: 0 none, 1 move, 2 trim of the start, 3 trim of the end.
+    property <int> drag-mode;
+    // The clip pressed, and its link group; a press becomes a move past the threshold.
+    property <int> drag-clip: -1;
+    property <int> drag-link;
+    // Where the press was, in window coordinates.
+    property <length> press-x;
+    property <length> press-y;
+    // A move: where the pointer would put the clip, where it would land (-1: nowhere it
+    // fits) and on which row. A trim: the frame the edge is dragged to.
+    property <int> drag-raw;
+    property <int> drag-frame;
+    property <int> target-row;
+
+    background: Theme.bg-0;
+    height: root.row-y(root.tracks.length);
+
+    pure function row-y(row: int) -> length {
+        return Theme.ruler-height + Math.min(row, root.video-rows) * Theme.video-track-height + Math.max(0, row - root.video-rows) * Theme.audio-track-height;
+    }
+    pure function row-height(row: int) -> length {
+        return row < root.video-rows ? Theme.video-track-height : Theme.audio-track-height;
+    }
+    // The row at `y` in the timeline's own coordinates; -1 over the ruler or below the rows.
+    pure function row-at(y: length) -> int {
+        if y < Theme.ruler-height || y >= root.row-y(root.tracks.length) {
+            return -1;
+        }
+        if y < root.row-y(root.video-rows) {
+            return Math.floor((y - Theme.ruler-height) / Theme.video-track-height);
+        }
+        return root.video-rows + Math.floor((y - root.row-y(root.video-rows)) / Theme.audio-track-height);
+    }
+    // The row of the other kind that goes with `row`: V1 with A1, V2 with A2.
+    pure function pair-row(row: int) -> int {
+        let audio-rows = root.tracks.length - root.video-rows;
+        if row < root.video-rows {
+            return root.video-rows + Math.min(root.video-rows - 1 - row, audio-rows - 1);
+        }
+        return root.video-rows - 1 - Math.min(row - root.video-rows, root.video-rows - 1);
+    }
+    pure function x-of(frame: int) -> length {
+        return (frame - root.scroll) * root.zoom * 1px;
+    }
+    pure function frame-at(x: length) -> int {
+        return Math.max(0, root.scroll + Math.round(x / 1px / root.zoom));
+    }
+    // Pointer positions in window coordinates, in the tracks area's.
+    pure function local-x(window-x: length) -> length {
+        return window-x - tracks-area.absolute-position.x;
+    }
+    pure function local-y(window-y: length) -> length {
+        return window-y - root.absolute-position.y;
+    }
+    // Whether `clip` is part of the drag: the clip pressed or one linked to it.
+    pure function in-drag(clip: ClipView) -> bool {
+        return root.drag-mode != 0 && (clip.id == root.drag-clip || (clip.link != 0 && clip.link == root.drag-link));
+    }
+
+    // Media from the bin is over the window at `window-x`, `window-y`.
+    public function media-hover(window-x: length, window-y: length) {
+        let x = root.local-x(window-x);
+        let row = x >= 0 && x < tracks-area.width ? root.row-at(root.local-y(window-y)) : -1;
+        root.media-row = row;
+        root.media-frame = row >= 0 ? root.snap-place(row, root.frame-at(x)) : -1;
+    }
+
+    // The media from the bin was let go: placed if it was over a place where it fits.
+    public function media-drop() {
+        if root.media-row >= 0 && root.media-frame >= 0 {
+            root.place-media(root.media-row, root.media-frame);
+        }
+        root.media-row = -1;
+        root.media-frame = -1;
+    }
+
+    HorizontalLayout {
+        // The track headers.
+        Rectangle {
+            width: Theme.track-header-width;
+            background: Theme.bg-1;
+
+            for track[row] in root.tracks: Rectangle {
+                y: root.row-y(row);
+                height: root.row-height(row);
+
+                Text {
+                    x: Theme.space-2;
+                    text: track.name;
+                    color: Theme.text-2;
+                    font-size: Theme.font-tiny;
+                    vertical-alignment: center;
+                }
+
+                IconToggle {
+                    x: parent.width - 2 * self.width - Theme.space-2;
+                    y: (parent.height - self.height) / 2;
+                    icon: track.locked ? @image-url("icons/lock.svg") : @image-url("icons/unlock.svg");
+                    checked: track.locked;
+                    toggled => {
+                        root.toggle-lock(track.id);
+                    }
+                }
+
+                IconToggle {
+                    x: parent.width - self.width - Theme.space-1;
+                    y: (parent.height - self.height) / 2;
+                    icon: track.video
+                        ? (track.muted ? @image-url("icons/eye-off.svg") : @image-url("icons/eye.svg"))
+                        : (track.muted ? @image-url("icons/speaker-off.svg") : @image-url("icons/speaker.svg"));
+                    checked: track.muted;
+                    toggled => {
+                        root.toggle-mute(track.id);
+                    }
+                }
+
+                Rectangle {
+                    y: parent.height - self.height;
+                    height: Theme.border-width;
+                    background: Theme.border;
+                }
+            }
+
+            Rectangle {
+                x: parent.width - self.width;
+                width: Theme.border-width;
+                background: Theme.border;
+            }
+        }
+
+        tracks-area := Rectangle {
+            clip: true;
+
+            // The rows; a locked track is a step darker.
+            for track[row] in root.tracks: Rectangle {
+                y: root.row-y(row);
+                height: root.row-height(row);
+                background: track.locked ? Theme.bg-0 : Theme.bg-1;
+
+                Rectangle {
+                    y: parent.height - self.height;
+                    height: Theme.border-width;
+                    background: Theme.border;
+                }
+            }
+
+            // The ruler.
+            Rectangle {
+                y: 0;
+                height: Theme.ruler-height;
+                background: Theme.bg-2;
+
+                for tick in root.ticks: Rectangle {
+                    x: root.x-of(tick.frame);
+                    width: Theme.border-width;
+                    background: Theme.border;
+
+                    Text {
+                        x: Theme.space-1;
+                        text: tick.label;
+                        color: Theme.text-3;
+                        font-family: Theme.font-numeric;
+                        font-size: Theme.font-tiny;
+                        vertical-alignment: center;
+                    }
+                }
+
+                Rectangle {
+                    y: parent.height - self.height;
+                    height: Theme.border-width;
+                    background: Theme.border;
+                }
+            }
+
+            // Pressing the ruler or empty track space moves the playhead there; in empty
+            // track space it also clears the selection. The wheel scrolls, and zooms with Ctrl.
+            TouchArea {
+                moved => {
+                    root.scrub(root.frame-at(self.mouse-x));
+                }
+                pointer-event(event) => {
+                    if event.button == PointerEventButton.left && event.kind == PointerEventKind.down {
+                        if self.mouse-y >= Theme.ruler-height {
+                            root.select-clip(-1);
+                        }
+                        root.scrub(root.frame-at(self.mouse-x));
+                    }
+                    if event.button == PointerEventButton.left && event.kind == PointerEventKind.up {
+                        root.scrub-end(root.frame-at(self.mouse-x));
+                    }
+                }
+                scroll-event(event) => {
+                    if event.modifiers.control {
+                        root.zoom-by(event.delta-y > 0 ? 1.25 : 0.8, root.frame-at(self.mouse-x));
+                    } else {
+                        root.scroll-by(Math.round(-(event.delta-y + event.delta-x) / 1px / root.zoom));
+                    }
+                    return accept;
+                }
+            }
+
+            // The clips, drawn where a drag would leave them.
+            for clip in root.clips: Rectangle {
+                property <bool> dragged: root.in-drag(clip);
+                property <bool> moving: self.dragged && root.drag-mode == 1;
+                property <bool> nowhere: self.moving && root.drag-frame < 0;
+                property <int> first: !self.dragged ? clip.start
+                    : root.drag-mode == 1 ? (self.nowhere ? root.drag-raw : root.drag-frame)
+                    : root.drag-mode == 2 ? Math.min(root.drag-frame, clip.start + clip.length - 1) : clip.start;
+                property <int> end: !self.dragged ? clip.start + clip.length
+                    : root.drag-mode == 1 ? self.first + clip.length
+                    : root.drag-mode == 3 ? Math.max(root.drag-frame, clip.start + 1) : clip.start + clip.length;
+                property <int> shown-row: self.moving && clip.id == root.drag-clip ? root.target-row : clip.row;
+                property <bool> dimmed: !clip.enabled || root.tracks[clip.row].muted;
+
+                x: root.x-of(self.first);
+                width: Math.max(1px, (self.end - self.first) * root.zoom * 1px);
+                y: root.row-y(self.shown-row) + Theme.clip-gap;
+                height: root.row-height(self.shown-row) - 2 * Theme.clip-gap;
+                opacity: self.nowhere || self.dimmed ? Theme.dimmed-opacity : 1;
+                border-radius: Theme.radius-clip;
+                background: clip.video ? Theme.primary : Theme.secondary;
+                border-width: clip.id == root.selected-clip || self.dragged ? Theme.focus-width
+                    : clip.link != 0 && clip.link == root.selected-link ? Theme.border-width : 0px;
+                border-color: self.nowhere ? Theme.alert : Theme.primary-bright;
+
+                Text {
+                    x: Theme.space-2;
+                    width: Math.max(0px, parent.width - 2 * Theme.space-2);
+                    text: clip.name;
+                    color: parent.dimmed ? Theme.text-3 : Theme.on-brand;
+                    font-size: Theme.font-tiny;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+
+                // The middle: click to select, drag to move.
+                TouchArea {
+                    x: Math.min(8px, parent.width / 3);
+                    width: Math.max(0px, parent.width - 2 * self.x);
+                    mouse-cursor: root.drag-mode == 1 ? MouseCursor.grabbing : MouseCursor.default;
+                    pointer-event(event) => {
+                        if event.button == PointerEventButton.left && event.kind == PointerEventKind.down {
+                            root.select-clip(clip.id);
+                            root.press-x = self.absolute-position.x + self.mouse-x;
+                            root.press-y = self.absolute-position.y + self.mouse-y;
+                            root.drag-clip = clip.id;
+                            root.drag-link = clip.link;
+                            root.target-row = clip.row;
+                        }
+                        if event.button == PointerEventButton.left && event.kind == PointerEventKind.up {
+                            if root.drag-mode == 1 && root.drag-frame >= 0 && (root.drag-frame != clip.start || root.target-row != clip.row) {
+                                root.move-clip(clip.id, root.drag-frame, root.target-row);
+                            }
+                            root.drag-mode = 0;
+                            root.drag-clip = -1;
+                        }
+                    }
+                    moved => {
+                        let x = self.absolute-position.x + self.mouse-x;
+                        let y = self.absolute-position.y + self.mouse-y;
+                        if root.drag-mode == 0 && root.drag-clip == clip.id && (Math.abs(x - root.press-x) > Theme.drag-threshold || Math.abs(y - root.press-y) > Theme.drag-threshold) {
+                            root.drag-mode = 1;
+                        }
+                        if root.drag-mode == 1 {
+                            root.drag-raw = Math.max(0, clip.start + Math.round((x - root.press-x) / 1px / root.zoom));
+                            // A clip stays on tracks of its own kind.
+                            let row = root.row-at(root.local-y(y));
+                            if row >= 0 && (row < root.video-rows) == clip.video {
+                                root.target-row = row;
+                            }
+                            root.drag-frame = root.snap-move(clip.id, root.drag-raw, root.target-row);
+                        }
+                    }
+                }
+
+                // The edges: drag to trim. They map the pointer straight to a frame.
+                for start in [true, false]: TouchArea {
+                    x: start ? 0px : parent.width - self.width;
+                    width: Math.min(8px, parent.width / 3);
+                    mouse-cursor: ew-resize;
+                    pointer-event(event) => {
+                        if event.button == PointerEventButton.left && event.kind == PointerEventKind.down {
+                            root.select-clip(clip.id);
+                            root.drag-clip = clip.id;
+                            root.drag-link = clip.link;
+                            root.drag-mode = start ? 2 : 3;
+                            root.drag-frame = start ? clip.start : clip.start + clip.length;
+                        }
+                        if event.button == PointerEventButton.left && event.kind == PointerEventKind.up && root.drag-clip == clip.id {
+                            let frame = root.drag-frame;
+                            root.drag-mode = 0;
+                            root.drag-clip = -1;
+                            if frame != (start ? clip.start : clip.start + clip.length) {
+                                root.trim(clip.id, start, frame);
+                            }
+                        }
+                    }
+                    moved => {
+                        root.drag-frame = root.frame-at(root.local-x(self.absolute-position.x + self.mouse-x));
+                    }
+                }
+            }
+
+            // Where media dragged in from the bin would land.
+            if root.media-row >= 0 && root.media-frame >= 0: Rectangle {
+                for ghost in [
+                    { show: root.media-video, row: root.media-row < root.video-rows ? root.media-row : root.pair-row(root.media-row) },
+                    { show: root.media-audio, row: root.media-row >= root.video-rows ? root.media-row : root.pair-row(root.media-row) },
+                ]: Rectangle {
+                    visible: ghost.show;
+                    x: root.x-of(root.media-frame);
+                    width: Math.max(1px, root.media-length * root.zoom * 1px);
+                    y: root.row-y(ghost.row) + Theme.clip-gap;
+                    height: root.row-height(ghost.row) - 2 * Theme.clip-gap;
+                    border-radius: Theme.radius-clip;
+                    border-width: Theme.focus-width;
+                    border-color: Theme.primary-bright;
+                    background: ghost.row < root.video-rows ? Theme.primary-dim : Theme.bg-3;
+                }
+            }
+
+            // The playhead: a 2px line with a small triangle head on the ruler.
+            Rectangle {
+                x: root.x-of(root.playhead) - self.width / 2;
+                width: Theme.playhead-head;
+
+                Path {
+                    y: 0;
+                    width: parent.width;
+                    height: 6px;
+                    commands: "M 0 0 L 10 0 L 5 6 Z";
+                    fill: Theme.alert;
+                }
+
+                Rectangle {
+                    x: (parent.width - self.width) / 2;
+                    width: Theme.playhead-width;
+                    background: Theme.alert;
+                }
+            }
+        }
+    }
+}

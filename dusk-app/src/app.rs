@@ -1,6 +1,7 @@
 //! The editor's state on the UI thread, and what each user action does to it. Edits go
-//! through commands and the undo stack; decoding, playback and export happen in the engine,
-//! whose results come back here on the UI thread.
+//! through commands and the undo stack; decoding, playback and export happen in the engine
+//! and file work on a worker, whose results come back here on the UI thread. Project files
+//! and autosave are in `document`, timeline edits in `editing`.
 
 use std::cell::RefCell;
 use std::path::PathBuf;
@@ -9,16 +10,18 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Instant;
 
 use dusk_core::time::STANDARD_RATES;
-use dusk_core::{ClipId, Command, Edge, Frame, MediaInfo, Project, TrimClips, import};
-use dusk_engine::{Engine, EngineError, EngineEvent, ExportEvent, ExportJob, media_info};
+use dusk_core::{ClipId, Command, Frame, MediaId, Project};
+use dusk_engine::{Engine, EngineEvent, ExportEvent, ExportJob};
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 
-use crate::files::export_path;
+use crate::document::{Document, Question};
+use crate::files::{Worker, export_path};
 use crate::history::History;
+use crate::recovery::Session;
 use crate::shortcuts::Action;
 use crate::stats::Stats;
-use crate::timeline::{self, ClipRow};
-use crate::{ClipView, MainWindow, TickView};
+use crate::timeline::{self, View};
+use crate::{ClipProps, ClipView, MainWindow, MediaView, TickView, TrackView};
 
 /// The fastest forward playback the L key reaches (docs/ARCHITECTURE.md, "Playback").
 const FASTEST: f64 = 8.0;
@@ -33,7 +36,7 @@ pub fn install(app: App) {
     APP.with(|cell| *cell.borrow_mut() = Some(app));
 }
 
-/// Drops the editor, and with it the engine and its threads.
+/// Drops the editor, and with it the engine, its threads and the file worker.
 pub fn uninstall() {
     let app = APP.with(|cell| cell.borrow_mut().take());
     drop(app);
@@ -73,125 +76,125 @@ pub fn engine_events() -> impl Fn(EngineEvent) + Send + Sync + 'static {
     }
 }
 
-/// The editor.
-pub struct App {
-    window: slint::Weak<MainWindow>,
-    engine: Engine,
-    project: Option<Arc<Project>>,
-    /// The file the project was made from; exports are named after it.
-    source: Option<PathBuf>,
-    history: History,
-    playhead: Frame,
-    /// The export that is running, if one is.
-    export: Option<ExportJob>,
-    /// The timeline's width in pixels, for the zoom.
-    timeline_width: f32,
+/// The models the window's lists are drawn from.
+struct Models {
+    tracks: Rc<VecModel<TrackView>>,
     clips: Rc<VecModel<ClipView>>,
     ticks: Rc<VecModel<TickView>>,
+    media: Rc<VecModel<MediaView>>,
+}
+
+/// The editor.
+pub struct App {
+    pub(crate) window: slint::Weak<MainWindow>,
+    pub(crate) engine: Engine,
+    pub(crate) project: Arc<Project>,
+    pub(crate) history: History,
+    pub(crate) document: Document,
+    /// This Dusk's autosave session; `None` while it starts, or if it could not.
+    pub(crate) session: Option<Session>,
+    pub(crate) files: Worker,
+    pub(crate) playhead: Frame,
+    pub(crate) selected_clip: Option<ClipId>,
+    pub(crate) selected_media: Option<MediaId>,
+    /// The export that is running, if one is.
+    export: Option<ExportJob>,
+    pub(crate) view: View,
+    /// The question on screen, if one is.
+    pub(crate) question: Option<Question>,
+    /// A file dialog is open; others wait until it closes.
+    pub(crate) dialog_open: bool,
+    pub(crate) sequence_settings_open: bool,
+    models: Models,
     /// Preview statistics, when `DUSK_STATS` is set.
     stats: Option<Stats>,
 }
 
 impl App {
-    /// The editor for `window`, playing through `engine`.
-    pub fn new(window: &MainWindow, engine: Engine) -> App {
-        let clips = Rc::new(VecModel::default());
-        let ticks = Rc::new(VecModel::default());
-        window.set_clips(ModelRc::from(Rc::clone(&clips)));
-        window.set_ticks(ModelRc::from(Rc::clone(&ticks)));
-        App {
+    /// The editor for `window`, playing through `engine`, with an empty project and the file
+    /// worker `files`.
+    pub fn new(window: &MainWindow, engine: Engine, files: Worker) -> App {
+        let models = Models {
+            tracks: Rc::new(VecModel::default()),
+            clips: Rc::new(VecModel::default()),
+            ticks: Rc::new(VecModel::default()),
+            media: Rc::new(VecModel::default()),
+        };
+        window.set_tracks(ModelRc::from(Rc::clone(&models.tracks)));
+        window.set_clips(ModelRc::from(Rc::clone(&models.clips)));
+        window.set_ticks(ModelRc::from(Rc::clone(&models.ticks)));
+        window.set_media(ModelRc::from(Rc::clone(&models.media)));
+        let history = History::default();
+        let mut app = App {
             window: window.as_weak(),
             engine,
-            project: None,
-            source: None,
-            history: History::default(),
+            project: Arc::new(empty_project()),
+            document: Document::new(None, history.state()),
+            history,
+            session: None,
+            files,
             playhead: Frame(0),
+            selected_clip: None,
+            selected_media: None,
             export: None,
-            timeline_width: window.get_timeline_width(),
-            clips,
-            ticks,
+            view: View::new(window.get_timeline_width()),
+            question: None,
+            dialog_open: false,
+            sequence_settings_open: false,
+            models,
             stats: Stats::start(window),
-        }
+        };
+        app.set_project(Project::clone(&app.project));
+        app
     }
 
-    /// Imports the file at `path` into a new project, probing it off the UI thread.
-    pub fn open(&mut self, path: PathBuf) {
-        self.say(&format!("Opening {}…", path.display()));
-        let spawned = std::thread::Builder::new()
-            .name("dusk import".to_owned())
-            .spawn(move || {
-                let info = media_info(&path);
-                let _ = slint::invoke_from_event_loop(move || {
-                    with_app(|app| app.opened(path, info));
-                });
-            });
-        if let Err(error) = spawned {
-            self.fail(&EngineError::Thread(error).to_string());
-        }
-    }
-
-    /// Starts the project from the probed file: the sequence takes its rate and size
-    /// (docs/ARCHITECTURE.md, "Sequence settings"), and the file lands at the start.
-    fn opened(&mut self, path: PathBuf, info: Result<MediaInfo, EngineError>) {
-        let info = match info {
-            Ok(info) => info,
-            Err(error) => return self.fail(&error.to_string()),
-        };
-        // Audio alone makes a 1920x1080 sequence at 30 fps.
-        let (rate, size) = match info.frame_rate {
-            Some(rate) if info.has_video => (rate, (info.width, info.height)),
-            _ => (STANDARD_RATES[4], (1920, 1080)),
-        };
-        let mut project = Project::new(rate, size);
-        let name = file_name(&path);
-        self.source = Some(path.clone());
-        let command = import(&project, path, info, Frame(0));
-        self.history = History::default();
-        if let Err(rejection) = self.history.apply(command, &mut project) {
-            return self.fail(&sentence(&rejection.to_string()));
-        }
-        if let Some(window) = self.window.upgrade() {
-            window.set_preview_message(SharedString::new());
-            window.set_has_project(true);
-        }
-        self.playhead = Frame(0);
-        self.set_project(project);
-        self.say(&format!("Opened {name}."));
+    pub(crate) fn window(&self) -> Option<MainWindow> {
+        self.window.upgrade()
     }
 
     /// Makes `project` the current one and shows it.
-    fn set_project(&mut self, project: Project) {
+    pub(crate) fn set_project(&mut self, project: Project) {
         let project = Arc::new(project);
         self.engine.set_project(Arc::clone(&project));
-        self.project = Some(project);
+        self.project = project;
+        if self
+            .selected_clip
+            .is_some_and(|clip| self.project.find_clip(clip).is_none())
+        {
+            self.selected_clip = None;
+        }
+        if self
+            .selected_media
+            .is_some_and(|media| self.project.media_ref(media).is_none())
+        {
+            self.selected_media = None;
+        }
         self.playhead = self.clamp(self.playhead);
         self.engine.show(self.playhead);
-        self.refresh_timeline();
-        self.refresh_transport();
+        self.refresh_all();
     }
 
-    /// Applies `command` as one undoable edit, or says why it was refused.
-    fn edit(&mut self, command: Command) {
-        let Some(project) = &self.project else {
-            return;
-        };
-        let mut next = Project::clone(project);
+    /// Applies `command` as one undoable edit and says what it did beyond what was asked, or
+    /// why it was refused. True when it was applied.
+    pub(crate) fn edit(&mut self, command: Command) -> bool {
+        let mut next = Project::clone(&self.project);
         match self.history.apply(command, &mut next) {
             Ok(applied) => {
                 let notices: Vec<String> =
                     applied.notices().iter().map(|n| n.to_string()).collect();
                 self.set_project(next);
                 self.say(&notices.join(" "));
+                true
             }
-            Err(rejection) => self.fail(&sentence(&rejection.to_string())),
+            Err(rejection) => {
+                self.fail(&sentence(&rejection.to_string()));
+                false
+            }
         }
     }
 
     fn undo(&mut self) {
-        let Some(project) = &self.project else {
-            return;
-        };
-        let mut previous = Project::clone(project);
+        let mut previous = Project::clone(&self.project);
         if self.history.undo(&mut previous) {
             self.set_project(previous);
             self.say("");
@@ -201,10 +204,7 @@ impl App {
     }
 
     fn redo(&mut self) {
-        let Some(project) = &self.project else {
-            return;
-        };
-        let mut next = Project::clone(project);
+        let mut next = Project::clone(&self.project);
         match self.history.redo(&mut next) {
             Ok(true) => {
                 self.set_project(next);
@@ -215,19 +215,30 @@ impl App {
         }
     }
 
-    /// A trim handle of `clip` was dragged to `frame`.
-    pub fn trim(&mut self, clip: i32, start: bool, frame: i32) {
-        let edge = if start { Edge::Start } else { Edge::End };
-        let clip = ClipId(u64::try_from(clip).unwrap_or(0));
-        self.edit(Command::TrimClips(TrimClips::new(
-            clip,
-            edge,
-            Frame(frame.into()),
-        )));
+    /// A key was pressed; true when it was a shortcut, or a dialog took it.
+    pub fn key(&mut self, text: &str, ctrl: bool, shift: bool, alt: bool) -> bool {
+        if self.question.is_some() {
+            self.answer_with_key(text);
+            return true;
+        }
+        if self.sequence_settings_open {
+            if text == SharedString::from(slint::platform::Key::Escape).as_str() {
+                self.close_sequence_settings();
+            }
+            return true;
+        }
+        let Some(action) = crate::shortcuts::action_for(text, ctrl, shift, alt) else {
+            return false;
+        };
+        self.act(action);
+        true
     }
 
-    /// Does what a shortcut stands for.
+    /// Does what a shortcut, a menu item or a button stands for.
     pub fn act(&mut self, action: Action) {
+        if self.question.is_some() {
+            return;
+        }
         match action {
             Action::PlayPause => self.play_pause(),
             Action::PlayForward => self.play_faster(),
@@ -239,24 +250,59 @@ impl App {
             Action::GoToEnd => self.seek(self.last_frame()),
             Action::Undo => self.undo(),
             Action::Redo => self.redo(),
+            Action::Split => self.split(),
+            Action::Delete => self.delete(false),
+            Action::RippleDelete => self.delete(true),
+            Action::DeleteOne => self.delete_one(),
+            Action::Unlink => self.unlink(),
+            Action::ToggleEnabled => self.toggle_enabled(),
+            Action::Place => self.place_selected_at_playhead(),
+            Action::ToggleMute(index) => self.toggle_track(index, false),
+            Action::ToggleLock(index) => self.toggle_track(index, true),
+            Action::ZoomIn => self.zoom_by(1.5, self.playhead),
+            Action::ZoomOut => self.zoom_by(1.0 / 1.5, self.playhead),
+            Action::ZoomFit => {
+                self.view.fit();
+                self.refresh_timeline();
+            }
+            Action::NewProject => self.new_project(),
+            Action::OpenProject => self.open_project(),
+            Action::Save => self.save(None),
+            Action::SaveAs => self.save_as(None),
+            Action::Import => self.import_dialog(),
+            Action::SequenceSettings => self.open_sequence_settings(),
             Action::Export => self.export(),
             Action::CancelExport => self.cancel_export(),
+            Action::Quit => self.quit(),
+            Action::ShortcutList => {
+                if let Some(window) = self.window() {
+                    window.invoke_show_shortcut_list();
+                }
+            }
         }
     }
 
-    /// Exports the timeline to an MP4 beside the source file.
+    /// Exports the timeline to an MP4 beside the project file, or beside the first media
+    /// file while the project is unsaved (the export dialog arrives in M4).
     pub fn export(&mut self) {
         if self.export.is_some() {
             return self.say("An export is already running.");
         }
-        let (Some(project), Some(source)) = (&self.project, &self.source) else {
-            return self.fail("Open a clip before exporting.");
+        if self.project.sequence().end() == Frame(0) {
+            return self.fail("Place some media on the timeline before exporting.");
+        }
+        let base = match &self.document.path {
+            Some(path) => path.clone(),
+            None => match self.project.media().first() {
+                Some(media) => media.path.clone(),
+                None => return self.fail("Import some media before exporting."),
+            },
         };
-        let path = export_path(source);
-        match self.engine.export(Arc::clone(project), path.clone()) {
+        let path = export_path(&base);
+        match self.engine.export(Arc::clone(&self.project), path.clone()) {
             Ok(job) => {
                 self.export = Some(job);
-                if let Some(window) = self.window.upgrade() {
+                if let Some(window) = self.window() {
                     window.set_exporting(true);
                     window.set_export_progress(0.0);
                 }
@@ -275,7 +321,7 @@ impl App {
     }
 
     fn export_event(&mut self, event: ExportEvent) {
-        let Some(window) = self.window.upgrade() else {
+        let Some(window) = self.window() else {
             return;
         };
         if let ExportEvent::Progress { done, total } = event {
@@ -315,7 +361,7 @@ impl App {
 
     /// Plays at `factor` from where playback is, or from the playhead.
     fn play(&mut self, factor: f64) {
-        if self.project.is_none() {
+        if self.project.sequence().end() == Frame(0) {
             return;
         }
         let from = self.engine.pause().unwrap_or(self.playhead);
@@ -330,7 +376,7 @@ impl App {
         self.refresh_transport();
     }
 
-    fn pause(&mut self) {
+    pub(crate) fn pause(&mut self) {
         if let Some(at) = self.engine.pause() {
             self.playhead = at;
         }
@@ -343,7 +389,7 @@ impl App {
     }
 
     /// Moves the playhead to `frame` and shows exactly that frame.
-    fn seek(&mut self, frame: Frame) {
+    pub(crate) fn seek(&mut self, frame: Frame) {
         self.playhead = self.clamp(frame);
         self.engine.show(self.playhead);
         self.refresh_transport();
@@ -368,14 +414,30 @@ impl App {
     }
 
     pub fn timeline_resized(&mut self, width: f32) {
-        self.timeline_width = width;
+        self.view.width = width;
+        self.refresh_timeline();
+    }
+
+    /// The mouse wheel scrolled the timeline by `frames`.
+    pub fn scroll_by(&mut self, frames: i32) {
+        let sequence = self.project.sequence();
+        let (end, rate) = (sequence.end(), sequence.frame_rate());
+        self.view.scroll_by(frames.into(), end, rate);
+        self.refresh_timeline();
+    }
+
+    /// Zooms the timeline by `factor` around `frame`.
+    pub fn zoom_by(&mut self, factor: f32, frame: Frame) {
+        let sequence = self.project.sequence();
+        let (end, rate) = (sequence.end(), sequence.frame_rate());
+        self.view.zoom_by(factor, frame, end, rate);
         self.refresh_timeline();
     }
 
     /// The engine drew `frame`; while playing, the playhead follows it.
     fn show_frame(&mut self, frame: Frame, texture: Option<dusk_engine::wgpu::Texture>) {
         let started = Instant::now();
-        let Some(window) = self.window.upgrade() else {
+        let Some(window) = self.window() else {
             return;
         };
         let image = match texture.map(slint::Image::try_from) {
@@ -405,48 +467,154 @@ impl App {
         }
     }
 
-    /// Redraws the clips and the ruler.
-    fn refresh_timeline(&self) {
-        let Some(window) = self.window.upgrade() else {
+    /// Redraws everything that shows the project.
+    pub(crate) fn refresh_all(&mut self) {
+        self.refresh_timeline();
+        self.refresh_bin();
+        self.refresh_properties();
+        self.refresh_transport();
+        self.refresh_title();
+    }
+
+    /// Redraws the tracks, the clips and the ruler.
+    pub(crate) fn refresh_timeline(&mut self) {
+        let Some(window) = self.window() else {
             return;
         };
-        let Some(project) = &self.project else {
-            return;
-        };
-        let rate = project.sequence().frame_rate();
-        let end = project.sequence().end();
-        let zoom = timeline::zoom(self.timeline_width, end, rate);
-        let clips: Vec<ClipView> = timeline::clip_rows(project)
+        let project = Arc::clone(&self.project);
+        let sequence = project.sequence();
+        let rate = sequence.frame_rate();
+        let end = sequence.end();
+        let tracks: Vec<TrackView> = timeline::track_rows(&project)
             .into_iter()
-            .map(clip_view)
+            .map(|row| TrackView {
+                id: id_int(row.id.0),
+                name: row.name.into(),
+                video: row.video,
+                locked: row.locked,
+                muted: row.muted,
+            })
             .collect();
-        self.clips.set_vec(clips);
-        let ticks: Vec<TickView> = timeline::ticks(self.timeline_width, zoom, rate)
+        let video_rows = tracks.iter().filter(|track| track.video).count();
+        // A model is replaced only when it changed: replacing it rebuilds its items, and an
+        // item under a press loses the drag it was following.
+        replace_if_changed(&self.models.tracks, tracks);
+        let clips: Vec<ClipView> = timeline::clip_rows(&project)
+            .into_iter()
+            .map(|row| ClipView {
+                id: id_int(row.id.0),
+                row: i32::try_from(row.row).unwrap_or(0),
+                start: frame_int(row.start),
+                length: frame_int(row.length),
+                name: row.name.into(),
+                link: row.link.map_or(0, id_int),
+                video: row.video,
+                enabled: row.enabled,
+            })
+            .collect();
+        replace_if_changed(&self.models.clips, clips);
+        let zoom = self.view.pixels_per_frame(end, rate);
+        let first = self.view.first_frame();
+        let ticks: Vec<TickView> = timeline::ticks(self.view.width, zoom, first, rate)
             .into_iter()
             .map(|tick| TickView {
                 frame: frame_int(tick.frame),
                 label: tick.label.into(),
             })
             .collect();
-        if self.ticks.iter().ne(ticks.iter().cloned()) {
-            self.ticks.set_vec(ticks);
-        }
+        replace_if_changed(&self.models.ticks, ticks);
+        window.set_video_rows(i32::try_from(video_rows).unwrap_or(0));
         window.set_zoom(zoom);
+        window.set_scroll(frame_int(first));
+        self.refresh_selection();
         window.set_end_timecode(timeline::timecode(end, rate).into());
+        window.set_has_clips(end > Frame(0));
+        let message = if project.media().is_empty() {
+            "Import video, audio or photos with Import, or drop them on the window. Then drag \
+             them onto the timeline."
+        } else if end == Frame(0) {
+            "Drag media from the bin onto the timeline, or double-click it to place it at the \
+             playhead."
+        } else {
+            ""
+        };
+        window.set_preview_message(message.into());
+    }
+
+    /// Marks the selected clip and its link group on the timeline.
+    pub(crate) fn refresh_selection(&self) {
+        let Some(window) = self.window() else {
+            return;
+        };
+        window.set_selected_clip(self.selected_clip.map_or(-1, |clip| id_int(clip.0)));
+        let link = self
+            .selected_clip
+            .and_then(|clip| self.project.find_clip(clip))
+            .and_then(|(_, clip)| clip.link);
+        window.set_selected_link(link.map_or(0, |link| id_int(link.0)));
+    }
+
+    /// Relists the media bin.
+    pub(crate) fn refresh_bin(&self) {
+        let Some(window) = self.window() else {
+            return;
+        };
+        let media: Vec<MediaView> = timeline::media_rows(&self.project)
+            .into_iter()
+            .map(|row| MediaView {
+                id: id_int(row.id.0),
+                name: row.name.into(),
+                detail: row.detail.into(),
+                length: frame_int(row.length),
+                video: row.video,
+                audio: row.audio,
+            })
+            .collect();
+        replace_if_changed(&self.models.media, media);
+        window.set_selected_media(self.selected_media.map_or(-1, |media| id_int(media.0)));
+    }
+
+    /// Shows the selected clip's properties.
+    pub(crate) fn refresh_properties(&self) {
+        let Some(window) = self.window() else {
+            return;
+        };
+        let details = timeline::clip_details(&self.project, self.selected_clip);
+        window.set_clip_props(ClipProps {
+            shown: details.shown,
+            name: details.name.into(),
+            place: details.place.into(),
+            video: details.video,
+            still: details.still,
+            enabled: details.enabled,
+            linked: details.linked,
+            locked: details.locked,
+            start: details.start.into(),
+            length: details.length.into(),
+            frames: i32::try_from(details.frames).unwrap_or(i32::MAX),
+            fill: details.fill,
+            volume: details.volume,
+            fade_in: i32::try_from(details.fade_in).unwrap_or(i32::MAX),
+            fade_out: i32::try_from(details.fade_out).unwrap_or(i32::MAX),
+        });
     }
 
     /// Updates the playhead and the transport readouts.
-    fn refresh_transport(&self) {
-        let Some(window) = self.window.upgrade() else {
+    pub(crate) fn refresh_transport(&mut self) {
+        let Some(window) = self.window() else {
             return;
         };
-        let Some(project) = &self.project else {
-            return;
-        };
-        let rate = project.sequence().frame_rate();
+        let rate = self.project.sequence().frame_rate();
+        let playing = self.engine.playing();
+        if playing.is_some() {
+            let before = self.view;
+            self.view.follow(self.playhead);
+            if self.view != before {
+                self.refresh_timeline();
+            }
+        }
         window.set_playhead(frame_int(self.playhead));
         window.set_position_timecode(timeline::timecode(self.playhead, rate).into());
-        let playing = self.engine.playing();
         window.set_playing(playing.is_some());
         let speed = match playing {
             Some(factor) if factor != 1.0 => format!("{factor}x"),
@@ -455,11 +623,18 @@ impl App {
         window.set_speed(speed.into());
     }
 
+    /// The window title: the project's name, marked while it has unsaved changes.
+    pub(crate) fn refresh_title(&self) {
+        if let Some(window) = self.window() {
+            let changed = if self.is_dirty() { "*" } else { "" };
+            let title = format!("{}{changed} — Dusk", self.document.name());
+            window.set_window_title(title.into());
+        }
+    }
+
     /// The last frame of the sequence; 0 when it is empty.
-    fn last_frame(&self) -> Frame {
-        self.project.as_ref().map_or(Frame(0), |project| {
-            (project.sequence().end() - Frame(1)).max(Frame(0))
-        })
+    pub(crate) fn last_frame(&self) -> Frame {
+        (self.project.sequence().end() - Frame(1)).max(Frame(0))
     }
 
     fn clamp(&self, frame: Frame) -> Frame {
@@ -467,42 +642,56 @@ impl App {
     }
 
     /// Shows `message` in the status line.
-    fn say(&self, message: &str) {
-        if let Some(window) = self.window.upgrade() {
+    pub(crate) fn say(&self, message: &str) {
+        if let Some(window) = self.window() {
             window.set_status(message.into());
             window.set_status_is_error(false);
         }
     }
 
     /// Shows `message` in the status line as an error.
-    fn fail(&self, message: &str) {
-        if let Some(window) = self.window.upgrade() {
+    pub(crate) fn fail(&self, message: &str) {
+        if let Some(window) = self.window() {
             window.set_status(message.into());
             window.set_status_is_error(true);
         }
     }
-}
 
-fn clip_view(row: ClipRow) -> ClipView {
-    ClipView {
-        id: i32::try_from(row.id).unwrap_or(i32::MAX),
-        track: i32::try_from(row.track).unwrap_or(0),
-        start: frame_int(row.start),
-        length: frame_int(row.length),
-        name: row.name.into(),
-        link: row
-            .link
-            .map_or(0, |link| i32::try_from(link).unwrap_or(i32::MAX)),
-        video: row.video,
+    /// The bin's item for media `id`, for the item being dragged; empty if there is none.
+    pub fn media_view(&self, id: i32) -> MediaView {
+        self.models
+            .media
+            .iter()
+            .find(|media| media.id == id)
+            .unwrap_or_default()
     }
 }
 
+/// Gives `model` the items `items`, unless it has them already.
+fn replace_if_changed<T: Clone + PartialEq + 'static>(model: &VecModel<T>, items: Vec<T>) {
+    if model.iter().ne(items.iter().cloned()) {
+        model.set_vec(items);
+    }
+}
+
+/// A new project's sequence: 1920x1080 at 30 fps until the first video clip says otherwise
+/// (docs/ARCHITECTURE.md, "Sequence settings").
+pub(crate) fn empty_project() -> Project {
+    Project::new(STANDARD_RATES[4], (1920, 1080))
+}
+
+/// An id for Slint, whose integers are 32-bit.
+pub(crate) fn id_int(id: u64) -> i32 {
+    i32::try_from(id).unwrap_or(i32::MAX)
+}
+
 /// A frame number for Slint, whose integers are 32-bit: more than two years of frames.
-fn frame_int(frame: Frame) -> i32 {
+pub(crate) fn frame_int(frame: Frame) -> i32 {
     i32::try_from(frame.0).unwrap_or(if frame.0 < 0 { i32::MIN } else { i32::MAX })
 }
 
-fn file_name(path: &std::path::Path) -> String {
+/// The file name of `path`, for messages.
+pub(crate) fn file_name(path: &std::path::Path) -> String {
     path.file_name().map_or_else(
         || path.display().to_string(),
         |name| name.to_string_lossy().into_owned(),
@@ -510,7 +699,7 @@ fn file_name(path: &std::path::Path) -> String {
 }
 
 /// `text` with a capital first letter and a full stop, for the status line.
-fn sentence(text: &str) -> String {
+pub(crate) fn sentence(text: &str) -> String {
     let mut chars = text.chars();
     let mut sentence: String = match chars.next() {
         Some(first) => first.to_uppercase().chain(chars).collect(),
@@ -520,4 +709,12 @@ fn sentence(text: &str) -> String {
         sentence.push('.');
     }
     sentence
+}
+
+/// Paths made absolute against the current folder, as the project file needs them.
+pub(crate) fn absolute(paths: Vec<PathBuf>) -> Vec<PathBuf> {
+    paths
+        .into_iter()
+        .map(|path| std::path::absolute(&path).unwrap_or(path))
+        .collect()
 }

@@ -1,0 +1,307 @@
+// Small controls drawn the Dusk way (docs/THEME.md): flat, a background step and a 1px border
+// for elevation, never a shadow or a gradient.
+
+import { Theme } from "theme.slint";
+
+// A button. One primary button per view; destructive ones are outlined in alert.
+export component ToolButton inherits Rectangle {
+    in property <string> text;
+    in property <bool> enabled: true;
+    in property <bool> primary;
+    in property <bool> destructive;
+    callback clicked;
+
+    height: Theme.control-height;
+    min-width: label.preferred-width + 2 * Theme.space-3;
+    border-radius: Theme.radius-control;
+    border-width: Theme.border-width;
+    border-color: !root.enabled ? Theme.border
+        : root.primary ? Theme.primary
+        : root.destructive ? Theme.alert : Theme.border;
+    background: !root.enabled ? Theme.bg-1
+        : root.primary ? (touch.has-hover ? Theme.primary-hover : Theme.primary)
+        : (touch.has-hover ? Theme.bg-3 : Theme.bg-2);
+
+    label := Text {
+        text: root.text;
+        color: !root.enabled ? Theme.text-3
+            : root.primary ? Theme.on-brand
+            : root.destructive ? Theme.alert : Theme.text-1;
+        font-size: Theme.font-title;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+
+    touch := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: pointer;
+        clicked => {
+            root.clicked();
+        }
+    }
+}
+
+// A timecode readout in the numeric font.
+export component Timecode inherits Text {
+    font-family: Theme.font-numeric;
+    font-size: Theme.font-title;
+    vertical-alignment: center;
+}
+
+// A square toggle with a 16px icon: primary-bright when on, text-2 when off.
+export component IconToggle inherits Rectangle {
+    in property <image> icon;
+    in property <bool> checked;
+    callback toggled;
+
+    width: Theme.icon-size + 2 * Theme.space-1;
+    height: self.width;
+    border-radius: Theme.radius-control;
+    background: touch.has-hover ? Theme.bg-3 : transparent;
+
+    Image {
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        width: Theme.icon-size;
+        height: Theme.icon-size;
+        source: root.icon;
+        colorize: root.checked ? Theme.primary-bright : Theme.text-2;
+    }
+
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => {
+            root.toggled();
+        }
+    }
+}
+
+// An on and off switch.
+export component Switch inherits Rectangle {
+    in property <bool> checked;
+    in property <bool> enabled: true;
+    callback toggled;
+
+    width: 32px;
+    height: 18px;
+    border-radius: self.height / 2;
+    border-width: Theme.border-width;
+    border-color: Theme.border;
+    background: !root.enabled ? Theme.bg-1 : root.checked ? Theme.primary : Theme.bg-3;
+
+    Rectangle {
+        width: 12px;
+        height: 12px;
+        y: (parent.height - self.height) / 2;
+        x: root.checked ? parent.width - self.width - 3px : 3px;
+        border-radius: self.height / 2;
+        background: root.enabled ? Theme.text-1 : Theme.text-3;
+    }
+
+    TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: pointer;
+        clicked => {
+            root.toggled();
+        }
+    }
+}
+
+// A choice of a few options side by side; the chosen one is filled.
+export component Segmented inherits Rectangle {
+    in property <[string]> options;
+    in property <int> selected;
+    in property <bool> enabled: true;
+    callback chosen(index: int);
+
+    height: Theme.control-height;
+    border-radius: Theme.radius-control;
+    border-width: Theme.border-width;
+    border-color: Theme.border;
+    background: Theme.bg-2;
+
+    HorizontalLayout {
+        padding: 2px;
+        spacing: 2px;
+
+        for option[index] in root.options: Rectangle {
+            border-radius: Theme.radius-control - 1px;
+            background: index == root.selected ? Theme.primary
+                : touch.has-hover && root.enabled ? Theme.bg-3 : transparent;
+
+            Text {
+                text: option;
+                color: !root.enabled ? Theme.text-3
+                    : index == root.selected ? Theme.on-brand : Theme.text-2;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+
+            touch := TouchArea {
+                enabled: root.enabled;
+                mouse-cursor: pointer;
+                clicked => {
+                    root.chosen(index);
+                }
+            }
+        }
+    }
+}
+
+// A horizontal slider. `shown` follows a drag; `changed` reports where it ended, and a
+// double-click asks for the default with `reset`.
+export component Slider inherits Rectangle {
+    in property <float> minimum: 0;
+    in property <float> maximum: 1;
+    in property <float> value;
+    in property <bool> enabled: true;
+    out property <float> shown: touch.pressed ? root.dragged : root.value;
+    callback changed(value: float);
+    callback reset();
+
+    property <float> dragged;
+    property <length> thumb: 12px;
+    property <float> fraction: (root.shown - root.minimum) / Math.max(0.001, root.maximum - root.minimum);
+
+    height: 20px;
+
+    pure function value-at(x: length) -> float {
+        return Math.clamp(
+            root.minimum + (x - root.thumb / 2) / Math.max(1px, root.width - root.thumb) * (root.maximum - root.minimum),
+            root.minimum,
+            root.maximum);
+    }
+
+    Rectangle {
+        x: root.thumb / 2;
+        width: parent.width - root.thumb;
+        height: 4px;
+        y: (parent.height - self.height) / 2;
+        border-radius: self.height / 2;
+        background: Theme.bg-3;
+    }
+
+    Rectangle {
+        x: root.thumb / 2;
+        width: (parent.width - root.thumb) * root.fraction;
+        height: 4px;
+        y: (parent.height - self.height) / 2;
+        border-radius: self.height / 2;
+        background: root.enabled ? Theme.primary : Theme.border;
+    }
+
+    Rectangle {
+        x: (parent.width - root.thumb) * root.fraction;
+        width: root.thumb;
+        height: root.thumb;
+        y: (parent.height - self.height) / 2;
+        border-radius: self.height / 2;
+        background: root.enabled ? Theme.text-1 : Theme.text-3;
+    }
+
+    touch := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: pointer;
+        pointer-event(event) => {
+            if event.button == PointerEventButton.left && event.kind == PointerEventKind.down {
+                root.dragged = root.value-at(self.mouse-x);
+            }
+            if event.button == PointerEventButton.left && event.kind == PointerEventKind.up {
+                root.changed(root.dragged);
+            }
+        }
+        moved => {
+            root.dragged = root.value-at(self.mouse-x);
+        }
+        double-clicked => {
+            root.reset();
+        }
+    }
+}
+
+// A whole number typed in. Enter or leaving the field applies it; Escape puts it back.
+export component NumberField inherits Rectangle {
+    in property <int> value;
+    in property <int> minimum: 0;
+    in property <int> maximum: 1000000;
+    in property <string> suffix;
+    in property <bool> enabled: true;
+    callback edited(value: int);
+    // Typing is over, so the window's shortcuts can have the keys back.
+    callback finished();
+
+    height: Theme.control-height;
+    border-radius: Theme.radius-control;
+    border-width: input.has-focus ? Theme.focus-width : Theme.border-width;
+    border-color: input.has-focus ? Theme.primary-bright : Theme.border;
+    background: root.enabled ? Theme.bg-2 : Theme.bg-1;
+
+    function apply() {
+        if input.text.is-float() {
+            let typed = Math.clamp(Math.round(input.text.to-float()), root.minimum, root.maximum);
+            if typed != root.value {
+                root.edited(typed);
+            }
+        }
+        input.text = root.value;
+    }
+
+    changed value => {
+        if !input.has-focus {
+            input.text = root.value;
+        }
+    }
+
+    HorizontalLayout {
+        padding-left: Theme.space-2;
+        padding-right: Theme.space-2;
+        spacing: Theme.space-1;
+
+        input := TextInput {
+            text: root.value;
+            enabled: root.enabled;
+            color: root.enabled ? Theme.text-1 : Theme.text-3;
+            selection-background-color: Theme.primary;
+            font-family: Theme.font-numeric;
+            vertical-alignment: center;
+            input-type: number;
+            accepted => {
+                root.apply();
+                root.finished();
+            }
+            changed has-focus => {
+                if !self.has-focus {
+                    root.apply();
+                }
+            }
+            key-pressed(event) => {
+                if event.text == Key.Escape {
+                    self.text = root.value;
+                    root.finished();
+                    return accept;
+                }
+                return reject;
+            }
+        }
+
+        Text {
+            text: root.suffix;
+            color: Theme.text-3;
+            vertical-alignment: center;
+        }
+    }
+}
+
+// A panel's title row.
+export component PanelTitle inherits Text {
+    color: Theme.text-1;
+    font-size: Theme.font-title;
+    font-weight: Theme.weight-semibold;
+    vertical-alignment: center;
+}
+
+// A small label above a control.
+export component FieldLabel inherits Text {
+    color: Theme.text-2;
+    font-size: Theme.font-tiny;
+}

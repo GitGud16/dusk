@@ -17,5 +17,9 @@ dusk-engine = { workspace = true, features = ["gpu"] }
 slint.workspace = true
 anyhow.workspace = true
 
+# The system file dialogs (src/platform). Slint, cpal and wgpu already build this crate.
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_System_Com", "Win32_UI_Shell", "Win32_UI_Shell_Common"] }
+
 [build-dependencies]
 slint-build.workspace = true
