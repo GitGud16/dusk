@@ -78,6 +78,27 @@ fn a_seek_starts_at_the_requested_time() {
     );
 }
 
+/// Voice notes and music as phones and messengers make them: Opus in Ogg (WhatsApp and
+/// Telegram voice notes), AAC in M4A, AMR-NB, and MP3 with cover art; each a second of a
+/// 440 Hz tone.
+const MESSENGER_AUDIO: [&str; 4] = ["voice.opus", "voice.m4a", "voice.amr", "song.mp3"];
+
+#[test]
+fn voice_notes_and_music_decode() {
+    for name in MESSENGER_AUDIO {
+        let mut decoder = AudioDecoder::open(&testdata(name), 48_000, 2).unwrap();
+        let samples = read_all(&mut decoder);
+        let frames = samples.len() / 2;
+        // Codec delay and padding may add a little.
+        assert!(
+            (47_000..=52_000).contains(&frames),
+            "{name}: {frames} frames"
+        );
+        let hz = frequency(&samples[2 * 12_000..2 * 36_000], 48_000.0);
+        assert!((430.0..450.0).contains(&hz), "{name}: {hz} Hz");
+    }
+}
+
 #[test]
 fn a_file_without_audio_is_refused() {
     assert!(matches!(
@@ -102,4 +123,15 @@ fn a_mono_wav_with_no_channel_order_decodes() {
     assert!(samples.iter().any(|sample| sample.abs() > 0.1));
     // Mono plays on both channels.
     assert!(samples.chunks(2).all(|frame| frame[0] == frame[1]));
+}
+
+#[test]
+fn encoder_priming_is_dropped_once() {
+    // MP3 and Opus start with priming samples that FFmpeg drops; what is left is exactly the
+    // second that was encoded, at the start of media time.
+    for (name, rate) in [("song.mp3", 44_100), ("voice.opus", 48_000)] {
+        let mut decoder = AudioDecoder::open(&testdata(name), rate, 2).unwrap();
+        let frames = read_all(&mut decoder).len() / 2;
+        assert_eq!(frames, rate as usize, "{name}");
+    }
 }

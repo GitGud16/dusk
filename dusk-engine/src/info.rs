@@ -328,6 +328,24 @@ mod tests {
     }
 
     #[test]
+    fn voice_notes_and_music_are_audio() {
+        for name in ["voice.opus", "voice.m4a", "voice.amr", "song.mp3"] {
+            let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../testdata")
+                .join(name);
+            let info = media_info(&path).unwrap();
+            assert_eq!(info.kind, MediaKind::Audio, "{name}");
+            // The MP3's cover art is not video.
+            assert!(info.has_audio && !info.has_video, "{name}");
+            let duration = info.duration.0;
+            assert!(
+                (950_000..=1_100_000).contains(&duration),
+                "{name}: {duration} us"
+            );
+        }
+    }
+
+    #[test]
     fn the_sample_file_is_described() {
         let sample = Path::new(env!("CARGO_MANIFEST_DIR")).join("../testdata/sample-h264-aac.mp4");
         let info = media_info(&sample).unwrap();

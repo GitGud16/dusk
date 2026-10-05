@@ -59,3 +59,17 @@ WAV leaves the channel order unspecified, which decoding has to cope with:
 ```powershell
 ffmpeg -hide_banner -y -f lavfi -i "aevalsrc=0.5*sin(2*PI*t*(200+400*t)):s=48000:d=1" -c:a pcm_s16le -ac 1 -map_metadata -1 -fflags +bitexact -flags:a +bitexact testdata/chirp.wav
 ```
+
+## `voice.opus`, `voice.m4a`, `voice.amr` and `song.mp3`
+
+A second of a 440 Hz tone as phones and messengers send audio: Opus in Ogg (WhatsApp and
+Telegram voice notes; Telegram names them `.oga`), mono AAC in M4A, AMR-NB, and stereo MP3
+with a 64x64 PNG as cover art, which must not count as video:
+
+```powershell
+ffmpeg -hide_banner -y -f lavfi -i "sine=frequency=440:sample_rate=16000:duration=1" -c:a libopus -b:a 16k -ac 1 -application voip -map_metadata -1 -fflags +bitexact -flags:a +bitexact testdata/voice.opus
+ffmpeg -hide_banner -y -f lavfi -i "sine=frequency=440:sample_rate=44100:duration=1" -c:a aac -b:a 32k -ac 1 -map_metadata -1 -fflags +bitexact -flags:a +bitexact testdata/voice.m4a
+ffmpeg -hide_banner -y -f lavfi -i "sine=frequency=440:sample_rate=8000:duration=1" -c:a libopencore_amrnb -b:a 12.2k -ac 1 -map_metadata -1 -fflags +bitexact -flags:a +bitexact testdata/voice.amr
+ffmpeg -hide_banner -y -f lavfi -i "color=c=0x5003C0:s=64x64" -frames:v 1 -map_metadata -1 -fflags +bitexact -flags:v +bitexact $env:TEMP\dusk-cover.png
+ffmpeg -hide_banner -y -f lavfi -i "sine=frequency=440:sample_rate=44100:duration=1" -i $env:TEMP\dusk-cover.png -map 0:a -map 1:v -c:a libmp3lame -b:a 64k -ac 2 -c:v copy -disposition:v:0 attached_pic -id3v2_version 3 -map_metadata -1 -fflags +bitexact -flags:a +bitexact testdata/song.mp3
+```

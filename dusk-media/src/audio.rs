@@ -71,7 +71,12 @@ impl AudioDecoder {
             kind: ffmpeg::codec::threading::Type::Frame,
             count: 1,
         });
-        let decoder = context.decoder().audio().map_err(open_error)?;
+        let mut decoder = context.decoder();
+        // FFmpeg drops encoder priming (MP3, AAC, Opus) at the start and moves the first
+        // frame's timestamp past it, which it can do only knowing the packets' time base;
+        // without it that frame looks early, and its start would be dropped a second time.
+        decoder.set_packet_time_base(time_base);
+        let decoder = decoder.audio().map_err(open_error)?;
         let start = ffi::start_time(&input);
         Ok(AudioDecoder {
             path: path.to_path_buf(),

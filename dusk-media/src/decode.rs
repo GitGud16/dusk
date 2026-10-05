@@ -102,10 +102,12 @@ impl VideoDecoder {
         let parameters = stream.parameters();
         let decoder = match acceleration {
             // A hardware decoder that fails to open falls back to software for this file.
-            Acceleration::Hardware => open_decoder(&parameters, true)
-                .or_else(|_| open_decoder(&parameters, false))
+            Acceleration::Hardware => open_decoder(&parameters, time_base, true)
+                .or_else(|_| open_decoder(&parameters, time_base, false))
                 .map_err(open_error)?,
-            Acceleration::Software => open_decoder(&parameters, false).map_err(open_error)?,
+            Acceleration::Software => {
+                open_decoder(&parameters, time_base, false).map_err(open_error)?
+            }
         };
         let start = ffi::start_time(&input);
         Ok(VideoDecoder {
@@ -268,9 +270,11 @@ impl VideoDecoder {
     }
 }
 
-/// Opens a decoder for `parameters`, on the GPU when `hardware` is set and possible.
+/// Opens a decoder for `parameters`, whose packets come in `time_base`, on the GPU when
+/// `hardware` is set and possible.
 fn open_decoder(
     parameters: &ffmpeg::codec::Parameters,
+    time_base: ffmpeg::Rational,
     hardware: bool,
 ) -> Result<ffmpeg::decoder::Video, ffmpeg::Error> {
     let mut context = ffmpeg::codec::Context::from_parameters(parameters.clone())?;
@@ -286,7 +290,10 @@ fn open_decoder(
         kind: ffmpeg::codec::threading::Type::Frame,
         count,
     });
-    context.decoder().video()
+    let mut decoder = context.decoder();
+    // As for audio (see `AudioDecoder::open`), FFmpeg wants the packets' time base.
+    decoder.set_packet_time_base(time_base);
+    decoder.video()
 }
 
 /// Sets `context` up to decode on a D3D11VA device, if the codec and the machine allow it.
