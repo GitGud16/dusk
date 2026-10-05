@@ -91,3 +91,15 @@ fn an_audio_decoder_can_move_to_a_worker_thread() {
     fn assert_send<T: Send>() {}
     assert_send::<AudioDecoder>();
 }
+
+#[test]
+fn a_mono_wav_with_no_channel_order_decodes() {
+    // PCM in WAV leaves the channel order unspecified; the decoder must still convert it.
+    let chirp = Path::new(env!("CARGO_MANIFEST_DIR")).join("../testdata/chirp.wav");
+    let mut decoder = AudioDecoder::open(&chirp, 48_000, 2).unwrap();
+    let mut samples = vec![0.0; 2 * 4_800];
+    assert_eq!(decoder.read(&mut samples).unwrap(), 4_800);
+    assert!(samples.iter().any(|sample| sample.abs() > 0.1));
+    // Mono plays on both channels.
+    assert!(samples.chunks(2).all(|frame| frame[0] == frame[1]));
+}

@@ -49,3 +49,13 @@ The same frame as `photo.png` as a JPEG with an embedded Display P3 ICC profile 
 ```powershell
 ffmpeg -hide_banner -y -f lavfi -i "testsrc2=size=320x240:rate=1" -frames:v 1 -vf "format=yuvj420p,iccgen=color_primaries=smpte432:color_trc=iec61966-2-1:force=1" -c:v mjpeg -q:v 3 -map_metadata -1 -fflags +bitexact -flags:v +bitexact testdata/photo-p3.jpg
 ```
+
+## `chirp.wav`
+
+One second of a sine sweeping up from 200 Hz (48 kHz mono, 16-bit PCM). PCM decodes and seeks
+to the exact sample, so mixing it backwards can be checked against mixing it forwards, and
+WAV leaves the channel order unspecified, which decoding has to cope with:
+
+```powershell
+ffmpeg -hide_banner -y -f lavfi -i "aevalsrc=0.5*sin(2*PI*t*(200+400*t)):s=48000:d=1" -c:a pcm_s16le -ac 1 -map_metadata -1 -fflags +bitexact -flags:a +bitexact testdata/chirp.wav
+```
