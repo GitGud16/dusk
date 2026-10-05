@@ -116,7 +116,10 @@ impl App {
         window.set_preview_image(slint::Image::default());
         self.editor_say("");
         self.refresh_editor();
-        if let Err(error) = window.show() {
+        // Showing a window that is shown already would set up its drawing surface again.
+        if !window.window().is_visible()
+            && let Err(error) = window.show()
+        {
             self.forget_editor();
             return self.fail(&format!("The clip editor could not open: {error}."));
         }
@@ -360,13 +363,11 @@ impl App {
         let Some(editor) = self.editor.as_mut() else {
             return;
         };
-        if !editor.session.changed()
+        let reloaded = !editor.session.changed()
             && editor.session.status(&self.project) == SessionStatus::Edited
-        {
-            let _ = editor.session.reload(&self.project);
-        }
+            && editor.session.reload(&self.project).is_ok();
         // What the status line said was about the clips as they were.
-        let stale = editor.session.status(&self.project) != SessionStatus::Current;
+        let stale = reloaded || editor.session.status(&self.project) != SessionStatus::Current;
         if let Ok(preview) = editor.session.preview_project(&self.project)
             && preview != *editor.preview
         {
