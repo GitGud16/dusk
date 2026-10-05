@@ -30,16 +30,16 @@ Import one file, see it as a linked video clip and audio clip on one video track
 
 ## M2 — A real timeline
 
-- 2 video + 2 audio tracks; move, trim, split at playhead, delete with and without ripple (ripple shifts all unlocked tracks). Track lock and mute.
+- 2 video + 2 audio tracks; move, trim, split at playhead, delete with and without ripple (ripple shifts all unlocked tracks). Track lock and mute. Done.
 - Linked video + audio clips on import, kept in lock-step (shared trim, position, length, speed); unlink; Alt+Delete; per-clip enable/disable; still images with duration, decoded then scaled through swscale into NV12 (full-chroma entry for native-size export); grid HEIC stitching tile by tile via the ffi module; full 8-way orientation (from the first decoded frame for every still format, display matrix for video, stream group for HEIC) and fit/fill; ICC-tagged wide-gamut photos handled (flag only for RGB profiles, retry without on failure, grid profiles via ffi), progressive-JPEG peak, texture-size clamp; VFR snapped to standard rates. Done, HEIC grids included: their orientation and color profile come from the grid, and `scripts/heif-grid.py` builds the test file, since FFmpeg cannot write grids.
-- Sequence settings dialog (frame rate, resolution) with the match-first-clip prompt and the rate-change conversion.
+- Sequence settings dialog (frame rate, resolution) with the match-first-clip prompt and the rate-change conversion. Done.
 - Decoder pool with the visibility rule and size budget; 4K single-decoder rule. Done: the visible clip and the next one within 2 s of playback, made ready by a worker thread; one decoder and no lookahead above the 1080p class; above 9 Mpx one software decoder on one thread, and a source whose pictures would not fit it refused at import.
-- Per-clip volume, mute, fades; detach audio.
-- Undo/redo for everything. Project save/load (JSON). Autosave and crash recovery.
+- Per-clip volume, mute, fades; detach audio. Done.
+- Undo/redo for everything. Project save/load (JSON). Autosave and crash recovery. Done; autosaves live in a session folder of their own per running Dusk (ARCHITECTURE.md, Project file and autosave).
 - Media bin with thumbnails; import by drag and drop from Explorer, by an Import button (the system file dialog), and from the command line as in M1; WhatsApp/Telegram audio formats verified. Done: the three ways to import; the audio formats, checked on Opus in Ogg, AAC in M4A, AMR-NB and MP3 with cover art in `testdata`; and thumbnails, made one at a time on the engine's thumbnail thread. Decided at M2: Slint's `unstable-winit-030` feature joins the pinned set, because Slint 1.18's winit backend does not pass files dropped from Explorer to the app and its window-event hook does (ARCHITECTURE.md, Slint specifics).
 - Variable-speed playback (0.1x to 32x, both directions; slow reverse via GOP buffer, fast via keyframes). Done: L and J double the speed up to 32x, Shift+L and Shift+J slow it down to 0.1x; above 8x forwards or 2x backwards (playback times clip speed) only keyframes are decoded; sound plays backwards from 0.25x to 2x; a group of pictures longer than half the cache is decoded again from its keyframe for each stretch of it that fits.
 
-**Done when**: a three-clip edit with music survives save, quit, reopen, and undo history behaves.
+**Done when**: a three-clip edit with music survives save, quit, reopen, and undo history behaves. Holds: `a_three_clip_edit_with_music_survives_save_and_reopen` in `dusk-app`'s history tests, and the same in the window (edit, save from the menu, quit, reopen: the same timeline, nothing to undo). Memory measured as in M1, figures in REQUIREMENTS.md.
 
 ## M3 — Pop-out clip editor (signature feature)
 
