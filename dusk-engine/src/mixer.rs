@@ -222,7 +222,12 @@ mod tests {
     #[test]
     fn a_trimmed_clip_starts_at_its_new_in_point() {
         let mut project = project_with_sample_at(Frame(0));
-        let clip = project.sequence().tracks()[1].clips()[0].id;
+        let audio = project.sequence().tracks().iter();
+        let clip = audio
+            .filter(|track| track.kind() == dusk_core::TrackKind::Audio)
+            .find_map(|track| track.clips().first())
+            .unwrap()
+            .id;
         Command::TrimClips(TrimClips::new(clip, Edge::Start, Frame(9)))
             .apply(&mut project)
             .unwrap();

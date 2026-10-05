@@ -272,7 +272,8 @@ pub struct Project {
 }
 
 impl Project {
-    /// An empty project with one video track and one audio track (the M1 layout).
+    /// An empty project with two video tracks, V1 and V2 (drawn over V1), then two audio
+    /// tracks, A1 and A2.
     pub fn new(frame_rate: Rational, resolution: (u32, u32)) -> Project {
         let track = |id, kind| Track {
             id: TrackId(id),
@@ -286,7 +287,12 @@ impl Project {
             sequence: Sequence {
                 frame_rate,
                 resolution,
-                tracks: vec![track(1, TrackKind::Video), track(2, TrackKind::Audio)],
+                tracks: vec![
+                    track(1, TrackKind::Video),
+                    track(2, TrackKind::Video),
+                    track(3, TrackKind::Audio),
+                    track(4, TrackKind::Audio),
+                ],
             },
         }
     }
@@ -425,7 +431,7 @@ mod tests {
     }
 
     #[test]
-    fn a_new_project_has_one_video_track_and_one_audio_track() {
+    fn a_new_project_has_two_video_tracks_then_two_audio_tracks() {
         let project = Project::new(rate(30000, 1001), (1920, 1080));
         let kinds: Vec<_> = project
             .sequence()
@@ -433,12 +439,21 @@ mod tests {
             .iter()
             .map(Track::kind)
             .collect();
-        assert_eq!(kinds, [TrackKind::Video, TrackKind::Audio]);
+        assert_eq!(
+            kinds,
+            [
+                TrackKind::Video,
+                TrackKind::Video,
+                TrackKind::Audio,
+                TrackKind::Audio
+            ]
+        );
         assert_eq!(project.sequence().frame_rate(), rate(30000, 1001));
         assert_eq!(project.sequence().resolution(), (1920, 1080));
         assert!(project.media().is_empty());
-        let ids: Vec<_> = project.sequence().tracks().iter().map(Track::id).collect();
-        assert_ne!(ids[0], ids[1]);
+        let mut ids: Vec<_> = project.sequence().tracks().iter().map(Track::id).collect();
+        ids.dedup();
+        assert_eq!(ids.len(), 4);
     }
 
     #[test]
@@ -447,11 +462,9 @@ mod tests {
         let low = clip_at(0, 0, 1.0); // frames 0..120
         let mut high = clip_at(60, 0, 1.0); // frames 60..180
         high.id = ClipId(2);
-        let mut upper = project.sequence.tracks[0].clone();
-        upper.id = TrackId(3);
-        upper.clips = vec![high];
+        // V1 holds the low clip, V2 (drawn over it) the high one.
         project.sequence.tracks[0].clips.push(low);
-        project.sequence.tracks.insert(1, upper);
+        project.sequence.tracks[1].clips.push(high);
         let shown = |project: &Project, frame| {
             project
                 .sequence()
@@ -476,7 +489,7 @@ mod tests {
         project.sequence.tracks[0].clips.push(clip_at(10, 0, 1.0));
         let mut audio = clip_at(200, 0, 1.0);
         audio.edits = ClipEdits::Audio(AudioEdits::default());
-        project.sequence.tracks[1].clips.push(audio);
+        project.sequence.tracks[2].clips.push(audio);
         assert_eq!(project.sequence().end(), Frame(320));
     }
 
@@ -505,7 +518,7 @@ mod tests {
         let mut alone = clip_at(500, 0, 1.0);
         alone.id = ClipId(3);
         project.sequence.tracks[0].clips.extend([video, alone]);
-        project.sequence.tracks[1].clips.push(audio);
+        project.sequence.tracks[2].clips.push(audio);
 
         let mut group = project.link_group(ClipId(2));
         group.sort();

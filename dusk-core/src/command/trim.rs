@@ -271,7 +271,13 @@ mod tests {
         let mut project = project();
         let (video, _) = insert_pair(&mut project, 0, (0, 5 * SECOND));
         let audio_track = track(&project, TrackKind::Audio);
-        project.sequence.tracks[1].locked = true;
+        let index = project
+            .sequence
+            .tracks
+            .iter()
+            .position(|track| track.id == audio_track)
+            .unwrap();
+        project.sequence.tracks[index].locked = true;
         assert_eq!(
             trim(&mut project, video, Edge::End, 100).map(|_| ()),
             Err(Rejection::TrackLocked(audio_track))

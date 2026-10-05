@@ -78,13 +78,15 @@ mod tests {
 
         assert_eq!(project.media().len(), 1);
         assert_eq!(project.media()[0].id, MediaId(1));
+        // V1 and A1, the first track of each kind.
         let tracks = project.sequence().tracks();
         let video = &tracks[0].clips()[0];
-        let audio = &tracks[1].clips()[0];
+        let audio = &tracks[2].clips()[0];
         assert_eq!(
-            (tracks[0].kind(), tracks[1].kind()),
+            (tracks[0].kind(), tracks[2].kind()),
             (TrackKind::Video, TrackKind::Audio)
         );
+        assert!(tracks[1].clips().is_empty() && tracks[3].clips().is_empty());
         assert_eq!(
             (video.kind(), audio.kind()),
             (TrackKind::Video, TrackKind::Audio)
@@ -109,8 +111,8 @@ mod tests {
             .unwrap();
         let tracks = project.sequence().tracks();
         assert!(tracks[0].clips().is_empty());
-        assert_eq!(tracks[1].clips().len(), 1);
-        assert_eq!(tracks[1].clips()[0].link, None);
+        assert_eq!(tracks[2].clips().len(), 1);
+        assert_eq!(tracks[2].clips()[0].link, None);
     }
 
     #[test]

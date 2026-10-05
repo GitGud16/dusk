@@ -172,7 +172,8 @@ mod tests {
         let rows = clip_rows(&project);
         assert_eq!(rows.len(), 2);
         assert_eq!((rows[0].track, rows[0].video), (0, true));
-        assert_eq!((rows[1].track, rows[1].video), (1, false));
+        // A1 is the third track, after V1 and V2.
+        assert_eq!((rows[1].track, rows[1].video), (2, false));
         for row in &rows {
             assert_eq!((row.start, row.length), (Frame(15), Frame(60)));
             assert_eq!(row.name, "beach.mp4");
