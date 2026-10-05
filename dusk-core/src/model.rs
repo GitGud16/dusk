@@ -332,6 +332,30 @@ impl Sequence {
             })
     }
 
+    /// The first video clip other than the one visible at `frame` to come into view within
+    /// `within` frames after it, and the frame it does: what the preview gets ready while
+    /// playing (docs/ARCHITECTURE.md, "Decoder pool").
+    pub fn next_visible_video(&self, frame: Frame, within: Frame) -> Option<(Frame, &Clip)> {
+        let shown = self.visible_video_at(frame).map(|clip| clip.id);
+        let last = frame + within;
+        // What is visible changes only where a clip on a shown video track starts or ends.
+        let mut edges: Vec<Frame> = self
+            .tracks
+            .iter()
+            .filter(|track| track.kind == TrackKind::Video && !track.muted)
+            .flat_map(|track| &track.clips)
+            .flat_map(|clip| [clip.position, clip.end()])
+            .filter(|edge| *edge > frame && *edge <= last)
+            .collect();
+        edges.sort_unstable();
+        edges.dedup();
+        edges.into_iter().find_map(|edge| {
+            self.visible_video_at(edge)
+                .filter(|clip| Some(clip.id) != shown)
+                .map(|clip| (edge, clip))
+        })
+    }
+
     /// The first frame after the last clip; 0 for an empty sequence.
     pub fn end(&self) -> Frame {
         self.tracks
@@ -562,6 +586,50 @@ mod tests {
         assert_eq!(shown(&project, 100), Some(ClipId(1)));
         project.sequence.tracks[0].clips[0].enabled = false;
         assert_eq!(shown(&project, 100), None);
+    }
+
+    #[test]
+    fn the_next_clip_to_come_into_view_is_found_within_a_window() {
+        let mut project = Project::new(rate(30, 1), (1920, 1080));
+        let first = clip_at(0, 0, 1.0); // V1, frames 0..120
+        let mut second = clip_at(150, 0, 1.0); // V1, frames 150..270, after a gap
+        second.id = ClipId(2);
+        let mut above = clip_at(200, 0, 1.0); // V2, frames 200..320, over the second
+        above.id = ClipId(3);
+        project.sequence.tracks[0].clips.extend([first, second]);
+        project.sequence.tracks[1].clips.push(above);
+        let next = |project: &Project, frame, within| {
+            project
+                .sequence()
+                .next_visible_video(Frame(frame), Frame(within))
+                .map(|(at, clip)| (at.0, clip.id))
+        };
+
+        // Past the gap after the first clip comes the second.
+        assert_eq!(next(&project, 100, 60), Some((150, ClipId(2))));
+        assert_eq!(next(&project, 30, 60), None);
+        // The clip above covers the second before it ends; after it, nothing.
+        assert_eq!(next(&project, 160, 60), Some((200, ClipId(3))));
+        assert_eq!(next(&project, 250, 200), None);
+        // A hidden track hides its clips.
+        project.sequence.tracks[1].muted = true;
+        assert_eq!(next(&project, 160, 60), None);
+    }
+
+    #[test]
+    fn a_covered_clip_comes_back_into_view() {
+        let mut project = Project::new(rate(30, 1), (1920, 1080));
+        let low = clip_at(0, 0, 1.0); // V1, frames 0..120
+        let mut high = clip_at(30, 0, 1.0);
+        high.id = ClipId(2);
+        high.length = Frame(30); // V2, frames 30..60
+        project.sequence.tracks[0].clips.push(low);
+        project.sequence.tracks[1].clips.push(high);
+        let next = project.sequence().next_visible_video(Frame(40), Frame(60));
+        assert_eq!(
+            next.map(|(at, clip)| (at, clip.id)),
+            Some((Frame(60), ClipId(1)))
+        );
     }
 
     #[test]

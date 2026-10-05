@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-use dusk_core::{Frame, Project, import};
+use dusk_core::{Command, Frame, Project, RemoveClips, import, split_at};
 use dusk_engine::{Engine, EngineEvent, EngineOptions, Gpu, media_info};
 use dusk_render::Compositor;
 
@@ -22,6 +22,23 @@ fn project_at(position: Frame) -> Arc<Project> {
     let info = media_info(&sample()).unwrap();
     let mut project = Project::new(info.frame_rate.unwrap(), (320, 240));
     import(&project, sample(), info, position)
+        .apply(&mut project)
+        .unwrap();
+    Arc::new(project)
+}
+
+/// The sample's first third, then its last third straight after it: one file shown from two
+/// places, so going from one to the other means a jump in the file.
+fn project_with_a_jump() -> Arc<Project> {
+    let mut project = (*project_at(Frame(0))).clone();
+    for at in [Frame(10), Frame(20)] {
+        split_at(&project, at, None)
+            .unwrap()
+            .apply(&mut project)
+            .unwrap();
+    }
+    let middle = project.sequence().visible_video_at(Frame(15)).unwrap().id;
+    Command::RemoveClips(RemoveClips::new(middle, true))
         .apply(&mut project)
         .unwrap();
     Arc::new(project)
@@ -80,6 +97,30 @@ impl Running {
             }
         }
     }
+}
+
+#[test]
+fn the_next_clip_gets_a_decoder_of_its_own_before_it_comes_into_view() {
+    let running = start(project_with_a_jump());
+    running.engine.play(Frame(0), 1.0);
+    let mut most_while_first = 0;
+    let stopped = loop {
+        match running.events.recv_timeout(PATIENCE).expect("an event") {
+            EngineEvent::Frame { frame, .. } => {
+                let open = running.engine.open_decoders();
+                assert!(open <= 2, "{open} video decoders open");
+                if frame < Frame(10) {
+                    most_while_first = most_while_first.max(open);
+                }
+            }
+            EngineEvent::Stopped { frame } => break frame,
+            EngineEvent::Error(error) => panic!("{error}"),
+            EngineEvent::Export(event) => panic!("no export was started: {event:?}"),
+        }
+    };
+    assert_eq!(stopped, Frame(19));
+    // The first clip's decoder, and the second's, moved to its first frame meanwhile.
+    assert_eq!(most_while_first, 2);
 }
 
 #[test]
