@@ -1,7 +1,7 @@
 //! Moving the start or the end of a clip and its linked partners.
 
 use crate::command::{Notice, Rejection, group_indices, next_start, previous_end};
-use crate::model::{Clip, ClipEdits, ClipId, Project, TrackId};
+use crate::model::{Clip, ClipEdits, ClipId, MediaKind, Project, TrackId};
 use crate::time::{Frame, MediaTime, length_for, source_span};
 
 /// Which end of a clip a trim moves.
@@ -48,11 +48,13 @@ impl TrimClips {
         let (track, index) = members[0];
         let clip = &project.sequence.tracks[track].clips[index];
         let rate = project.sequence.frame_rate;
-        let duration = project
+        let info = &project
             .media_ref(clip.media_id)
             .ok_or(Rejection::UnknownMedia(clip.media_id))?
-            .info
-            .duration;
+            .info;
+        let duration = info.duration;
+        // A still has no source to run out of: it lasts as long as it is trimmed to.
+        let still = info.kind == MediaKind::Still;
         let span = |length| source_span(length, clip.speed, rate);
         let length_of = |source| length_for(source, clip.speed, rate);
 
@@ -64,7 +66,7 @@ impl TrimClips {
                     return Err(Rejection::TooShort(self.clip));
                 }
                 let mut at_edge = false;
-                if clip.source_in + span(length) > duration {
+                if !still && clip.source_in + span(length) > duration {
                     length = length_of(duration - clip.source_in);
                     at_edge = true;
                 }
@@ -81,7 +83,11 @@ impl TrimClips {
                 if at_edge {
                     notices.push(Notice::ReachedSourceEdge(self.clip));
                 }
-                let source_out = (clip.source_in + span(length)).min(duration);
+                let source_out = if still {
+                    clip.source_out
+                } else {
+                    (clip.source_in + span(length)).min(duration)
+                };
                 (clip.source_in, source_out, clip.position, length)
             }
             // The end stays: the source in follows from the new length.
@@ -91,7 +97,7 @@ impl TrimClips {
                 if length < Frame(1) {
                     return Err(Rejection::TooShort(self.clip));
                 }
-                if clip.source_out - span(length) < MediaTime(0) {
+                if !still && clip.source_out - span(length) < MediaTime(0) {
                     length = length_of(clip.source_out);
                     notices.push(Notice::ReachedSourceEdge(self.clip));
                 }
@@ -104,7 +110,11 @@ impl TrimClips {
                         return Err(Rejection::Overlap(project.sequence.tracks[t].id));
                     }
                 }
-                let source_in = (clip.source_out - span(length)).max(MediaTime(0));
+                let source_in = if still {
+                    clip.source_in
+                } else {
+                    (clip.source_out - span(length)).max(MediaTime(0))
+                };
                 (source_in, clip.source_out, position, length)
             }
         };
@@ -286,6 +296,27 @@ mod tests {
         assert_eq!(
             trim(&mut project, video, Edge::End, 100).map(|_| ()),
             Err(Rejection::TrackLocked(audio_track))
+        );
+    }
+
+    #[test]
+    fn a_still_trims_to_any_length_and_stops_at_the_next_clip() {
+        let mut project = project();
+        let photo = add_still(&mut project);
+        let still = insert_still(&mut project, photo, 0, 150);
+        insert_pair(&mut project, 900, (0, SECOND));
+        let command = trim(&mut project, still, Edge::End, 600).unwrap();
+        assert_eq!(clip(&project, still).length, Frame(600));
+        assert!(command.notices().is_empty());
+        let command = trim(&mut project, still, Edge::End, 1000).unwrap();
+        assert_eq!(clip(&project, still).end(), Frame(900));
+        assert_eq!(command.notices(), [Notice::CutAtGap(still)]);
+        trim(&mut project, still, Edge::Start, 100).unwrap();
+        let trimmed = clip(&project, still);
+        assert_eq!((trimmed.position, trimmed.end()), (Frame(100), Frame(900)));
+        assert_eq!(
+            (trimmed.source_in, trimmed.source_out),
+            (MediaTime(0), MediaTime(0))
         );
     }
 

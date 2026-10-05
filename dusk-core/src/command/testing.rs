@@ -54,6 +54,48 @@ pub(crate) fn project() -> Project {
     project
 }
 
+/// Adds a 4032x3024 photo to `project` and returns its id.
+pub(crate) fn add_still(project: &mut Project) -> MediaId {
+    let id = project.fresh_ids().media();
+    let media = MediaRef {
+        id,
+        path: "photo.jpg".into(),
+        info: MediaInfo {
+            kind: MediaKind::Still,
+            duration: MediaTime(0),
+            has_video: true,
+            has_audio: false,
+            frame_rate: None,
+            vfr: false,
+            width: 4032,
+            height: 3024,
+        },
+    };
+    Command::AddMedia(media).apply(project).unwrap();
+    id
+}
+
+/// Puts a still clip of `media` on V1 from `position` for `length` frames and returns its id.
+pub(crate) fn insert_still(
+    project: &mut Project,
+    media: MediaId,
+    position: i64,
+    length: i64,
+) -> ClipId {
+    let clip = Clip::still(
+        project.fresh_ids().clip(),
+        media,
+        Frame(position),
+        Frame(length),
+    );
+    let id = clip.id;
+    let video = track(project, TrackKind::Video);
+    Command::InsertClips(InsertClips::new(vec![(video, clip)]))
+        .apply(project)
+        .unwrap();
+    id
+}
+
 /// Inserts a linked video and audio clip of MediaId(1) and returns their ids.
 pub(crate) fn insert_pair(
     project: &mut Project,

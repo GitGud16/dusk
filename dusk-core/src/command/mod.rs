@@ -16,7 +16,8 @@ mod track;
 mod trim;
 
 use crate::model::{
-    AudioEdits, Clip, ClipEdits, ClipId, MediaId, MediaRef, Project, TrackId, VideoEdits,
+    AudioEdits, Clip, ClipEdits, ClipId, MediaId, MediaKind, MediaRef, Project, TrackId, TrackKind,
+    VideoEdits,
 };
 use crate::time::{Frame, MediaTime, length_for};
 
@@ -195,6 +196,28 @@ pub(crate) fn check_clip(project: &Project, clip: &Clip) -> Result<(), Rejection
     let media = project
         .media_ref(clip.media_id)
         .ok_or(Rejection::UnknownMedia(clip.media_id))?;
+    if media.info.kind == MediaKind::Still {
+        // A still shows one picture for as long as it lasts: no source range, no speed.
+        if clip.kind() != TrackKind::Video {
+            return Err(Rejection::WrongTrackKind(clip.id));
+        }
+        if clip.source_in != MediaTime(0) || clip.source_out != MediaTime(0) {
+            return Err(Rejection::SourceRange(clip.id));
+        }
+        if clip.speed != 1.0 {
+            return Err(Rejection::Speed(clip.id));
+        }
+        if clip.length < Frame(1) {
+            return Err(Rejection::TooShort(clip.id));
+        }
+        if clip.position < Frame(0) {
+            return Err(Rejection::BeforeStart(clip.id));
+        }
+        return match &clip.edits {
+            ClipEdits::Video(edits) => check_video_edits(project, clip, edits),
+            ClipEdits::Audio(_) => Err(Rejection::WrongTrackKind(clip.id)),
+        };
+    }
     if clip.source_in < MediaTime(0)
         || clip.source_in >= clip.source_out
         || clip.source_out > media.info.duration

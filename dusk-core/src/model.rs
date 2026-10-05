@@ -210,6 +210,23 @@ impl Clip {
         }
     }
 
+    /// An enabled, unlinked clip that shows a still image for `length` frames from
+    /// `position`.
+    pub fn still(id: ClipId, media_id: MediaId, position: Frame, length: Frame) -> Clip {
+        Clip {
+            id,
+            media_id,
+            source_in: MediaTime(0),
+            source_out: MediaTime(0),
+            position,
+            length,
+            speed: 1.0,
+            enabled: true,
+            link: None,
+            edits: ClipEdits::Video(VideoEdits::default()),
+        }
+    }
+
     /// The kind of track the clip belongs on.
     pub fn kind(&self) -> TrackKind {
         match self.edits {

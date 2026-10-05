@@ -14,7 +14,7 @@ pub use command::{
     SetClipEnabled, SetTrackLocked, SetTrackMuted, SetVideoEdits, SplitClips, TrimClips, Unlink,
     nearest_free_position,
 };
-pub use import::import;
+pub use import::{STILL_LENGTH, add_media, import, place};
 pub use model::{
     AudioEdits, Clip, ClipEdits, ClipId, Fit, FreshIds, LinkId, MediaId, MediaInfo, MediaKind,
     MediaRef, Project, Rect, Rotation, Sequence, Track, TrackId, TrackKind, VideoEdits,

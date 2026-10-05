@@ -1,7 +1,7 @@
 //! Splitting a link group in two at a timeline frame.
 
 use crate::command::{Rejection, clip_indices, group_indices};
-use crate::model::{Clip, ClipEdits, ClipId, LinkId, Project, TrackId};
+use crate::model::{Clip, ClipEdits, ClipId, LinkId, MediaKind, Project, TrackId};
 use crate::time::{Frame, MediaTime, Rational, frame_to_media, length_for};
 
 /// Splits a clip and every clip linked to it at a frame inside them. The left parts keep
@@ -44,7 +44,15 @@ impl SplitClips {
             return Err(Rejection::SplitOutside(self.clip));
         }
         let rate = project.sequence.frame_rate;
-        let source = split_time(first, self.at, rate).ok_or(Rejection::TooShort(self.clip))?;
+        let still = project
+            .media_ref(first.media_id)
+            .is_some_and(|media| media.info.kind == MediaKind::Still);
+        // Both halves of a still keep its empty source range.
+        let source = if still {
+            None
+        } else {
+            Some(split_time(first, self.at, rate).ok_or(Rejection::TooShort(self.clip))?)
+        };
         if self.right.len() != members.len() {
             let mut ids = project.fresh_ids();
             self.right = members.iter().map(|_| ids.clip()).collect();
@@ -62,9 +70,11 @@ impl SplitClips {
             right.link = self.right_link;
             right.position = self.at;
             right.length = left.end() - self.at;
-            right.source_in = source;
             left.length = self.at - left.position;
-            left.source_out = source;
+            if let Some(source) = source {
+                right.source_in = source;
+                left.source_out = source;
+            }
             // The cut gets no fade: fade-in stays on the left part, fade-out on the right.
             if let (ClipEdits::Audio(left), ClipEdits::Audio(right_edits)) =
                 (&mut left.edits, &mut right.edits)
@@ -196,6 +206,24 @@ mod tests {
             assert_eq!(clips[1].end(), whole.end(), "{speed}x");
             assert_eq!(clips[0].source_out, clips[1].source_in, "{speed}x");
             assert_eq!(clips[1].source_out, whole.source_out, "{speed}x");
+        }
+    }
+
+    #[test]
+    fn a_still_splits_into_two_stills() {
+        let mut project = project();
+        let photo = add_still(&mut project);
+        let still = insert_still(&mut project, photo, 10, 150);
+        split(&mut project, still, 70).unwrap();
+        let clips = on(&project, TrackKind::Video);
+        assert_eq!((clips[0].position, clips[0].length), (Frame(10), Frame(60)));
+        assert_eq!((clips[1].position, clips[1].length), (Frame(70), Frame(90)));
+        for part in &clips {
+            assert_eq!(
+                (part.source_in, part.source_out),
+                (MediaTime(0), MediaTime(0))
+            );
+            assert_eq!(part.link, None);
         }
     }
 

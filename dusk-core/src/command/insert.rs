@@ -227,6 +227,28 @@ mod tests {
     }
 
     #[test]
+    fn a_still_clip_has_any_length_and_no_source_range() {
+        let mut project = project();
+        let photo = add_still(&mut project);
+        let video_track = track(&project, TrackKind::Video);
+        let still = Clip::still(project.fresh_ids().clip(), photo, Frame(0), Frame(7));
+        let refused = |clip: Clip| {
+            let mut project = project.clone();
+            Command::InsertClips(InsertClips::new(vec![(video_track, clip)])).apply(&mut project)
+        };
+        assert_eq!(refused(still.clone()), Ok(()));
+        let mut ranged = still.clone();
+        ranged.source_out = MediaTime(SECOND);
+        assert_eq!(refused(ranged), Err(Rejection::SourceRange(still.id)));
+        let mut empty = still.clone();
+        empty.length = Frame(0);
+        assert_eq!(refused(empty), Err(Rejection::TooShort(still.id)));
+        let mut fast = still.clone();
+        fast.speed = 2.0;
+        assert_eq!(refused(fast), Err(Rejection::Speed(still.id)));
+    }
+
+    #[test]
     fn inserting_on_a_locked_track_is_refused() {
         let mut project = project();
         project.sequence.tracks[0].locked = true;
