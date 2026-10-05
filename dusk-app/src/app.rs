@@ -19,12 +19,10 @@ use crate::files::{Worker, export_path};
 use crate::history::History;
 use crate::recovery::Session;
 use crate::shortcuts::Action;
+use crate::speed::{SpeedKey, next_factor};
 use crate::stats::Stats;
 use crate::timeline::{self, View};
 use crate::{ClipProps, ClipView, MainWindow, MediaView, TickView, TrackView};
-
-/// The fastest forward playback the L key reaches (docs/ARCHITECTURE.md, "Playback").
-const FASTEST: f64 = 8.0;
 
 thread_local! {
     /// The editor, owned by the UI thread.
@@ -241,8 +239,10 @@ impl App {
         }
         match action {
             Action::PlayPause => self.play_pause(),
-            Action::PlayForward => self.play_faster(),
-            Action::PlayBackward => self.play(-1.0),
+            Action::PlayForward => self.play_key(SpeedKey::Faster { forward: true }),
+            Action::PlayBackward => self.play_key(SpeedKey::Faster { forward: false }),
+            Action::PlaySlowForward => self.play_key(SpeedKey::Slower { forward: true }),
+            Action::PlaySlowBackward => self.play_key(SpeedKey::Slower { forward: false }),
             Action::Pause => self.pause(),
             Action::StepBack => self.step(-1),
             Action::StepForward => self.step(1),
@@ -350,13 +350,9 @@ impl App {
         }
     }
 
-    /// L: plays forwards, twice as fast with every press while playing forwards.
-    fn play_faster(&mut self) {
-        let factor = match self.engine.playing() {
-            Some(factor) if factor > 0.0 => (factor * 2.0).min(FASTEST),
-            _ => 1.0,
-        };
-        self.play(factor);
+    /// J, L and Shift with them: plays at the speed the key goes to from the current one.
+    fn play_key(&mut self, key: SpeedKey) {
+        self.play(next_factor(self.engine.playing(), key));
     }
 
     /// Plays at `factor` from where playback is, or from the playhead.
@@ -365,9 +361,12 @@ impl App {
             return;
         }
         let from = self.engine.pause().unwrap_or(self.playhead);
-        // Playing forwards from the last frame starts over.
+        // Playing forwards from the last frame starts over; backwards from the first frame,
+        // from the end.
         let from = if factor > 0.0 && from >= self.last_frame() {
             Frame(0)
+        } else if factor < 0.0 && from <= Frame(0) {
+            self.last_frame()
         } else {
             from
         };

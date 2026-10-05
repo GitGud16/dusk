@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use dusk_audio::{Envelope, SpeedResampler};
 use dusk_core::time::frame_to_media;
-use dusk_core::{Clip, ClipEdits, ClipId, Frame, MediaTime, Project, Rational, TrackKind};
+use dusk_core::{Clip, ClipEdits, ClipId, Frame, MediaId, MediaTime, Project, Rational, TrackKind};
 use dusk_media::{AudioDecoder, MediaError};
 
 /// Source frames read from a decoder at a time.
@@ -20,16 +20,37 @@ pub(crate) struct Mixer {
     factor: f64,
     /// The timeline time of the first frame mixed.
     start: MediaTime,
-    /// Frames mixed so far.
+    /// Frames mixed since `start`.
     mixed: u64,
+    /// Frames mixed since the mixer was made, across restarts.
+    total: u64,
     voices: Vec<Voice>,
+    /// Decoders no voice uses now, kept a while so that a clip of the same media starts
+    /// without opening the file again, as when playing backwards restarts every clip five
+    /// times a second.
+    spare: Vec<Spare>,
     /// The gain of each frame of the block being mixed, for one clip; kept to reuse.
     gains: Vec<f32>,
 }
 
+/// An open decoder set aside.
+struct Spare {
+    media: MediaId,
+    decoder: AudioDecoder,
+    /// `Mixer::total` when it was set aside.
+    since: u64,
+}
+
+/// Spare decoders unused for this many seconds of mixed sound are closed, as idle decoders
+/// are (docs/ARCHITECTURE.md, "Decoder pool").
+const SPARE_SECONDS: u64 = 5;
+/// At most this many decoders are kept spare; the ones set aside first go first.
+const SPARE_LIMIT: usize = 4;
+
 /// A clip being played.
 struct Voice {
     clip: ClipId,
+    media: MediaId,
     decoder: AudioDecoder,
     resampler: SpeedResampler,
     /// Samples read from the decoder, for the resampler.
@@ -38,6 +59,71 @@ struct Voice {
     ready: Vec<f32>,
     /// The decoder has nothing more; the voice is silent from here.
     ended: bool,
+}
+
+/// Mixes a sequence's audio backwards from a timeline time (docs/ARCHITECTURE.md,
+/// "Playback": reversed sound from 0.25x to 2x backwards). The sequence is mixed forwards a
+/// short stretch at a time, ending where the last stretch began, and each stretch is played
+/// from its end.
+pub(crate) struct ReverseMixer {
+    /// Mixes each stretch forwards.
+    mixer: Mixer,
+    /// The timeline time the next stretch ends at.
+    end: MediaTime,
+    /// The current stretch, its frames already in reverse order, and how much of it is out.
+    stretch: Vec<f32>,
+    given: usize,
+}
+
+/// Frames mixed forwards at a time when playing backwards: 0.2 s at 48 kHz.
+const STRETCH: usize = 9_600;
+
+impl ReverseMixer {
+    /// Mixes `project` backwards from timeline time `start` at `rate` frames per second, the
+    /// timeline running back `speed` (positive) seconds per second mixed.
+    pub fn new(project: Arc<Project>, rate: u32, start: MediaTime, speed: f64) -> ReverseMixer {
+        ReverseMixer {
+            mixer: Mixer::new(project, rate, start, speed),
+            end: start,
+            stretch: Vec::new(),
+            given: 0,
+        }
+    }
+
+    /// Fills `out` with the next interleaved stereo frames.
+    pub fn fill(&mut self, out: &mut [f32]) -> Result<(), MediaError> {
+        let mut filled = 0;
+        while filled < out.len() {
+            if self.given == self.stretch.len() {
+                self.mix_stretch()?;
+            }
+            let count = (out.len() - filled).min(self.stretch.len() - self.given);
+            out[filled..filled + count]
+                .copy_from_slice(&self.stretch[self.given..self.given + count]);
+            filled += count;
+            self.given += count;
+        }
+        Ok(())
+    }
+
+    /// Mixes the stretch that ends where the last one began, and reverses it.
+    fn mix_stretch(&mut self) -> Result<(), MediaError> {
+        let span = STRETCH as f64 * 1e6 * self.mixer.factor / f64::from(self.mixer.rate);
+        let start = self.end - MediaTime(span.round() as i64);
+        self.stretch.resize(2 * STRETCH, 0.0);
+        if self.end > MediaTime(0) {
+            self.mixer.restart(start);
+            self.mixer.fill(&mut self.stretch)?;
+        } else {
+            // Before the timeline there is nothing to mix.
+            self.stretch.fill(0.0);
+        }
+        // Frame by frame, each frame's two samples staying in order.
+        self.stretch.as_chunks_mut::<2>().0.reverse();
+        self.given = 0;
+        self.end = start;
+        Ok(())
+    }
 }
 
 impl Mixer {
@@ -50,9 +136,25 @@ impl Mixer {
             factor,
             start,
             mixed: 0,
+            total: 0,
             voices: Vec::new(),
+            spare: Vec::new(),
             gains: Vec::new(),
         }
+    }
+
+    /// Mixes from timeline time `start` from here on, setting the open decoders aside for
+    /// the clips that sound there.
+    pub fn restart(&mut self, start: MediaTime) {
+        for voice in self.voices.drain(..) {
+            self.spare.push(Spare {
+                media: voice.media,
+                decoder: voice.decoder,
+                since: self.total,
+            });
+        }
+        self.start = start;
+        self.mixed = 0;
     }
 
     /// Fills `out` with the next interleaved stereo frames.
@@ -102,33 +204,56 @@ impl Mixer {
             self.gains = gains;
             mixed?;
         }
+        self.mixed = last;
+        self.total += last - first;
         // A voice whose clip ended, or is gone, starts afresh if it sounds again.
-        self.voices.retain(|voice| {
+        let ended = |voice: &mut Voice| {
             project
                 .find_clip(voice.clip)
-                .is_some_and(|(_, clip)| frame_to_media(clip.end(), rate) > block_end)
-        });
-        self.mixed = last;
+                .is_none_or(|(_, clip)| frame_to_media(clip.end(), rate) <= block_end)
+        };
+        for voice in self.voices.extract_if(.., ended) {
+            self.spare.push(Spare {
+                media: voice.media,
+                decoder: voice.decoder,
+                since: self.total,
+            });
+        }
+        let (now, idle) = (self.total, SPARE_SECONDS * u64::from(self.rate));
+        self.spare.retain(|spare| now - spare.since < idle);
+        let excess = self.spare.len().saturating_sub(SPARE_LIMIT);
+        self.spare.drain(..excess);
         Ok(())
     }
 
-    /// Starts playing `clip`, which begins at timeline time `start`, from timeline time `at`.
+    /// Starts playing `clip`, which begins at timeline time `start`, from timeline time `at`,
+    /// with a spare decoder of its media if there is one.
     fn start_voice(
-        &self,
+        &mut self,
         clip: &Clip,
         start: MediaTime,
         at: MediaTime,
     ) -> Result<Voice, MediaError> {
-        let path = self
-            .project
-            .media_ref(clip.media_id)
-            .map(|media| media.path.clone())
-            .unwrap_or_default();
-        let mut decoder = AudioDecoder::open(&path, self.rate, 2)?;
+        let spare = self
+            .spare
+            .iter()
+            .rposition(|spare| spare.media == clip.media_id);
+        let mut decoder = match spare {
+            Some(index) => self.spare.remove(index).decoder,
+            None => {
+                let path = self
+                    .project
+                    .media_ref(clip.media_id)
+                    .map(|media| media.path.clone())
+                    .unwrap_or_default();
+                AudioDecoder::open(&path, self.rate, 2)?
+            }
+        };
         let into_clip = (at - start).0 as f64 * clip.speed;
         decoder.seek(clip.source_in + MediaTime(into_clip.round() as i64))?;
         Ok(Voice {
             clip: clip.id,
+            media: clip.media_id,
             decoder,
             resampler: SpeedResampler::new(clip.speed * self.factor),
             source: vec![0.0; 2 * CHUNK],
@@ -367,5 +492,57 @@ mod tests {
             .apply(&mut project)
             .unwrap();
         assert!(silent(&mix(project, MediaTime(0), 1.0, 4_800)));
+    }
+
+    /// A one-second chirp from 200 Hz rising, 48 kHz PCM: exact to decode and to seek, and
+    /// different backwards.
+    fn chirp() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../testdata/chirp.wav")
+    }
+
+    fn project_with_chirp() -> Project {
+        let info = crate::media_info(&chirp()).unwrap();
+        let mut project = Project::new(dusk_core::Rational::new(30, 1).unwrap(), (320, 240));
+        import(&project, chirp(), info, Frame(0))
+            .apply(&mut project)
+            .unwrap();
+        project
+    }
+
+    fn mix_backwards(project: Project, start: MediaTime, speed: f64, frames: usize) -> Vec<f32> {
+        let mut mixer = ReverseMixer::new(Arc::new(project), 48_000, start, speed);
+        let mut out = vec![1.0; frames * 2];
+        for block in out.chunks_mut(2 * 701) {
+            mixer.fill(block).unwrap();
+        }
+        out
+    }
+
+    /// `samples` (interleaved stereo) with its frames in reverse order.
+    fn reversed(samples: &[f32]) -> Vec<f32> {
+        samples.chunks(2).rev().flatten().copied().collect()
+    }
+
+    #[test]
+    fn playing_backwards_plays_the_sound_reversed() {
+        // From 0.5 s back to 0.25 s: the forward mix of 0.25 s to 0.5 s, back to front.
+        let forward = mix(project_with_chirp(), MediaTime(250_000), 1.0, 12_000);
+        let backward = mix_backwards(project_with_chirp(), MediaTime(500_000), 1.0, 12_000);
+        assert!(!silent(&forward));
+        let expected = reversed(&forward);
+        let worst = backward
+            .iter()
+            .zip(&expected)
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0f32, f32::max);
+        assert!(worst < 1e-6, "differs by up to {worst}");
+    }
+
+    #[test]
+    fn before_the_start_backwards_there_is_silence() {
+        // From 0.1 s backwards: a tenth of a second of sound, then nothing.
+        let backward = mix_backwards(project_with_chirp(), MediaTime(100_000), 1.0, 9_600);
+        assert!(!silent(&backward[..2 * 4_800]));
+        assert!(silent(&backward[2 * 4_800..]));
     }
 }

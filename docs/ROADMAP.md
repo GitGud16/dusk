@@ -37,7 +37,7 @@ Import one file, see it as a linked video clip and audio clip on one video track
 - Per-clip volume, mute, fades; detach audio.
 - Undo/redo for everything. Project save/load (JSON). Autosave and crash recovery.
 - Media bin with thumbnails; import by drag and drop from Explorer, by an Import button (the system file dialog), and from the command line as in M1; WhatsApp/Telegram audio formats verified. Decided at M2: Slint's `unstable-winit-030` feature joins the pinned set, because Slint 1.18's winit backend does not pass files dropped from Explorer to the app and its window-event hook does (ARCHITECTURE.md, Slint specifics).
-- Variable-speed playback (0.1x to 32x, both directions; slow reverse via GOP buffer, fast via keyframes).
+- Variable-speed playback (0.1x to 32x, both directions; slow reverse via GOP buffer, fast via keyframes). Done: L and J double the speed up to 32x, Shift+L and Shift+J slow it down to 0.1x; above 8x forwards or 2x backwards (playback times clip speed) only keyframes are decoded; sound plays backwards from 0.25x to 2x. Open: the fallback for a group of pictures that does not fit in half the cache cap.
 
 **Done when**: a three-clip edit with music survives save, quit, reopen, and undo history behaves.
 

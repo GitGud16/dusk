@@ -179,8 +179,8 @@ impl Engine {
     }
 
     /// Plays from `from` at `factor` times normal speed, backwards when negative. Sound plays
-    /// from 0.25x to 4x forwards; outside that, and backwards, playback is silent. Nothing
-    /// plays while an export runs.
+    /// from 0.25x to 4x forwards and from 0.25x to 2x backwards; outside that, playback is
+    /// silent. Nothing plays while an export runs.
     pub fn play(&self, from: Frame, factor: f64) {
         if self.is_exporting() {
             return;

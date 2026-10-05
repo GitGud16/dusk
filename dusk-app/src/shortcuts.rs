@@ -11,6 +11,8 @@ pub enum Action {
     PlayBackward,
     Pause,
     PlayForward,
+    PlaySlowBackward,
+    PlaySlowForward,
     StepBack,
     StepForward,
     GoToStart,
@@ -101,9 +103,27 @@ const fn alt(shortcut: Shortcut) -> Shortcut {
 /// Every shortcut.
 pub const SHORTCUTS: &[Shortcut] = &[
     char_key(' ', Action::PlayPause, "Play or pause"),
-    char_key('j', Action::PlayBackward, "Play backwards"),
+    char_key(
+        'j',
+        Action::PlayBackward,
+        "Play backwards; press again to play faster, up to 32x",
+    ),
     char_key('k', Action::Pause, "Pause"),
-    char_key('l', Action::PlayForward, "Play; press again to play faster"),
+    char_key(
+        'l',
+        Action::PlayForward,
+        "Play; press again to play faster, up to 32x",
+    ),
+    shift(char_key(
+        'j',
+        Action::PlaySlowBackward,
+        "Play backwards slowly; press again to play slower, down to 0.1x",
+    )),
+    shift(char_key(
+        'l',
+        Action::PlaySlowForward,
+        "Play slowly; press again to play slower, down to 0.1x",
+    )),
     key(
         KeyName::Named(Key::LeftArrow),
         Action::StepBack,
@@ -335,6 +355,18 @@ mod tests {
         assert_eq!(action_for("x", false, false, false), None);
         assert_eq!(action_for("s", true, false, false), Some(Action::Save));
         assert_eq!(action_for("s", true, true, false), Some(Action::SaveAs));
+    }
+
+    #[test]
+    fn shift_plays_slowly() {
+        assert_eq!(
+            action_for("L", false, true, false),
+            Some(Action::PlaySlowForward)
+        );
+        assert_eq!(
+            action_for("J", false, true, false),
+            Some(Action::PlaySlowBackward)
+        );
     }
 
     #[test]

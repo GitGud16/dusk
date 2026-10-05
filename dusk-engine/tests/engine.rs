@@ -197,6 +197,22 @@ fn double_speed_takes_half_the_time() {
 }
 
 #[test]
+fn fast_playback_steps_through_keyframes_to_the_end() {
+    let running = start(project_at(Frame(0)));
+    running.engine.play(Frame(0), 32.0);
+    let (_, stopped) = running.play_through();
+    assert_eq!(stopped, Frame(29));
+}
+
+#[test]
+fn fast_playback_backwards_stops_at_the_start() {
+    let running = start(project_at(Frame(0)));
+    running.engine.play(Frame(29), -8.0);
+    let (_, stopped) = running.play_through();
+    assert_eq!(stopped, Frame(0));
+}
+
+#[test]
 fn playing_backwards_stops_at_the_start() {
     let running = start(project_at(Frame(0)));
     running.engine.play(Frame(20), -1.0);

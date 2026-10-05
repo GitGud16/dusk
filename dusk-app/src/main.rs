@@ -12,6 +12,7 @@ mod history;
 mod platform;
 mod recovery;
 mod shortcuts;
+mod speed;
 mod stats;
 mod timeline;
 

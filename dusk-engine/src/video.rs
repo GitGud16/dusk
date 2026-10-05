@@ -94,6 +94,21 @@ enum Fetch {
     /// Decode its group of pictures from the keyframe and cache every frame of it, for
     /// playing backwards.
     Gop,
+    /// Take the keyframe at or before it, for playing too fast to decode every frame.
+    Keyframe,
+}
+
+/// How frames are fetched while playing at `rate`, the playback factor times the clip's
+/// speed (docs/ARCHITECTURE.md, "Playback"): every frame forwards up to 8x, every frame
+/// backwards from a group-of-pictures buffer up to 2x, and only keyframes beyond either.
+fn playback_fetch(rate: f64) -> Fetch {
+    if rate > 8.0 || rate < -2.0 {
+        Fetch::Keyframe
+    } else if rate > 0.0 {
+        Fetch::Decode
+    } else {
+        Fetch::Gop
+    }
 }
 
 struct OpenDecoder {
@@ -306,7 +321,11 @@ impl VideoThread {
         if self.shown_exactly == Some(frame) {
             return;
         }
-        let fetch = if forward { Fetch::Decode } else { Fetch::Gop };
+        let speed = project
+            .sequence()
+            .visible_video_at(frame)
+            .map_or(1.0, |clip| clip.speed);
+        let fetch = playback_fetch(factor * speed);
         match self.shown_at(frame, fetch) {
             Ok(shown) => self.present(frame, shown, true),
             Err(error) => {
@@ -314,7 +333,10 @@ impl VideoThread {
                 return self.stop_at(generation, frame);
             }
         }
-        // Get the next frame ready while this one is on screen.
+        // Get the next frame ready while this one is on screen; keyframes come as they come.
+        if matches!(fetch, Fetch::Keyframe) {
+            return;
+        }
         let step = (factor.abs().round() as i64).max(1);
         let next = if forward {
             frame + Frame(step)
@@ -375,7 +397,28 @@ impl VideoThread {
                 .map_or(Shown::Unknown, Shown::Picture)),
             Fetch::Decode => self.decode(&project, media, time),
             Fetch::Gop => self.decode_gop(&project, media, time),
+            Fetch::Keyframe => self.decode_keyframe(&project, media, time),
         }
+    }
+
+    /// Decodes the keyframe of `media` at or before `time` into the cache, without the
+    /// frames after it.
+    fn decode_keyframe(
+        &mut self,
+        project: &Project,
+        media: MediaId,
+        time: MediaTime,
+    ) -> Result<Shown, EngineError> {
+        let index = self.decoder(project, media)?;
+        let decoder = &mut self.decoders[index].decoder;
+        decoder.seek(time)?;
+        let Some(decoded) = decoder.next_frame()? else {
+            return Ok(Shown::Black);
+        };
+        let picture = self
+            .cache
+            .insert(media, decoded.time, Following::Unknown, decoded.picture);
+        Ok(Shown::Picture(picture))
     }
 
     /// The picture of the still `media`, at the size the sequence needs: cached once at time
@@ -529,5 +572,36 @@ impl VideoThread {
 
     fn fail(&self, error: EngineError) {
         (self.report)(EngineEvent::Error(error));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn kind(fetch: Fetch) -> &'static str {
+        match fetch {
+            Fetch::Cached => "cached",
+            Fetch::Nearest => "nearest",
+            Fetch::Decode => "every frame",
+            Fetch::Gop => "groups of pictures",
+            Fetch::Keyframe => "keyframes",
+        }
+    }
+
+    #[test]
+    fn fast_playback_takes_only_keyframes() {
+        let cases = [
+            (1.0, "every frame"),
+            (8.0, "every frame"),
+            (16.0, "keyframes"),
+            (0.1, "every frame"),
+            (-1.0, "groups of pictures"),
+            (-2.0, "groups of pictures"),
+            (-4.0, "keyframes"),
+        ];
+        for (rate, expected) in cases {
+            assert_eq!(kind(playback_fetch(rate)), expected, "at {rate}x");
+        }
     }
 }

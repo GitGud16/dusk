@@ -1,6 +1,6 @@
 //! The playback clock (docs/ARCHITECTURE.md, "Playback"): audio is the clock and video follows
 //! it. While sound plays, the clock counts the frames the audio device has played; when it
-//! cannot (no output device, a muted speed, playing backwards) the system clock stands in.
+//! cannot (no output device, a muted speed) the system clock stands in.
 
 use std::sync::Arc;
 use std::time::Instant;
