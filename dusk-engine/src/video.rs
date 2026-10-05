@@ -1,7 +1,9 @@
 //! The video thread (docs/ARCHITECTURE.md, "Data flow" and "Decoder pool"): it finds the clip
 //! visible at a timeline frame, takes that clip's frame from the cache or decodes it, draws it
-//! at the preview size and reports it. While playing it follows the playback clock, and a
-//! worker thread gets the next clip to come into view ready.
+//! at the preview size and reports it. It serves two previews, the main window's and the clip
+//! editor's, each with its own project, through one frame cache and one decoder pool. While
+//! one of them plays it follows the playback clock, and a worker thread gets the next clip to
+//! come into view ready.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -16,17 +18,22 @@ use dusk_render::{Compositor, Gpu, fit_size};
 
 use crate::EngineError;
 use crate::cache::FrameCache;
-use crate::engine::{EngineEvent, EngineOptions, Report, SharedTransport, lock};
+use crate::engine::{EngineEvent, EngineOptions, Preview, Report, SharedTransport, lock};
 use crate::info::still_size;
 use crate::placement::placement_at;
 
-/// What the front asks of the video thread.
+/// What the front asks of the video thread, for one of the previews.
 pub(crate) enum VideoRequest {
-    Project(Arc<Project>),
-    Size((u32, u32)),
-    Show(Frame),
-    Scrub(Frame),
-    Play { generation: u64 },
+    Project(Preview, Arc<Project>),
+    Size(Preview, (u32, u32)),
+    Show(Preview, Frame),
+    Scrub(Preview, Frame),
+    Play {
+        preview: Preview,
+        generation: u64,
+    },
+    /// The preview's window closed: what it showed and drew with is let go.
+    Close(Preview),
 }
 
 /// While scrubbing, exact frames are decoded at most this often.
@@ -60,24 +67,25 @@ pub(crate) fn spawn(
     std::thread::Builder::new()
         .name("dusk video".to_owned())
         .spawn(move || {
+            // The main window's compositor is there from the start, so its first frame does
+            // not wait for one; the clip editor's is made when it first draws.
+            let main = View {
+                compositor: Some(Compositor::new(&gpu)),
+                ..View::default()
+            };
             VideoThread {
-                compositor: Compositor::new(&gpu),
+                gpu,
                 transport,
                 report,
                 open_decoders,
                 exporting,
                 idle,
-                project: None,
-                size: (0, 0),
+                views: [main, View::default()],
                 cache: FrameCache::new(cap),
                 decoders: Vec::new(),
                 upcoming: None,
                 lookahead_busy: Arc::new(AtomicBool::new(false)),
                 playing: None,
-                target: None,
-                shown_exactly: None,
-                pending_scrub: None,
-                last_exact: None,
             }
             .run(&inbox)
         })
@@ -181,31 +189,41 @@ impl Drop for Busy {
     }
 }
 
+/// What one preview shows and draws with.
+#[derive(Default)]
+struct View {
+    project: Option<Arc<Project>>,
+    size: (u32, u32),
+    /// Its own compositor: a compositor's output frames stay intact only until two newer
+    /// ones are drawn, which another preview's drawing must not count toward.
+    compositor: Option<Compositor>,
+    /// The frame it should show.
+    target: Option<Frame>,
+    /// The frame it shows exactly, if it does.
+    shown_exactly: Option<Frame>,
+    /// A scrub position shown only approximately so far.
+    pending_scrub: Option<Frame>,
+    last_exact: Option<Instant>,
+}
+
 struct VideoThread {
-    compositor: Compositor,
+    gpu: Gpu,
     transport: SharedTransport,
     report: Report,
     open_decoders: Arc<AtomicUsize>,
-    /// While an export runs, the preview shows cached frames only.
+    /// While an export runs, the previews show cached frames only.
     exporting: Arc<AtomicBool>,
     idle: Duration,
-    project: Option<Arc<Project>>,
-    size: (u32, u32),
+    /// The previews, by [`Preview::index`].
+    views: [View; 2],
     cache: FrameCache,
     decoders: Vec<OpenDecoder>,
     /// While playing forwards, the next clip to come into view.
     upcoming: Option<Upcoming>,
     /// A lookahead worker is running, holding a decoder; there is one at a time.
     lookahead_busy: Arc<AtomicBool>,
-    /// The playback this thread follows, by generation.
-    playing: Option<u64>,
-    /// The frame the preview should show.
-    target: Option<Frame>,
-    /// The frame the preview shows exactly, if it does.
-    shown_exactly: Option<Frame>,
-    /// A scrub position shown only approximately so far.
-    pending_scrub: Option<Frame>,
-    last_exact: Option<Instant>,
+    /// The playback this thread follows, by generation, and the preview it plays in.
+    playing: Option<(u64, Preview)>,
 }
 
 impl VideoThread {
@@ -222,50 +240,71 @@ impl VideoThread {
                     Err(_) => return,
                 },
             };
-            // Requests pile up while a frame is decoded; only the newest frame request counts.
-            let mut wanted = None;
-            let mut redraw = false;
+            // Requests pile up while a frame is decoded; only the newest frame request of each
+            // preview counts.
+            let mut wanted: [Option<(Frame, bool)>; 2] = [None; 2];
+            let mut redraw = [false; 2];
             for request in first.into_iter().chain(inbox.try_iter()) {
                 match request {
-                    VideoRequest::Project(project) => {
-                        self.project = Some(project);
+                    VideoRequest::Project(preview, project) => {
+                        let view = self.view_mut(preview);
+                        view.project = Some(project);
                         // An edit can change what any frame shows, and what comes next.
-                        self.shown_exactly = None;
+                        view.shown_exactly = None;
                         self.upcoming = None;
                     }
-                    VideoRequest::Size(size) => {
-                        self.size = size;
-                        redraw = true;
+                    VideoRequest::Size(preview, size) => {
+                        self.view_mut(preview).size = size;
+                        redraw[preview.index()] = true;
                     }
-                    VideoRequest::Show(frame) => {
+                    VideoRequest::Show(preview, frame) => {
                         self.playing = None;
                         self.upcoming = None;
-                        wanted = Some((frame, true));
+                        wanted[preview.index()] = Some((frame, true));
                     }
-                    VideoRequest::Scrub(frame) => {
+                    VideoRequest::Scrub(preview, frame) => {
                         self.playing = None;
                         self.upcoming = None;
-                        wanted = Some((frame, false));
+                        wanted[preview.index()] = Some((frame, false));
                     }
-                    VideoRequest::Play { generation } => {
-                        self.playing = Some(generation);
-                        self.pending_scrub = None;
-                        wanted = None;
+                    VideoRequest::Play {
+                        preview,
+                        generation,
+                    } => {
+                        self.playing = Some((generation, preview));
+                        self.view_mut(preview).pending_scrub = None;
+                        wanted[preview.index()] = None;
+                    }
+                    VideoRequest::Close(preview) => {
+                        if self.playing.is_some_and(|(_, playing)| playing == preview) {
+                            self.playing = None;
+                        }
+                        *self.view_mut(preview) = View::default();
+                        (wanted[preview.index()], redraw[preview.index()]) = (None, false);
                     }
                 }
             }
-            if let Some(generation) = self.playing {
-                self.follow_clock(generation);
-            } else if let Some((frame, exact)) = wanted {
-                if exact {
-                    self.show_exact(frame);
-                } else {
-                    self.scrub(frame);
+            for preview in Preview::ALL {
+                let index = preview.index();
+                if let Some((generation, playing)) = self.playing
+                    && playing == preview
+                {
+                    self.follow_clock(preview, generation);
+                } else if let Some((frame, exact)) = wanted[index] {
+                    if exact {
+                        self.show_exact(preview, frame);
+                    } else {
+                        self.scrub(preview, frame);
+                    }
+                } else if let Some(frame) = self
+                    .view(preview)
+                    .pending_scrub
+                    .filter(|_| self.scrub_due(preview))
+                {
+                    self.show_exact(preview, frame);
+                } else if let Some(frame) = self.view(preview).target.filter(|_| redraw[index]) {
+                    self.show_exact(preview, frame);
                 }
-            } else if let Some(frame) = self.pending_scrub.filter(|_| self.scrub_due()) {
-                self.show_exact(frame);
-            } else if let Some(frame) = self.target.filter(|_| redraw) {
-                self.show_exact(frame);
             }
             if self.playing.is_none() {
                 self.upcoming = None;
@@ -277,6 +316,14 @@ impl VideoThread {
             self.open_decoders
                 .store(self.decoders_open(), Ordering::Relaxed);
         }
+    }
+
+    fn view(&self, preview: Preview) -> &View {
+        &self.views[preview.index()]
+    }
+
+    fn view_mut(&mut self, preview: Preview) -> &mut View {
+        &mut self.views[preview.index()]
     }
 
     /// The video decoders open: the pool's, the upcoming clip's, and a lookahead worker's.
@@ -292,15 +339,20 @@ impl VideoThread {
     /// How long to wait for a request before there is work of its own; `None` for as long as
     /// it takes.
     fn wait(&self) -> Option<Duration> {
-        if self.playing.is_some() {
-            return Some(self.until_next_frame().min(PLAYBACK_POLL));
+        if let Some((_, preview)) = self.playing {
+            return Some(self.until_next_frame(preview).min(PLAYBACK_POLL));
         }
         let now = Instant::now();
-        let scrub = self.pending_scrub.map(|_| {
-            self.last_exact.map_or(Duration::ZERO, |last| {
-                (last + SCRUB_INTERVAL).saturating_duration_since(now)
+        let scrub = self
+            .views
+            .iter()
+            .filter(|view| view.pending_scrub.is_some())
+            .map(|view| {
+                view.last_exact.map_or(Duration::ZERO, |last| {
+                    (last + SCRUB_INTERVAL).saturating_duration_since(now)
+                })
             })
-        });
+            .min();
         let idle = self
             .decoders
             .iter()
@@ -312,18 +364,18 @@ impl VideoThread {
         }
     }
 
-    /// How long until the playback clock reaches the next frame; zero when the frame on
-    /// screen is not the one the clock is at.
-    fn until_next_frame(&self) -> Duration {
+    /// How long until the playback clock reaches the next frame of `preview`, the one
+    /// playing; zero when the frame on screen is not the one the clock is at.
+    fn until_next_frame(&self, preview: Preview) -> Duration {
         let transport = lock(&self.transport);
         let (Some(factor), true) = (transport.playing, transport.clock.is_running()) else {
             // Waiting for the sound to start the clock.
             return Duration::from_millis(1);
         };
-        let rate = transport.rate;
+        let rate = transport.rate();
         let time = transport.clock.time(Instant::now());
         let frame = frame_at(MediaTime(time), rate);
-        if self.shown_exactly != Some(frame) {
+        if self.view(preview).shown_exactly != Some(frame) {
             return Duration::ZERO;
         }
         // The next frame starts where this one ends, or, backwards, just before this one.
@@ -336,50 +388,54 @@ impl VideoThread {
         Duration::from_micros(micros.ceil() as u64)
     }
 
-    fn scrub_due(&self) -> bool {
-        self.last_exact
+    fn scrub_due(&self, preview: Preview) -> bool {
+        self.view(preview)
+            .last_exact
             .is_none_or(|last| last.elapsed() >= SCRUB_INTERVAL)
     }
 
-    /// Shows `frame` while the playhead is dragged.
-    fn scrub(&mut self, frame: Frame) {
-        match self.shown_at(frame, Fetch::Cached) {
+    /// Shows `frame` in `preview` while its playhead is dragged.
+    fn scrub(&mut self, preview: Preview, frame: Frame) {
+        match self.shown_at(preview, frame, Fetch::Cached) {
             Ok(Shown::Unknown) => {}
             Ok(shown) => {
-                self.pending_scrub = None;
-                return self.present(frame, shown, true);
+                self.view_mut(preview).pending_scrub = None;
+                return self.present(preview, frame, shown, true);
             }
             Err(error) => return self.fail(error),
         }
-        if self.scrub_due() {
-            return self.show_exact(frame);
+        if self.scrub_due(preview) {
+            return self.show_exact(preview, frame);
         }
-        if let Ok(shown @ Shown::Picture(_)) = self.shown_at(frame, Fetch::Nearest) {
-            self.present(frame, shown, false);
+        if let Ok(shown @ Shown::Picture(_)) = self.shown_at(preview, frame, Fetch::Nearest) {
+            self.present(preview, frame, shown, false);
         }
-        self.target = Some(frame);
-        self.pending_scrub = Some(frame);
+        let view = self.view_mut(preview);
+        view.target = Some(frame);
+        view.pending_scrub = Some(frame);
     }
 
-    /// Shows exactly `frame`, decoding it if needed; while an export runs, the nearest
-    /// cached frame instead.
-    fn show_exact(&mut self, frame: Frame) {
-        self.pending_scrub = None;
-        self.last_exact = Some(Instant::now());
+    /// Shows exactly `frame` in `preview`, decoding it if needed; while an export runs, the
+    /// nearest cached frame instead.
+    fn show_exact(&mut self, preview: Preview, frame: Frame) {
+        let view = self.view_mut(preview);
+        view.pending_scrub = None;
+        view.last_exact = Some(Instant::now());
         let exporting = self.exporting.load(Ordering::Relaxed);
         let fetch = if exporting {
             Fetch::Nearest
         } else {
             Fetch::Decode
         };
-        match self.shown_at(frame, fetch) {
-            Ok(shown) => self.present(frame, shown, !exporting),
+        match self.shown_at(preview, frame, fetch) {
+            Ok(shown) => self.present(preview, frame, shown, !exporting),
             Err(error) => self.fail(error),
         }
     }
 
-    /// Shows the frame the playback clock is at, and stops at the ends of the sequence.
-    fn follow_clock(&mut self, generation: u64) {
+    /// Shows in `preview` the frame the playback clock is at, and stops at the ends of its
+    /// sequence.
+    fn follow_clock(&mut self, preview: Preview, generation: u64) {
         let (time, factor) = {
             let transport = lock(&self.transport);
             let current = transport.generation == generation;
@@ -388,7 +444,7 @@ impl VideoThread {
                 transport.playing.filter(|_| current),
             )
         };
-        let (Some(factor), Some(project)) = (factor, self.project.clone()) else {
+        let (Some(factor), Some(project)) = (factor, self.view(preview).project.clone()) else {
             self.playing = None;
             return;
         };
@@ -396,24 +452,24 @@ impl VideoThread {
         let last = (project.sequence().end() - Frame(1)).max(Frame(0));
         let forward = factor > 0.0;
         if forward && frame > last {
-            return self.stop_at(generation, last);
+            return self.stop_at(preview, generation, last);
         }
         if !forward && frame < Frame(0) {
-            return self.stop_at(generation, Frame(0));
+            return self.stop_at(preview, generation, Frame(0));
         }
-        if self.shown_exactly == Some(frame) {
-            return self.tend_upcoming(&project);
+        if self.view(preview).shown_exactly == Some(frame) {
+            return self.tend_upcoming(preview, &project);
         }
         let speed = project
             .sequence()
             .visible_video_at(frame)
             .map_or(1.0, |clip| clip.speed);
         let fetch = playback_fetch(factor * speed);
-        match self.shown_at(frame, fetch) {
-            Ok(shown) => self.present(frame, shown, true),
+        match self.shown_at(preview, frame, fetch) {
+            Ok(shown) => self.present(preview, frame, shown, true),
             Err(error) => {
                 self.fail(error);
-                return self.stop_at(generation, frame);
+                return self.stop_at(preview, generation, frame);
             }
         }
         // Get the next frame ready while this one is on screen; keyframes come as they come.
@@ -428,12 +484,12 @@ impl VideoThread {
             frame - Frame(step)
         };
         if (Frame(0)..=last).contains(&next) {
-            let _ = self.shown_at(next, fetch);
+            let _ = self.shown_at(preview, next, fetch);
         }
         // Playing forwards, the clip to come into view after that one, too.
         if forward && matches!(fetch, Fetch::Decode) {
             self.plan_upcoming(&project, next.min(last), factor);
-            self.tend_upcoming(&project);
+            self.tend_upcoming(preview, &project);
         } else {
             self.upcoming = None;
         }
@@ -476,12 +532,12 @@ impl VideoThread {
         });
     }
 
-    /// Starts a worker on the upcoming clip when none is busy, and takes what it made ready
-    /// once it has.
-    fn tend_upcoming(&mut self, project: &Project) {
+    /// Starts a worker on the upcoming clip of `preview`, the one playing, when none is busy,
+    /// and takes what it made ready once it has.
+    fn tend_upcoming(&mut self, preview: Preview, project: &Project) {
         match self.upcoming.as_ref().map(|upcoming| &upcoming.state) {
             Some(Readiness::Waiting) if !self.lookahead_busy.load(Ordering::Acquire) => {
-                self.start_upcoming(project);
+                self.start_upcoming(preview, project);
             }
             Some(Readiness::Working(_)) => self.receive_upcoming(false),
             _ => {}
@@ -491,8 +547,9 @@ impl VideoThread {
     /// Hands the upcoming clip to a worker thread. Its decoder takes the place of every
     /// decoder in the pool but the one of the clip in view, so that at most two are open; a
     /// decoder of the same media kept for a clip out of view goes with it.
-    fn start_upcoming(&mut self, project: &Project) {
+    fn start_upcoming(&mut self, preview: Preview, project: &Project) {
         let in_view = self
+            .view(preview)
             .shown_exactly
             .and_then(|frame| project.sequence().visible_video_at(frame))
             .map(|clip| clip.media_id);
@@ -617,8 +674,9 @@ impl VideoThread {
         }
     }
 
-    /// Ends playback `generation` at `frame`, if it is still the current playback.
-    fn stop_at(&mut self, generation: u64, frame: Frame) {
+    /// Ends playback `generation`, in `preview`, at `frame`, if it is still the current
+    /// playback.
+    fn stop_at(&mut self, preview: Preview, generation: u64, frame: Frame) {
         self.playing = None;
         {
             let mut transport = lock(&self.transport);
@@ -627,18 +685,23 @@ impl VideoThread {
             }
             transport.generation += 1;
             transport.playing = None;
-            let at = frame_to_media(frame, transport.rate);
+            let at = frame_to_media(frame, transport.rate());
             transport.clock = PlaybackClock::stopped(at.0);
         }
-        if self.shown_exactly != Some(frame) {
-            self.show_exact(frame);
+        if self.view(preview).shown_exactly != Some(frame) {
+            self.show_exact(preview, frame);
         }
-        (self.report)(EngineEvent::Stopped { frame });
+        (self.report)(EngineEvent::Stopped { preview, frame });
     }
 
-    /// What the preview shows at `frame`, going as far as `fetch` allows.
-    fn shown_at(&mut self, frame: Frame, fetch: Fetch) -> Result<Shown, EngineError> {
-        let Some(project) = self.project.clone() else {
+    /// What `preview` shows at `frame`, going as far as `fetch` allows.
+    fn shown_at(
+        &mut self,
+        preview: Preview,
+        frame: Frame,
+        fetch: Fetch,
+    ) -> Result<Shown, EngineError> {
+        let Some(project) = self.view(preview).project.clone() else {
             return Ok(Shown::Black);
         };
         let sequence = project.sequence();
@@ -835,35 +898,44 @@ impl VideoThread {
         Ok(self.decoders.len() - 1)
     }
 
-    /// Draws what is shown at `frame` and reports it; `exact` says whether it is that frame
-    /// or a stand-in while scrubbing.
-    fn present(&mut self, frame: Frame, shown: Shown, exact: bool) {
-        self.target = Some(frame);
-        // Nothing to draw into before the preview has a size.
-        if matches!(shown, Shown::Unknown) || self.size.0 == 0 || self.size.1 == 0 {
-            return;
-        }
-        // The sequence's frame, as large as fits in the preview; the preview's own
-        // background shows around it.
-        let project = self.project.as_deref();
-        let size = project.map_or(self.size, |project| {
-            fit_size(project.sequence().resolution(), self.size)
-        });
-        let drawn = match shown {
-            Shown::Picture(picture) => {
-                let placement = project
-                    .map(|project| placement_at(project, frame))
-                    .unwrap_or_default();
-                self.compositor.render_placed(&picture, &placement, size)
+    /// Draws what `preview` shows at `frame` and reports it; `exact` says whether it is that
+    /// frame or a stand-in while scrubbing.
+    fn present(&mut self, preview: Preview, frame: Frame, shown: Shown, exact: bool) {
+        let drawn = {
+            let gpu = &self.gpu;
+            let view = &mut self.views[preview.index()];
+            view.target = Some(frame);
+            // Nothing to draw into before the preview has a size.
+            if matches!(shown, Shown::Unknown) || view.size.0 == 0 || view.size.1 == 0 {
+                return;
             }
-            Shown::Black | Shown::Unknown => self.compositor.blank(size),
+            // The sequence's frame, as large as fits in the preview; the preview's own
+            // background shows around it.
+            let project = view.project.as_deref();
+            let size = project.map_or(view.size, |project| {
+                fit_size(project.sequence().resolution(), view.size)
+            });
+            let compositor = view.compositor.get_or_insert_with(|| Compositor::new(gpu));
+            match shown {
+                Shown::Picture(picture) => {
+                    let placement = project
+                        .map(|project| placement_at(project, frame))
+                        .unwrap_or_default();
+                    compositor.render_placed(&picture, &placement, size)
+                }
+                Shown::Black | Shown::Unknown => compositor.blank(size),
+            }
         };
         let texture = match drawn {
             Ok(texture) => Some(texture),
             Err(error) => return self.fail(error.into()),
         };
-        self.shown_exactly = exact.then_some(frame);
-        (self.report)(EngineEvent::Frame { frame, texture });
+        self.view_mut(preview).shown_exactly = exact.then_some(frame);
+        (self.report)(EngineEvent::Frame {
+            preview,
+            frame,
+            texture,
+        });
     }
 
     fn fail(&self, error: EngineError) {

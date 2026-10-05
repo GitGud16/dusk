@@ -11,7 +11,7 @@ use std::time::Instant;
 
 use dusk_core::time::STANDARD_RATES;
 use dusk_core::{ClipId, Command, Frame, MediaId, Project};
-use dusk_engine::{Engine, EngineEvent, ExportEvent, ExportJob};
+use dusk_engine::{Engine, EngineEvent, ExportEvent, ExportJob, Preview};
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 
 use crate::document::{Document, Question};
@@ -47,22 +47,31 @@ pub fn with_app<R>(f: impl FnOnce(&mut App) -> R) -> Option<R> {
     APP.with(|cell| cell.try_borrow_mut().ok()?.as_mut().map(f))
 }
 
-/// What the engine reports, sent on to the UI thread. Frames are passed through a slot that
-/// holds only the newest one, so a busy UI thread skips frames instead of queuing them.
+/// What the engine reports, sent on to the UI thread. Frames are passed through a slot per
+/// preview that holds only the newest one, so a busy UI thread skips frames instead of
+/// queuing them.
 pub fn engine_events() -> impl Fn(EngineEvent) + Send + Sync + 'static {
-    type Slot = Arc<Mutex<Option<(Frame, Option<dusk_engine::wgpu::Texture>)>>>;
-    let newest: Slot = Arc::default();
+    type Newest = Option<(Frame, Option<dusk_engine::wgpu::Texture>)>;
+    let slots: Arc<Mutex<[Newest; 2]>> = Arc::default();
     move |event| match event {
-        EngineEvent::Frame { frame, texture } => {
-            let mut slot = newest.lock().unwrap_or_else(PoisonError::into_inner);
-            let waiting = slot.replace((frame, texture)).is_some();
-            drop(slot);
+        EngineEvent::Frame {
+            preview,
+            frame,
+            texture,
+        } => {
+            let mut newest = slots.lock().unwrap_or_else(PoisonError::into_inner);
+            let waiting = newest.iter().any(Option::is_some);
+            newest[preview.index()] = Some((frame, texture));
+            drop(newest);
             if !waiting {
-                let newest = Arc::clone(&newest);
+                let slots = Arc::clone(&slots);
                 let _ = slint::invoke_from_event_loop(move || {
-                    let frame = newest.lock().unwrap_or_else(PoisonError::into_inner).take();
-                    if let Some((frame, texture)) = frame {
-                        with_app(|app| app.show_frame(frame, texture));
+                    let newest =
+                        std::mem::take(&mut *slots.lock().unwrap_or_else(PoisonError::into_inner));
+                    for (preview, newest) in Preview::ALL.into_iter().zip(newest) {
+                        if let Some((frame, texture)) = newest {
+                            with_app(|app| app.show_frame(preview, frame, texture));
+                        }
                     }
                 });
             }
@@ -157,7 +166,7 @@ impl App {
     /// Makes `project` the current one and shows it.
     pub(crate) fn set_project(&mut self, project: Project) {
         let project = Arc::new(project);
-        self.engine.set_project(Arc::clone(&project));
+        self.engine.set_project(Preview::Main, Arc::clone(&project));
         self.project = project;
         if self
             .selected_clip
@@ -172,7 +181,7 @@ impl App {
             self.selected_media = None;
         }
         self.playhead = self.clamp(self.playhead);
-        self.engine.show(self.playhead);
+        self.engine.show(Preview::Main, self.playhead);
         self.refresh_all();
     }
 
@@ -344,11 +353,11 @@ impl App {
             ExportEvent::Progress { .. } => {}
         }
         // The preview showed cached frames only while exporting.
-        self.engine.show(self.playhead);
+        self.engine.show(Preview::Main, self.playhead);
     }
 
     pub fn play_pause(&mut self) {
-        if self.engine.playing().is_some() {
+        if self.playing(Preview::Main).is_some() {
             self.pause();
         } else {
             self.play(1.0);
@@ -357,7 +366,7 @@ impl App {
 
     /// J, L and Shift with them: plays at the speed the key goes to from the current one.
     fn play_key(&mut self, key: SpeedKey) {
-        self.play(next_factor(self.engine.playing(), key));
+        self.play(next_factor(self.playing(Preview::Main), key));
     }
 
     /// Plays at `factor` from where playback is, or from the playhead.
@@ -365,7 +374,7 @@ impl App {
         if self.project.sequence().end() == Frame(0) {
             return;
         }
-        let from = self.engine.pause().unwrap_or(self.playhead);
+        let from = self.stop_playing(Preview::Main).unwrap_or(self.playhead);
         // Playing forwards from the last frame starts over; backwards from the first frame,
         // from the end.
         let from = if factor > 0.0 && from >= self.last_frame() {
@@ -376,33 +385,53 @@ impl App {
             from
         };
         self.playhead = from;
-        self.engine.play(from, factor);
+        self.engine.play(Preview::Main, from, factor);
         self.refresh_transport();
     }
 
     pub(crate) fn pause(&mut self) {
-        if let Some(at) = self.engine.pause() {
-            self.playhead = at;
-        }
+        self.stop_playing(Preview::Main);
         self.refresh_transport();
     }
 
+    /// The playback factor, when `preview` is the one playing.
+    pub(crate) fn playing(&self, preview: Preview) -> Option<f64> {
+        let (playing, factor) = self.engine.playing()?;
+        (playing == preview).then_some(factor)
+    }
+
+    /// Stops playback, in whichever window it was; that window's playhead stays where it
+    /// stopped. Returns that frame when `preview` was the one playing.
+    pub(crate) fn stop_playing(&mut self, preview: Preview) -> Option<Frame> {
+        let (played, at) = self.engine.pause()?;
+        self.stopped(played, at);
+        (played == preview).then_some(at)
+    }
+
+    /// Playback in `preview` stopped at `frame`.
+    fn stopped(&mut self, preview: Preview, frame: Frame) {
+        match preview {
+            Preview::Main => self.playhead = frame,
+            Preview::ClipEditor => {}
+        }
+    }
+
     fn step(&mut self, frames: i64) {
-        let from = self.engine.pause().unwrap_or(self.playhead);
+        let from = self.stop_playing(Preview::Main).unwrap_or(self.playhead);
         self.seek(from + Frame(frames));
     }
 
     /// Moves the playhead to `frame` and shows exactly that frame.
     pub(crate) fn seek(&mut self, frame: Frame) {
         self.playhead = self.clamp(frame);
-        self.engine.show(self.playhead);
+        self.engine.show(Preview::Main, self.playhead);
         self.refresh_transport();
     }
 
     /// The playhead is being dragged to `frame`.
     pub fn scrub(&mut self, frame: i32) {
         self.playhead = self.clamp(Frame(frame.into()));
-        self.engine.scrub(self.playhead);
+        self.engine.scrub(Preview::Main, self.playhead);
         self.refresh_transport();
     }
 
@@ -413,7 +442,7 @@ impl App {
 
     pub fn preview_resized(&self, width: i32, height: i32) {
         if let (Ok(width @ 1..), Ok(height @ 1..)) = (u32::try_from(width), u32::try_from(height)) {
-            self.engine.set_preview_size((width, height));
+            self.engine.set_preview_size(Preview::Main, (width, height));
         }
     }
 
@@ -438,9 +467,17 @@ impl App {
         self.refresh_timeline();
     }
 
-    /// The engine drew `frame`; while playing, the playhead follows it.
-    fn show_frame(&mut self, frame: Frame, texture: Option<dusk_engine::wgpu::Texture>) {
+    /// The engine drew `frame` in `preview`; while playing, the playhead follows it.
+    fn show_frame(
+        &mut self,
+        preview: Preview,
+        frame: Frame,
+        texture: Option<dusk_engine::wgpu::Texture>,
+    ) {
         let started = Instant::now();
+        if preview != Preview::Main {
+            return;
+        }
         let Some(window) = self.window() else {
             return;
         };
@@ -450,7 +487,7 @@ impl App {
             Some(Err(error)) => return self.fail(&error.to_string()),
         };
         window.set_preview_image(image);
-        if self.engine.playing().is_some() {
+        if self.playing(Preview::Main).is_some() {
             self.playhead = frame;
             self.refresh_transport();
         }
@@ -461,12 +498,16 @@ impl App {
 
     fn engine_event(&mut self, event: EngineEvent) {
         match event {
-            EngineEvent::Stopped { frame } => {
-                self.playhead = frame;
+            EngineEvent::Stopped { preview, frame } => {
+                self.stopped(preview, frame);
                 self.refresh_transport();
             }
             EngineEvent::Error(error) => self.fail(&error.to_string()),
-            EngineEvent::Frame { frame, texture } => self.show_frame(frame, texture),
+            EngineEvent::Frame {
+                preview,
+                frame,
+                texture,
+            } => self.show_frame(preview, frame, texture),
             EngineEvent::Export(event) => self.export_event(event),
             EngineEvent::Thumbnail { media, thumbnail } => {
                 let pixels = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(
@@ -627,7 +668,7 @@ impl App {
             return;
         };
         let rate = self.project.sequence().frame_rate();
-        let playing = self.engine.playing();
+        let playing = self.playing(Preview::Main);
         if playing.is_some() {
             let before = self.view;
             self.view.follow(self.playhead);

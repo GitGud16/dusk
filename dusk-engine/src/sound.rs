@@ -12,18 +12,21 @@ use dusk_core::{MediaTime, Project};
 use dusk_media::MediaError;
 
 use crate::EngineError;
-use crate::engine::{EngineEvent, EngineOptions, Report, SharedTransport, lock};
+use crate::engine::{EngineEvent, EngineOptions, Preview, Report, SharedTransport, lock};
 use crate::mixer::{Mixer, ReverseMixer};
 
 /// What the front asks of the mixer thread.
 pub(crate) enum SoundRequest {
-    Project(Arc<Project>),
+    Project(Preview, Arc<Project>),
     Play {
+        preview: Preview,
         generation: u64,
         from: MediaTime,
         factor: f64,
     },
     Stop,
+    /// The preview's window closed.
+    Close(Preview),
 }
 
 /// Frames mixed at a time: 10 ms at 48 kHz.
@@ -51,7 +54,7 @@ pub(crate) fn spawn(
                 sound,
                 transport,
                 report,
-                project: None,
+                projects: [None, None],
                 output: None,
                 no_device: false,
                 playing: None,
@@ -67,7 +70,8 @@ struct SoundThread {
     sound: bool,
     transport: SharedTransport,
     report: Report,
-    project: Option<Arc<Project>>,
+    /// Each preview's project, by [`Preview::index`].
+    projects: [Option<Arc<Project>>; 2],
     /// Opened the first time sound plays, then kept.
     output: Option<AudioOutput>,
     /// The machine has no output device, or it failed to open.
@@ -125,26 +129,31 @@ impl SoundThread {
             };
             for request in first.into_iter().chain(inbox.try_iter()) {
                 match request {
-                    SoundRequest::Project(project) => self.project = Some(project),
+                    SoundRequest::Project(preview, project) => {
+                        self.projects[preview.index()] = Some(project);
+                    }
                     SoundRequest::Stop => self.stop(),
+                    SoundRequest::Close(preview) => self.projects[preview.index()] = None,
                     SoundRequest::Play {
+                        preview,
                         generation,
                         from,
                         factor,
-                    } => self.play(generation, from, factor),
+                    } => self.play(preview, generation, from, factor),
                 }
             }
             self.feed();
         }
     }
 
-    fn play(&mut self, generation: u64, from: MediaTime, factor: f64) {
+    fn play(&mut self, preview: Preview, generation: u64, from: MediaTime, factor: f64) {
         self.stop();
         if self.sound && audible(factor) {
             self.open_device();
         }
         let output = self.output.as_mut().filter(|_| audible(factor));
-        let (Some(output), Some(project)) = (output, self.project.clone()) else {
+        let project = self.projects[preview.index()].clone();
+        let (Some(output), Some(project)) = (output, project) else {
             return self.start_system_clock(generation, from, factor);
         };
         let mut playing = Playing {

@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError, mpsc};
 use std::time::{Duration, Instant};
 
 use dusk_core::{Command, Frame, MediaId, Project, RemoveClips, import, split_at};
-use dusk_engine::{Engine, EngineEvent, EngineOptions, Gpu, media_info};
+use dusk_engine::{Engine, EngineEvent, EngineOptions, Gpu, Preview, media_info};
 use dusk_render::Compositor;
 
 fn sample() -> PathBuf {
@@ -64,8 +64,8 @@ fn start_with(options: EngineOptions, project: Arc<Project>) -> Running {
         let _ = sender.send(event);
     })
     .expect("the engine starts");
-    engine.set_project(project);
-    engine.set_preview_size((64, 48));
+    engine.set_project(Preview::Main, project);
+    engine.set_preview_size(Preview::Main, (64, 48));
     Running {
         engine,
         events,
@@ -88,7 +88,7 @@ impl Running {
     /// The next frame event, skipping nothing.
     fn next_frame(&self) -> (Frame, Option<dusk_render::wgpu::Texture>) {
         match self.events.recv_timeout(PATIENCE).expect("an event") {
-            EngineEvent::Frame { frame, texture } => (frame, texture),
+            EngineEvent::Frame { frame, texture, .. } => (frame, texture),
             other => panic!("expected a frame, got {other:?}"),
         }
     }
@@ -99,7 +99,7 @@ impl Running {
         loop {
             match self.events.recv_timeout(PATIENCE).expect("an event") {
                 EngineEvent::Frame { frame, .. } => frames.push(frame),
-                EngineEvent::Stopped { frame } => return (frames, frame),
+                EngineEvent::Stopped { frame, .. } => return (frames, frame),
                 EngineEvent::Error(error) => panic!("{error}"),
                 EngineEvent::Export(event) => panic!("no export was started: {event:?}"),
                 EngineEvent::Thumbnail { media, .. } => {
@@ -113,7 +113,7 @@ impl Running {
 #[test]
 fn the_next_clip_gets_a_decoder_of_its_own_before_it_comes_into_view() {
     let running = start(project_with_a_jump());
-    running.engine.play(Frame(0), 1.0);
+    running.engine.play(Preview::Main, Frame(0), 1.0);
     let mut most_while_first = 0;
     let stopped = loop {
         match running.events.recv_timeout(PATIENCE).expect("an event") {
@@ -124,7 +124,7 @@ fn the_next_clip_gets_a_decoder_of_its_own_before_it_comes_into_view() {
                     most_while_first = most_while_first.max(open);
                 }
             }
-            EngineEvent::Stopped { frame } => break frame,
+            EngineEvent::Stopped { frame, .. } => break frame,
             EngineEvent::Error(error) => panic!("{error}"),
             EngineEvent::Export(event) => panic!("no export was started: {event:?}"),
             EngineEvent::Thumbnail { media, .. } => panic!("no thumbnail was asked for: {media:?}"),
@@ -153,10 +153,101 @@ fn thumbnails_come_from_the_thumbnail_thread() {
     assert_eq!((thumbnail.width, thumbnail.height), (128, 96));
 }
 
+/// The next frame event, with the preview it was drawn for.
+fn next_frame_of(running: &Running) -> (Preview, Frame, Option<dusk_render::wgpu::Texture>) {
+    loop {
+        match running.events.recv_timeout(PATIENCE).expect("an event") {
+            EngineEvent::Frame {
+                preview,
+                frame,
+                texture,
+            } => return (preview, frame, texture),
+            EngineEvent::Error(error) => panic!("{error}"),
+            _ => {}
+        }
+    }
+}
+
+fn is_black(running: &Running, texture: &dusk_render::wgpu::Texture) -> bool {
+    let rgba = Compositor::new(&running.gpu).read_rgba(texture).unwrap();
+    rgba.chunks(4).all(|pixel| pixel[..3] == [0, 0, 0])
+}
+
+#[test]
+fn the_clip_editor_preview_draws_a_project_of_its_own() {
+    // The main window's sample starts at frame 0; the clip editor's at frame 15, so its
+    // frame 5 is a gap.
+    let running = start(project_at(Frame(0)));
+    running
+        .engine
+        .set_project(Preview::ClipEditor, project_at(Frame(15)));
+    running
+        .engine
+        .set_preview_size(Preview::ClipEditor, (32, 24));
+    running.engine.show(Preview::Main, Frame(5));
+    let (preview, frame, texture) = next_frame_of(&running);
+    let texture = texture.expect("a picture");
+    assert_eq!((preview, frame), (Preview::Main, Frame(5)));
+    assert_eq!((texture.width(), texture.height()), (64, 48));
+    assert!(!is_black(&running, &texture));
+    running.engine.show(Preview::ClipEditor, Frame(5));
+    let (preview, frame, texture) = next_frame_of(&running);
+    let texture = texture.expect("a frame");
+    assert_eq!((preview, frame), (Preview::ClipEditor, Frame(5)));
+    assert_eq!((texture.width(), texture.height()), (32, 24));
+    assert!(is_black(&running, &texture));
+}
+
+#[test]
+fn playing_in_one_preview_stops_playing_in_the_other() {
+    let running = start(project_at(Frame(0)));
+    running
+        .engine
+        .set_project(Preview::ClipEditor, project_at(Frame(0)));
+    running
+        .engine
+        .set_preview_size(Preview::ClipEditor, (32, 24));
+    running.engine.play(Preview::Main, Frame(0), 1.0);
+    running.engine.play(Preview::ClipEditor, Frame(20), 1.0);
+    assert_eq!(running.engine.playing(), Some((Preview::ClipEditor, 1.0)));
+    // From here on only the clip editor's frames come, up to the end of its sequence.
+    let stopped = loop {
+        match running.events.recv_timeout(PATIENCE).expect("an event") {
+            EngineEvent::Frame { preview, frame, .. } if frame >= Frame(20) => {
+                assert_eq!(preview, Preview::ClipEditor)
+            }
+            EngineEvent::Frame { .. } => {}
+            EngineEvent::Stopped { preview, frame } => break (preview, frame),
+            EngineEvent::Error(error) => panic!("{error}"),
+            other => panic!("{other:?}"),
+        }
+    };
+    assert_eq!(stopped, (Preview::ClipEditor, Frame(29)));
+}
+
+#[test]
+fn a_closed_preview_draws_nothing_more() {
+    let running = start(project_at(Frame(0)));
+    running
+        .engine
+        .set_project(Preview::ClipEditor, project_at(Frame(0)));
+    running
+        .engine
+        .set_preview_size(Preview::ClipEditor, (32, 24));
+    running.engine.show(Preview::ClipEditor, Frame(5));
+    assert_eq!(next_frame_of(&running).0, Preview::ClipEditor);
+    running.engine.close_preview(Preview::ClipEditor);
+    running.engine.show(Preview::ClipEditor, Frame(6));
+    running.engine.show(Preview::Main, Frame(7));
+    // Requests are taken in order: had the closed preview drawn, its frame would come first.
+    let (preview, frame, _) = next_frame_of(&running);
+    assert_eq!((preview, frame), (Preview::Main, Frame(7)));
+}
+
 #[test]
 fn shows_the_requested_frame_at_the_preview_size() {
     let running = start(project_at(Frame(0)));
-    running.engine.show(Frame(15));
+    running.engine.show(Preview::Main, Frame(15));
     let (frame, texture) = running.next_frame();
     assert_eq!(frame, Frame(15));
     let texture = texture.expect("a picture");
@@ -169,7 +260,7 @@ fn shows_the_requested_frame_at_the_preview_size() {
 #[test]
 fn a_gap_is_a_black_frame() {
     let running = start(project_at(Frame(15)));
-    running.engine.show(Frame(5));
+    running.engine.show(Preview::Main, Frame(5));
     let (frame, texture) = running.next_frame();
     assert_eq!(frame, Frame(5));
     let texture = texture.expect("a frame");
@@ -188,7 +279,7 @@ fn the_preview_has_the_shape_of_the_sequence() {
         .apply(&mut project)
         .unwrap();
     let running = start(Arc::new(project));
-    running.engine.show(Frame(5));
+    running.engine.show(Preview::Main, Frame(5));
     let (_, texture) = running.next_frame();
     let texture = texture.expect("a picture");
     assert_eq!((texture.width(), texture.height()), (36, 48));
@@ -206,7 +297,7 @@ fn a_photo_shows_for_as_long_as_its_clip_lasts() {
         .unwrap();
     let running = start(Arc::new(project));
     for at in [0, 100, 149] {
-        running.engine.show(Frame(at));
+        running.engine.show(Preview::Main, Frame(at));
         let (frame, texture) = running.next_frame();
         assert_eq!(frame, Frame(at));
         let texture = texture.expect("a picture");
@@ -222,9 +313,9 @@ fn a_photo_shows_for_as_long_as_its_clip_lasts() {
 fn a_scrub_ends_on_the_exact_frame() {
     let running = start(project_at(Frame(0)));
     for frame in 0..30 {
-        running.engine.scrub(Frame(frame));
+        running.engine.scrub(Preview::Main, Frame(frame));
     }
-    running.engine.show(Frame(29));
+    running.engine.show(Preview::Main, Frame(29));
     loop {
         let (frame, texture) = running.next_frame();
         if frame == Frame(29) && texture.is_some() {
@@ -237,7 +328,7 @@ fn a_scrub_ends_on_the_exact_frame() {
 fn playback_runs_to_the_end_in_real_time() {
     let running = start(project_at(Frame(0)));
     let started = Instant::now();
-    running.engine.play(Frame(0), 1.0);
+    running.engine.play(Preview::Main, Frame(0), 1.0);
     let (frames, stopped) = running.play_through();
     let took = started.elapsed();
     assert_eq!(stopped, Frame(29));
@@ -257,7 +348,7 @@ fn playback_runs_to_the_end_in_real_time() {
 fn double_speed_takes_half_the_time() {
     let running = start(project_at(Frame(0)));
     let started = Instant::now();
-    running.engine.play(Frame(0), 2.0);
+    running.engine.play(Preview::Main, Frame(0), 2.0);
     let (_, stopped) = running.play_through();
     let took = started.elapsed();
     assert_eq!(stopped, Frame(29));
@@ -270,7 +361,7 @@ fn double_speed_takes_half_the_time() {
 #[test]
 fn fast_playback_steps_through_keyframes_to_the_end() {
     let running = start(project_at(Frame(0)));
-    running.engine.play(Frame(0), 32.0);
+    running.engine.play(Preview::Main, Frame(0), 32.0);
     let (_, stopped) = running.play_through();
     assert_eq!(stopped, Frame(29));
 }
@@ -278,7 +369,7 @@ fn fast_playback_steps_through_keyframes_to_the_end() {
 #[test]
 fn fast_playback_backwards_stops_at_the_start() {
     let running = start(project_at(Frame(0)));
-    running.engine.play(Frame(29), -8.0);
+    running.engine.play(Preview::Main, Frame(29), -8.0);
     let (_, stopped) = running.play_through();
     assert_eq!(stopped, Frame(0));
 }
@@ -293,7 +384,7 @@ fn playing_backwards_with_a_small_cache_still_reaches_the_start() {
         ..EngineOptions::default()
     };
     let running = start_with(options, project_at(Frame(0)));
-    running.engine.play(Frame(29), -1.0);
+    running.engine.play(Preview::Main, Frame(29), -1.0);
     let (frames, stopped) = running.play_through();
     assert_eq!(stopped, Frame(0));
     assert!(
@@ -306,7 +397,7 @@ fn playing_backwards_with_a_small_cache_still_reaches_the_start() {
 #[test]
 fn playing_backwards_stops_at_the_start() {
     let running = start(project_at(Frame(0)));
-    running.engine.play(Frame(20), -1.0);
+    running.engine.play(Preview::Main, Frame(20), -1.0);
     let (frames, stopped) = running.play_through();
     assert_eq!(stopped, Frame(0));
     assert!(
@@ -318,9 +409,10 @@ fn playing_backwards_stops_at_the_start() {
 #[test]
 fn pausing_stops_where_the_clock_is() {
     let running = start(project_at(Frame(0)));
-    running.engine.play(Frame(0), 1.0);
+    running.engine.play(Preview::Main, Frame(0), 1.0);
     std::thread::sleep(Duration::from_millis(300));
-    let paused = running.engine.pause().expect("it was playing");
+    let (preview, paused) = running.engine.pause().expect("it was playing");
+    assert_eq!(preview, Preview::Main);
     // About 9 frames in, give or take a slow machine.
     assert!((Frame(4)..=Frame(20)).contains(&paused), "{paused:?}");
     assert_eq!(running.engine.playing(), None);
@@ -345,7 +437,7 @@ fn an_unused_decoder_is_closed() {
         },
         project_at(Frame(0)),
     );
-    running.engine.show(Frame(3));
+    running.engine.show(Preview::Main, Frame(3));
     running.next_frame();
     assert_eq!(running.engine.open_decoders(), 1);
     let deadline = Instant::now() + PATIENCE;
@@ -361,11 +453,11 @@ fn an_unused_decoder_is_closed() {
 fn playback_with_sound_runs_to_the_end_in_real_time() {
     let running = start_with(EngineOptions::default(), project_at(Frame(0)));
     let started = Instant::now();
-    running.engine.play(Frame(0), 1.0);
+    running.engine.play(Preview::Main, Frame(0), 1.0);
     let stopped = loop {
         match running.events.recv_timeout(PATIENCE).expect("an event") {
             EngineEvent::Frame { .. } => {}
-            EngineEvent::Stopped { frame } => break frame,
+            EngineEvent::Stopped { frame, .. } => break frame,
             // No usable device here; playback carries on without sound.
             EngineEvent::Error(error) => eprintln!("{error}"),
             EngineEvent::Export(event) => panic!("no export was started: {event:?}"),

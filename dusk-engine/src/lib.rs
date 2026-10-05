@@ -24,7 +24,7 @@ mod video;
 #[cfg(feature = "gpu")]
 pub use dusk_render::{Gpu, GpuError, wgpu};
 #[cfg(feature = "gpu")]
-pub use engine::{DECODER_IDLE, Engine, EngineEvent, EngineOptions};
+pub use engine::{DECODER_IDLE, Engine, EngineEvent, EngineOptions, Preview};
 pub use error::EngineError;
 #[cfg(feature = "gpu")]
 pub use export::{ExportEvent, ExportJob};
