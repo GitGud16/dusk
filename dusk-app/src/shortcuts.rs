@@ -58,6 +58,10 @@ pub enum Action {
     MirrorTopBottom,
     ApplyClip,
     CloseClipEditor,
+    /// When the clip changed in the main window: the clip editor takes it as it is now,
+    /// or keeps its draft to apply over it.
+    ReloadClip,
+    KeepDraft,
 }
 
 /// A key as Slint reports it: a character (lowercase for letters) or a named key.
@@ -247,6 +251,16 @@ pub const SHORTCUTS: &[Shortcut] = &[
         Action::CloseClipEditor,
         "Close the clip editor",
     )),
+    ctrl(char_key(
+        'r',
+        Action::ReloadClip,
+        "Clip editor: the clip changed in the main window; take it as it is now",
+    )),
+    ctrl(char_key(
+        'k',
+        Action::KeepDraft,
+        "Clip editor: the clip changed in the main window; keep the draft",
+    )),
     alt(char_key('1', Action::ToggleMute(0), "Hide or show V1")),
     alt(char_key('2', Action::ToggleMute(1), "Hide or show V2")),
     alt(char_key('3', Action::ToggleMute(2), "Mute or unmute A1")),
@@ -401,6 +415,8 @@ pub fn action_named(name: &str) -> Option<Action> {
         "toggle-fill" => Action::ToggleFill,
         "open-clip-editor" => Action::OpenClipEditor,
         "apply-clip" => Action::ApplyClip,
+        "reload-clip" => Action::ReloadClip,
+        "keep-draft" => Action::KeepDraft,
         _ => return None,
     })
 }
@@ -515,6 +531,11 @@ mod tests {
             action_for("w", true, false, false),
             Some(Action::CloseClipEditor)
         );
+        assert_eq!(
+            action_for("r", true, false, false),
+            Some(Action::ReloadClip)
+        );
+        assert_eq!(action_for("k", true, false, false), Some(Action::KeepDraft));
     }
 
     #[test]

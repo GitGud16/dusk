@@ -6,7 +6,7 @@
 use dusk_core::time::{frame_to_media, media_to_frame, source_span};
 use dusk_core::{
     ClipDraft, ClipEditSession, ClipEdits, Edge, Fit, Frame, MediaKind, MediaTime, Project,
-    Rational, Rect, Rotation, VideoEdits,
+    Rational, Rect, Rotation, SessionStatus, VideoEdits,
 };
 
 use crate::timeline::{media_name, timecode, track_rows};
@@ -221,6 +221,10 @@ pub struct EditorView {
     pub locked: bool,
     /// The draft differs from the clips.
     pub changed: bool,
+    /// The clips were trimmed, moved, sped or edited in the main window meanwhile.
+    pub edited: bool,
+    /// A clip was deleted or unlinked in the main window, so the draft cannot be applied.
+    pub broken: bool,
 }
 
 /// What the clip editor shows of `session`, whose clips are in `project`.
@@ -287,6 +291,8 @@ pub fn editor_view(project: &Project, session: &ClipEditSession) -> EditorView {
         frames: draft.still_length.0,
         locked: placed.iter().any(|(_, locked)| *locked),
         changed: session.changed(),
+        edited: session.status(project) == SessionStatus::Edited,
+        broken: session.status(project) == SessionStatus::Broken,
         ..EditorView::default()
     };
     if let Some(edits) = &draft.video {
@@ -315,7 +321,10 @@ pub fn editor_view(project: &Project, session: &ClipEditSession) -> EditorView {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dusk_core::{AudioEdits, Command, MediaInfo, Orientation, add_media, import, place};
+    use dusk_core::{
+        AudioEdits, Command, MediaInfo, Orientation, RemoveClips, TrimClips, add_media, import,
+        place,
+    };
 
     const SECOND: i64 = 1_000_000;
 
@@ -574,6 +583,25 @@ mod tests {
         assert_eq!(view.turn_degrees, 90);
         assert_eq!(view.crop, cut(0, 0, 0, 120));
         assert_eq!(view.picture, "1080 × 1800");
+    }
+
+    #[test]
+    fn the_view_says_when_the_clips_changed_in_the_project() {
+        let (mut project, session) = opened();
+        let clip = session.clips()[0].id;
+        let view = editor_view(&project, &session);
+        assert!(!view.edited && !view.broken);
+        Command::TrimClips(TrimClips::new(clip, Edge::End, Frame(100)))
+            .apply(&mut project)
+            .unwrap();
+        let view = editor_view(&project, &session);
+        assert!(view.edited && !view.broken);
+        Command::RemoveClips(RemoveClips::new(clip, false))
+            .apply(&mut project)
+            .unwrap();
+        let view = editor_view(&project, &session);
+        assert!(view.broken);
+        assert_eq!(view.place, "Video and audio");
     }
 
     #[test]

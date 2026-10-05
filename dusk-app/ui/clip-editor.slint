@@ -48,6 +48,10 @@ export struct EditorProps {
     locked: bool,
     // The draft differs from the clips.
     changed: bool,
+    // The clips changed in the main window meanwhile: reload them, or keep the draft.
+    edited: bool,
+    // A clip was deleted or unlinked in the main window: the draft cannot be applied.
+    broken: bool,
 }
 
 // The source as a bar: the part kept between the in and out handles, and the playhead.
@@ -253,6 +257,52 @@ export component ClipEditorWindow inherits Window {
         }
 
         VerticalLayout {
+            // The clips changed in the main window since the draft was taken from them.
+            if root.props.edited || root.props.broken: Rectangle {
+                height: Theme.toolbar-height + Theme.space-2;
+                background: Theme.bg-2;
+
+                Rectangle {
+                    y: parent.height - self.height;
+                    height: Theme.border-width;
+                    background: Theme.border;
+                }
+
+                HorizontalLayout {
+                    padding-left: Theme.panel-padding;
+                    padding-right: Theme.panel-padding;
+                    spacing: Theme.space-2;
+
+                    Text {
+                        text: root.props.broken
+                            ? "This clip was deleted or unlinked in the main window, so the draft can't be applied. Open the clip again to edit it."
+                            : "This clip changed in the main window since you opened it.";
+                        color: Theme.signal;
+                        vertical-alignment: center;
+                        wrap: word-wrap;
+                        horizontal-stretch: 1;
+                    }
+
+                    if !root.props.broken: ToolButton {
+                        y: (parent.height - self.height) / 2;
+                        text: "Reload from project";
+                        clicked => {
+                            root.action("reload-clip");
+                            keys.focus();
+                        }
+                    }
+
+                    if !root.props.broken: ToolButton {
+                        y: (parent.height - self.height) / 2;
+                        text: "Keep my draft";
+                        clicked => {
+                            root.action("keep-draft");
+                            keys.focus();
+                        }
+                    }
+                }
+            }
+
             HorizontalLayout {
                 vertical-stretch: 1;
 
@@ -736,7 +786,7 @@ export component ClipEditorWindow inherits Window {
                         y: (parent.height - self.height) / 2;
                         text: "Apply to project";
                         primary: true;
-                        enabled: root.props.changed && !root.props.locked;
+                        enabled: root.props.changed && !root.props.locked && !root.props.broken;
                         clicked => {
                             root.action("apply-clip");
                             keys.focus();

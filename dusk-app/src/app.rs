@@ -322,7 +322,9 @@ impl App {
             | Action::MirrorLeftRight
             | Action::MirrorTopBottom
             | Action::ApplyClip
-            | Action::CloseClipEditor => {}
+            | Action::CloseClipEditor
+            | Action::ReloadClip
+            | Action::KeepDraft => {}
         }
     }
 

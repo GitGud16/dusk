@@ -317,13 +317,53 @@ impl App {
         }
     }
 
+    /// Reload from project: the clip changed in the main window, and the draft starts again
+    /// from it as it is now.
+    fn editor_reload(&mut self) {
+        let Some(editor) = self.editor.as_mut() else {
+            return;
+        };
+        if editor.session.status(&self.project) != SessionStatus::Edited {
+            return;
+        }
+        if let Err(rejection) = editor.session.reload(&self.project) {
+            return self.editor_fail(&sentence(&rejection.to_string()));
+        }
+        self.editor_say("The clip is as it is now in the project.");
+        self.editor_follow_project();
+    }
+
+    /// Keep my draft: the clip changed in the main window, and the draft stays, to be applied
+    /// over the clip as it is now.
+    fn editor_keep_draft(&mut self) {
+        let Some(editor) = self.editor.as_mut() else {
+            return;
+        };
+        if editor.session.status(&self.project) != SessionStatus::Edited {
+            return;
+        }
+        editor.session.keep_draft(&self.project);
+        self.editor_say(
+            "Your draft stays; applying it replaces the changes made in the main window.",
+        );
+        self.refresh_editor();
+    }
+
     /// The project changed: the clip editor's preview follows the sequence's rate and size,
-    /// and its window shows how its clips stand now.
+    /// and its window shows how its clips stand now. A draft without changes of its own
+    /// simply takes the clips as they are now.
     pub(crate) fn editor_follow_project(&mut self) {
         let playing = self.playing(Preview::ClipEditor).is_some();
         let Some(editor) = self.editor.as_mut() else {
             return;
         };
+        if !editor.session.changed()
+            && editor.session.status(&self.project) == SessionStatus::Edited
+        {
+            let _ = editor.session.reload(&self.project);
+        }
+        // What the status line said was about the clips as they were.
+        let stale = editor.session.status(&self.project) != SessionStatus::Current;
         if let Ok(preview) = editor.session.preview_project(&self.project)
             && preview != *editor.preview
         {
@@ -334,6 +374,9 @@ impl App {
             if !playing {
                 self.engine.show(Preview::ClipEditor, editor.playhead);
             }
+        }
+        if stale {
+            self.editor_say("");
         }
         self.refresh_editor();
     }
@@ -687,6 +730,8 @@ impl App {
                 self.apply_draft();
             }
             Action::CloseClipEditor => self.close_clip_editor(),
+            Action::ReloadClip => self.editor_reload(),
+            Action::KeepDraft => self.editor_keep_draft(),
             Action::ShortcutList => {
                 if let Some(window) = &self.editor_window {
                     window.invoke_show_shortcut_list();
@@ -809,6 +854,8 @@ fn props(view: &EditorView) -> EditorProps {
         fade_out: int(view.fade_out),
         locked: view.locked,
         changed: view.changed,
+        edited: view.edited,
+        broken: view.broken,
     }
 }
 
