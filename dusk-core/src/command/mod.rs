@@ -9,6 +9,7 @@ mod edits;
 mod insert;
 mod moves;
 mod remove;
+mod sequence;
 mod split;
 #[cfg(test)]
 mod testing;
@@ -26,6 +27,7 @@ pub use edits::{SetAudioEdits, SetVideoEdits};
 pub use insert::InsertClips;
 pub use moves::{MoveClips, nearest_free_position};
 pub use remove::RemoveClips;
+pub use sequence::{SEQUENCE_SIDES, SetSequenceSettings};
 pub use split::SplitClips;
 pub use track::{SetTrackLocked, SetTrackMuted};
 pub use trim::{Edge, TrimClips};
@@ -57,6 +59,8 @@ pub enum Command {
     SetTrackLocked(SetTrackLocked),
     /// Mutes or unmutes a track.
     SetTrackMuted(SetTrackMuted),
+    /// Sets the sequence's frame rate and picture size.
+    SetSequenceSettings(SetSequenceSettings),
     /// Several commands applied as one: all of them, or none.
     Batch(Vec<Command>),
 }
@@ -83,6 +87,7 @@ impl Command {
             Command::Unlink(unlink) => unlink.apply(project),
             Command::SetTrackLocked(lock) => lock.apply(project),
             Command::SetTrackMuted(mute) => mute.apply(project),
+            Command::SetSequenceSettings(settings) => settings.apply(project),
             Command::Batch(commands) => {
                 for applied in 0..commands.len() {
                     if let Err(rejection) = commands[applied].apply(project) {
@@ -112,6 +117,7 @@ impl Command {
             Command::Unlink(unlink) => unlink.revert(project),
             Command::SetTrackLocked(lock) => lock.revert(project),
             Command::SetTrackMuted(mute) => mute.revert(project),
+            Command::SetSequenceSettings(settings) => settings.revert(project),
             Command::Batch(commands) => {
                 for command in commands.iter_mut().rev() {
                     command.revert(project);
@@ -124,6 +130,7 @@ impl Command {
     pub fn notices(&self) -> Vec<Notice> {
         match self {
             Command::TrimClips(trim) => trim.notices.clone(),
+            Command::SetSequenceSettings(settings) => settings.notices.clone(),
             Command::Batch(commands) => commands.iter().flat_map(Command::notices).collect(),
             Command::AddMedia(_)
             | Command::InsertClips(_)
@@ -352,6 +359,9 @@ pub enum Rejection {
     /// A split was asked for at a frame that is not strictly inside the clip.
     #[error("move the playhead inside the clip to split it")]
     SplitOutside(ClipId),
+    /// The sequence size is outside what Dusk supports.
+    #[error("the sequence must be 16 to 8192 pixels on each side")]
+    Resolution,
     /// A ripple delete would move clips onto a clip that overlaps the deleted range.
     #[error(
         "a clip on another track overlaps the deleted range; lock that track or use plain delete"
@@ -366,6 +376,9 @@ pub enum Notice {
     CutAtGap(ClipId),
     /// A trim reached the start or the end of the source file and stopped there.
     ReachedSourceEdge(ClipId),
+    /// A new frame rate would have left a clip without a frame, so it kept one and the
+    /// clips after it moved right by a frame.
+    LengthenedToOneFrame(ClipId),
 }
 
 impl fmt::Display for Notice {
@@ -375,6 +388,10 @@ impl fmt::Display for Notice {
                 "The clip was cut where the next clip starts; ripple the timeline to make room."
             }
             Notice::ReachedSourceEdge(_) => "The clip reached the edge of its source file.",
+            Notice::LengthenedToOneFrame(_) => {
+                "A clip shorter than a frame at the new rate kept one frame; the clips after it \
+                 moved right by a frame."
+            }
         })
     }
 }

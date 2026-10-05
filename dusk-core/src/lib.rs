@@ -10,9 +10,9 @@ mod picture;
 pub mod time;
 
 pub use command::{
-    Command, Edge, InsertClips, MoveClips, Notice, Rejection, RemoveClips, SetAudioEdits,
-    SetClipEnabled, SetTrackLocked, SetTrackMuted, SetVideoEdits, SplitClips, TrimClips, Unlink,
-    nearest_free_position,
+    Command, Edge, InsertClips, MoveClips, Notice, Rejection, RemoveClips, SEQUENCE_SIDES,
+    SetAudioEdits, SetClipEnabled, SetSequenceSettings, SetTrackLocked, SetTrackMuted,
+    SetVideoEdits, SplitClips, TrimClips, Unlink, nearest_free_position,
 };
 pub use import::{STILL_LENGTH, add_media, import, place};
 pub use model::{
