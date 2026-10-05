@@ -63,9 +63,12 @@ mod tests {
     use super::*;
     use dusk_core::file::{from_json, to_json};
     use dusk_core::{
-        AudioEdits, ClipId, Edge, Frame, MediaInfo, MediaKind, MediaTime, Rational, SetAudioEdits,
-        SetClipEnabled, TrackKind, TrimClips, add_media, import, place_where_free, split_at,
+        AudioEdits, ClipEditSession, ClipEdits, ClipId, Edge, Frame, MediaInfo, MediaKind,
+        MediaTime, Rational, Rect, Rotation, SetAudioEdits, SetClipEnabled, TrackKind, TrimClips,
+        add_media, import, place_where_free, split_at,
     };
+
+    use crate::draft::{self, Sides, Source};
 
     fn project() -> Project {
         Project::new(Rational::new(30, 1).unwrap(), (1920, 1080))
@@ -204,6 +207,102 @@ mod tests {
         assert_ne!(reopened_project, reopened);
         assert!(fresh.undo(&mut reopened_project));
         assert_eq!(reopened_project, reopened);
+    }
+
+    /// M3 is done when one clip can be fixed in the pop-out and the main timeline updates,
+    /// without leaving the project (docs/ROADMAP.md): the draft, changed the way the clip
+    /// editor changes it, applies to the clip and its linked sound as one undo step, the
+    /// rest of the timeline stays as it was, undo and redo take the fix away and back, and
+    /// it survives save and reopen.
+    #[test]
+    fn a_clip_fixed_in_the_clip_editor_updates_the_timeline_in_one_step() {
+        let folder = std::env::temp_dir().join("dusk-edit");
+        let mut project = project();
+        let mut history = History::default();
+        for (name, at) in [("a.mp4", 0), ("b.mp4", 60)] {
+            let command = import(&project, folder.join(name), clip_info(), Frame(at));
+            history.apply(command, &mut project).unwrap();
+        }
+        let before = project.clone();
+
+        // The second clip opens with its sound.
+        let clip = clip_at(&project, TrackKind::Video, 70);
+        let mut session = ClipEditSession::open(&project, clip).unwrap();
+        assert_eq!(session.group().len(), 2);
+        let source = Source::of(&project, &session).unwrap();
+        let rate = project.sequence().frame_rate();
+        // I half a second in, a quarter turn, 10 pixels off each side, 6 dB quieter.
+        draft::mark(&mut session.draft, Edge::Start, Frame(15), rate, &source);
+        let video = session.draft.video.as_mut().unwrap();
+        draft::turn(video, true);
+        let sides = Sides {
+            left: 10,
+            top: 0,
+            right: 10,
+            bottom: 0,
+        };
+        draft::set_shown_sides(video, source.size, sides);
+        session.draft.audio.as_mut().unwrap().volume_db = -6.0;
+        assert!(session.changed());
+        history
+            .apply(session.apply_command(), &mut project)
+            .unwrap();
+
+        // The clip starts where it did, half a second later in its source, and is shorter.
+        let (_, fixed) = project.find_clip(clip).unwrap();
+        assert_eq!(
+            (fixed.position, fixed.length, fixed.source_in),
+            (Frame(60), Frame(45), MediaTime(500_000))
+        );
+        let ClipEdits::Video(edits) = &fixed.edits else {
+            panic!("a video clip");
+        };
+        assert_eq!(edits.rotate, Rotation::Quarter);
+        // Turned, its left and right are the source's bottom and top.
+        assert_eq!(
+            edits.crop,
+            Some(Rect {
+                x: 0,
+                y: 10,
+                width: 1920,
+                height: 1060
+            })
+        );
+        // Its sound went along.
+        let link = fixed.link;
+        let sound = project
+            .sequence()
+            .tracks()
+            .iter()
+            .flat_map(|track| track.clips())
+            .find(|other| other.link == link && other.id != clip)
+            .unwrap();
+        assert_eq!((sound.position, sound.length), (Frame(60), Frame(45)));
+        assert!(matches!(&sound.edits, ClipEdits::Audio(audio) if audio.volume_db == -6.0));
+        // The first clip and its sound are as they were.
+        for kind in [TrackKind::Video, TrackKind::Audio] {
+            let first = clip_at(&before, kind, 10);
+            let clip_of =
+                |project: &Project| project.find_clip(first).map(|(_, clip)| clip.clone());
+            assert_eq!(clip_of(&project), clip_of(&before));
+        }
+
+        // One step back to before the fix, and forward again.
+        let fixed_project = project.clone();
+        assert!(history.undo(&mut project));
+        assert_eq!(project, before);
+        assert!(history.redo(&mut project).unwrap());
+        assert_eq!(project, fixed_project);
+
+        // Saved and opened again, the fix is there.
+        let file = folder.join("fixed.dusk");
+        assert_eq!(
+            from_json(&to_json(&project, &file), &file).unwrap(),
+            project
+        );
+        // And the clip editor, reloaded, holds nothing more to apply.
+        session.reload(&project).unwrap();
+        assert!(!session.changed());
     }
 
     #[test]

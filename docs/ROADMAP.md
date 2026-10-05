@@ -43,12 +43,12 @@ Import one file, see it as a linked video clip and audio clip on one video track
 
 ## M3 — Pop-out clip editor (signature feature)
 
-- Double-click a clip → second window previewing its whole link group (video + audio).
-- Trim, crop, rotate/flip, fit/fill, speed, volume and fades, still duration in the pop-out, applied as one undoable `ApplyClipSession` command.
-- *Apply to project* (undoable) and *Export as file*.
-- Both windows stay responsive; edits in the pop-out preview live. Stale-session banner and deleted-clip handling work.
+- Double-click a clip → second window previewing its whole link group (video + audio). Done: a double-click on a timeline clip, Enter on the selected clip, the Edit menu or the properties panel opens it; one clip editor at a time, and a draft not applied is asked about before another clip opens, the window closes or the project is left.
+- Trim, crop, rotate/flip, fit/fill, speed, volume and fades, still duration in the pop-out, applied as one undoable `ApplyClipSession` command. Done: a trim bar over the whole source with I and O at the playhead, the crop as pixels cut from each side as the picture shows, turns that keep a mirror the same way on screen, and every change previewed at once.
+- *Apply to project* (undoable) and *Export as file*. Done: Export as file writes an MP4 at the clip's own frame rate and its cropped, turned size, never over a media file of the project; a sound-only clip waits for M4's audio export.
+- Both windows stay responsive; edits in the pop-out preview live. Stale-session banner and deleted-clip handling work. Done: the engine draws both previews from one frame cache and decoder pool and one plays at a time; the banner offers Reload from project and Keep my draft, a draft without changes of its own follows the clips, and a deleted or unlinked clip turns Apply off.
 
-**Done when**: you can fix one clip in the pop-out and see the main timeline update, without ever leaving the project.
+**Done when**: you can fix one clip in the pop-out and see the main timeline update, without ever leaving the project. Holds: `a_clip_fixed_in_the_clip_editor_updates_the_timeline_in_one_step` in `dusk-app`'s history tests, and the same in the window (trim and turn the clip in the clip editor, Apply: the timeline clip changes; Undo and Redo from the Edit menu take it back and forth, and the clip editor follows). Memory measured as in M1, figures in REQUIREMENTS.md; the growth when both windows redraw together on Vulkan is open (ARCHITECTURE.md, Open questions).
 
 ## M4 — Export, compress, extract
 
