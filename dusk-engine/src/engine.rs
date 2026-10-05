@@ -13,12 +13,13 @@ use crossbeam_channel::Sender;
 use dusk_audio::PlaybackClock;
 use dusk_core::time::STANDARD_RATES;
 use dusk_core::time::{frame_at, frame_to_media};
-use dusk_core::{Frame, MediaTime, Project, Rational};
+use dusk_core::{Frame, MediaId, MediaInfo, MediaTime, Project, Rational};
 use dusk_render::{Gpu, wgpu};
 
 use crate::cache::DEFAULT_CAP;
 use crate::export::{self, ExportJob};
 use crate::sound::{self, SoundRequest};
+use crate::thumbnail::{self, Thumbnail, ThumbnailJob};
 use crate::video::{self, VideoRequest};
 use crate::{EngineError, ExportEvent};
 
@@ -48,6 +49,11 @@ pub enum EngineEvent {
     Error(EngineError),
     /// An export moved on.
     Export(ExportEvent),
+    /// The thumbnail of a media file is ready.
+    Thumbnail {
+        media: MediaId,
+        thumbnail: Thumbnail,
+    },
 }
 
 /// How an engine is set up.
@@ -104,6 +110,7 @@ pub struct Engine {
     report: Report,
     open_decoders: Arc<AtomicUsize>,
     exporting: Arc<AtomicBool>,
+    thumbnails: Sender<ThumbnailJob>,
     /// The last export started, so dropping the engine can stop it and clean up after it.
     export: Mutex<Option<(ExportJob, JoinHandle<()>)>>,
 }
@@ -135,6 +142,11 @@ impl Engine {
             Arc::clone(&exporting),
         )?;
         let sound = sound::spawn(&options, Arc::clone(&transport), Arc::clone(&report))?;
+        let thumbnails = thumbnail::spawn(
+            Arc::clone(&transport),
+            Arc::clone(&exporting),
+            Arc::clone(&report),
+        )?;
         Ok(Engine {
             gpu: gpu.clone(),
             video,
@@ -143,8 +155,16 @@ impl Engine {
             report,
             open_decoders,
             exporting,
+            thumbnails,
             export: Mutex::new(None),
         })
+    }
+
+    /// Makes the thumbnail of media `media`, the file at `path` described by `info`, on the
+    /// thumbnail thread, which reports it as [`EngineEvent::Thumbnail`]: one at a time, in the
+    /// order asked, while nothing plays or exports. Sound alone gets none.
+    pub fn make_thumbnail(&self, media: MediaId, path: PathBuf, info: MediaInfo) {
+        let _ = self.thumbnails.send(ThumbnailJob { media, path, info });
     }
 
     /// Uses `project` from now on. The preview is not redrawn until the next request.

@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, mpsc};
 use std::time::{Duration, Instant};
 
-use dusk_core::{Command, Frame, Project, RemoveClips, import, split_at};
+use dusk_core::{Command, Frame, MediaId, Project, RemoveClips, import, split_at};
 use dusk_engine::{Engine, EngineEvent, EngineOptions, Gpu, media_info};
 use dusk_render::Compositor;
 
@@ -102,6 +102,9 @@ impl Running {
                 EngineEvent::Stopped { frame } => return (frames, frame),
                 EngineEvent::Error(error) => panic!("{error}"),
                 EngineEvent::Export(event) => panic!("no export was started: {event:?}"),
+                EngineEvent::Thumbnail { media, .. } => {
+                    panic!("no thumbnail was asked for: {media:?}")
+                }
             }
         }
     }
@@ -124,11 +127,30 @@ fn the_next_clip_gets_a_decoder_of_its_own_before_it_comes_into_view() {
             EngineEvent::Stopped { frame } => break frame,
             EngineEvent::Error(error) => panic!("{error}"),
             EngineEvent::Export(event) => panic!("no export was started: {event:?}"),
+            EngineEvent::Thumbnail { media, .. } => panic!("no thumbnail was asked for: {media:?}"),
         }
     };
     assert_eq!(stopped, Frame(19));
     // The first clip's decoder, and the second's, moved to its first frame meanwhile.
     assert_eq!(most_while_first, 2);
+}
+
+#[test]
+fn thumbnails_come_from_the_thumbnail_thread() {
+    let running = start(project_at(Frame(0)));
+    let info = media_info(&sample()).unwrap();
+    running.engine.make_thumbnail(MediaId(7), sample(), info);
+    let thumbnail = loop {
+        match running.events.recv_timeout(PATIENCE).expect("an event") {
+            EngineEvent::Thumbnail { media, thumbnail } => {
+                assert_eq!(media, MediaId(7));
+                break thumbnail;
+            }
+            EngineEvent::Frame { .. } => {}
+            other => panic!("expected a thumbnail, got {other:?}"),
+        }
+    };
+    assert_eq!((thumbnail.width, thumbnail.height), (128, 96));
 }
 
 #[test]
@@ -327,6 +349,7 @@ fn playback_with_sound_runs_to_the_end_in_real_time() {
             // No usable device here; playback carries on without sound.
             EngineEvent::Error(error) => eprintln!("{error}"),
             EngineEvent::Export(event) => panic!("no export was started: {event:?}"),
+            EngineEvent::Thumbnail { media, .. } => panic!("no thumbnail was asked for: {media:?}"),
         }
     };
     let took = started.elapsed();

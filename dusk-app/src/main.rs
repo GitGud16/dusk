@@ -14,6 +14,7 @@ mod recovery;
 mod shortcuts;
 mod speed;
 mod stats;
+mod thumbnails;
 mod timeline;
 
 use std::path::PathBuf;

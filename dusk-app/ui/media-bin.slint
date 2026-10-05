@@ -14,6 +14,8 @@ export struct MediaView {
     length: int,
     video: bool,
     audio: bool,
+    // A small picture of a video or photo, once the engine has made it; empty until then.
+    thumbnail: image,
 }
 
 export component MediaBin inherits Rectangle {
@@ -110,11 +112,19 @@ export component MediaBin inherits Rectangle {
                             spacing: Theme.space-2;
 
                             // Video and photos are primary, sound alone secondary, as on the
-                            // timeline.
+                            // timeline; a thumbnail covers the color once there is one.
                             Rectangle {
                                 width: 56px;
                                 border-radius: Theme.radius-clip;
                                 background: item.video ? Theme.primary : Theme.secondary;
+                                clip: true;
+
+                                if item.thumbnail.width > 0: Image {
+                                    width: parent.width;
+                                    height: parent.height;
+                                    source: item.thumbnail;
+                                    image-fit: cover;
+                                }
                             }
 
                             VerticalLayout {

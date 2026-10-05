@@ -21,6 +21,7 @@ use crate::recovery::Session;
 use crate::shortcuts::Action;
 use crate::speed::{SpeedKey, next_factor};
 use crate::stats::Stats;
+use crate::thumbnails::{THUMBNAIL_CAP, Thumbnails};
 use crate::timeline::{self, View};
 use crate::{ClipProps, ClipView, MainWindow, MediaView, TickView, TrackView};
 
@@ -104,6 +105,8 @@ pub struct App {
     pub(crate) dialog_open: bool,
     pub(crate) sequence_settings_open: bool,
     models: Models,
+    /// The media bin's thumbnails.
+    thumbnails: Thumbnails<slint::Image>,
     /// Preview statistics, when `DUSK_STATS` is set.
     stats: Option<Stats>,
 }
@@ -140,6 +143,7 @@ impl App {
             dialog_open: false,
             sequence_settings_open: false,
             models,
+            thumbnails: Thumbnails::new(THUMBNAIL_CAP),
             stats: Stats::start(window),
         };
         app.set_project(Project::clone(&app.project));
@@ -464,6 +468,17 @@ impl App {
             EngineEvent::Error(error) => self.fail(&error.to_string()),
             EngineEvent::Frame { frame, texture } => self.show_frame(frame, texture),
             EngineEvent::Export(event) => self.export_event(event),
+            EngineEvent::Thumbnail { media, thumbnail } => {
+                let pixels = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(
+                    &thumbnail.rgba,
+                    thumbnail.width,
+                    thumbnail.height,
+                );
+                let bytes = thumbnail.rgba.len();
+                self.thumbnails
+                    .insert(media, slint::Image::from_rgba8(pixels), bytes);
+                self.refresh_bin();
+            }
         }
     }
 
@@ -554,8 +569,14 @@ impl App {
         window.set_selected_link(link.map_or(0, |link| id_int(link.0)));
     }
 
-    /// Relists the media bin.
-    pub(crate) fn refresh_bin(&self) {
+    /// Relists the media bin, and asks the engine for the thumbnails it does not have yet.
+    pub(crate) fn refresh_bin(&mut self) {
+        for media in self.thumbnails.wanted(&self.project) {
+            if let Some(media_ref) = self.project.media_ref(media) {
+                let (path, info) = (media_ref.path.clone(), media_ref.info.clone());
+                self.engine.make_thumbnail(media, path, info);
+            }
+        }
         let Some(window) = self.window() else {
             return;
         };
@@ -568,6 +589,7 @@ impl App {
                 length: frame_int(row.length),
                 video: row.video,
                 audio: row.audio,
+                thumbnail: self.thumbnails.get(row.id).unwrap_or_default(),
             })
             .collect();
         replace_if_changed(&self.models.media, media);
