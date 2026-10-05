@@ -12,7 +12,7 @@ mod remove;
 mod sequence;
 mod split;
 #[cfg(test)]
-mod testing;
+pub(crate) mod testing;
 mod track;
 mod trim;
 

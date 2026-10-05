@@ -37,6 +37,10 @@ anyhow = "1"
 cpal = "0.18"
 crossbeam-channel = "0.5"
 rtrb = "0.4"
+serde = { version = "1", features = ["derive"] }
+# `float_roundtrip` reads every float back to the last bit; a clip's length must keep
+# matching its speed after a save and a load.
+serde_json = { version = "1", features = ["float_roundtrip"] }
 thiserror = "2"
 
 [profile.release]

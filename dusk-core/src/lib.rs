@@ -4,6 +4,7 @@
 //! Depends only on `serde`; no FFmpeg, wgpu, Slint or I/O (see docs/ARCHITECTURE.md).
 
 mod command;
+pub mod file;
 mod import;
 mod model;
 mod picture;
