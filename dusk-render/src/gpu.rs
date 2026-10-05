@@ -114,6 +114,19 @@ fn try_backend(backends: wgpu::Backends) -> Attempt<Gpu> {
         Some(Err(e)) => return Attempt::Failed(format!("{}: {e}", info.name)),
         None => return Attempt::Failed("the device request did not complete".to_owned()),
     };
+    // wgpu panics on errors nobody captures. One is expected, because Slint and the
+    // compositor share this device: Slint reconfigures a window's surface (on a resize, or
+    // when it went stale) after waiting for the queue to empty, and if the compositor on the
+    // video thread submits meanwhile, wgpu reports that the GPU did not come idle. The surface
+    // stays as it was and Slint configures it again on the next frame, so that one is logged;
+    // anything else is a bug and still panics.
+    device.on_uncaptured_error(std::sync::Arc::new(|error| {
+        if raced_surface_configure(&error) {
+            eprintln!("Dusk: {error}");
+        } else {
+            panic!("wgpu error: {error}");
+        }
+    }));
     let gpu = Gpu {
         instance,
         adapter,
@@ -125,6 +138,14 @@ fn try_backend(backends: wgpu::Backends) -> Attempt<Gpu> {
     } else {
         Attempt::Hardware(gpu)
     }
+}
+
+/// Whether `error` is a surface reconfigure that another thread's submission raced, which
+/// wgpu reports as the GPU not coming idle (wgpu-core's `ConfigureSurfaceError::GpuWaitTimeout`,
+/// recognized by its message, since wgpu does not pass its type on).
+fn raced_surface_configure(error: &wgpu::Error) -> bool {
+    let text = error.to_string();
+    text.contains("Surface::configure") && text.contains("Failed to wait for GPU to come idle")
 }
 
 /// Polls a future once. wgpu's native backends answer adapter and device requests at once,
@@ -150,6 +171,32 @@ fn backend_name(backends: wgpu::Backends) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_surface_reconfigure_raced_by_the_compositor_is_not_fatal() {
+        let error = |description: &str| wgpu::Error::Validation {
+            source: Box::new(std::fmt::Error),
+            description: description.to_owned(),
+        };
+        let raced = error(
+            "Validation Error
+
+Caused by:
+  In Surface::configure
+    Failed to wait for GPU to come idle before reconfiguring the Surface
+",
+        );
+        assert!(raced_surface_configure(&raced));
+        let other = error(
+            "Validation Error
+
+Caused by:
+  In Queue::submit
+    Buffer is destroyed
+",
+        );
+        assert!(!raced_surface_configure(&other));
+    }
     use wgpu::Backends;
 
     #[test]

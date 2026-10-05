@@ -106,10 +106,14 @@ fn closing_with_unsaved_changes_asks_first() {
     sleep(Duration::from_millis(1500));
     let still_running = dusk.try_wait().expect("poll dusk").is_none();
     let _ = dusk.kill();
-    let _ = dusk.wait();
+    let status = dusk.wait();
+    let mut said = String::new();
+    if let Some(mut stderr) = dusk.stderr.take() {
+        let _ = std::io::Read::read_to_string(&mut stderr, &mut said);
+    }
     assert!(
         still_running,
-        "dusk closed without asking about unsaved changes"
+        "dusk closed without asking about unsaved changes ({status:?}); it said: {said}"
     );
 }
 
