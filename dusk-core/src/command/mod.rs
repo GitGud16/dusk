@@ -5,16 +5,20 @@
 use std::fmt;
 
 mod clip;
+mod edits;
 mod insert;
 #[cfg(test)]
 mod testing;
 mod track;
 mod trim;
 
-use crate::model::{Clip, ClipId, MediaId, MediaRef, Project, TrackId};
+use crate::model::{
+    AudioEdits, Clip, ClipEdits, ClipId, MediaId, MediaRef, Project, TrackId, VideoEdits,
+};
 use crate::time::{Frame, MediaTime, length_for};
 
 pub use clip::{SetClipEnabled, Unlink};
+pub use edits::{SetAudioEdits, SetVideoEdits};
 pub use insert::InsertClips;
 pub use track::{SetTrackLocked, SetTrackMuted};
 pub use trim::{Edge, TrimClips};
@@ -28,6 +32,10 @@ pub enum Command {
     InsertClips(InsertClips),
     /// Moves the start or the end of a clip and its linked partners.
     TrimClips(TrimClips),
+    /// Sets the picture edits of a video clip.
+    SetVideoEdits(SetVideoEdits),
+    /// Sets the sound edits of an audio clip.
+    SetAudioEdits(SetAudioEdits),
     /// Enables or disables one clip.
     SetClipEnabled(SetClipEnabled),
     /// Separates the clips of a link group.
@@ -53,6 +61,8 @@ impl Command {
             }
             Command::InsertClips(insert) => insert.apply(project),
             Command::TrimClips(trim) => trim.apply(project),
+            Command::SetVideoEdits(set) => set.apply(project),
+            Command::SetAudioEdits(set) => set.apply(project),
             Command::SetClipEnabled(enable) => enable.apply(project),
             Command::Unlink(unlink) => unlink.apply(project),
             Command::SetTrackLocked(lock) => lock.apply(project),
@@ -77,6 +87,8 @@ impl Command {
             Command::AddMedia(media) => project.media.retain(|other| other.id != media.id),
             Command::InsertClips(insert) => insert.revert(project),
             Command::TrimClips(trim) => trim.revert(project),
+            Command::SetVideoEdits(set) => set.revert(project),
+            Command::SetAudioEdits(set) => set.revert(project),
             Command::SetClipEnabled(enable) => enable.revert(project),
             Command::Unlink(unlink) => unlink.revert(project),
             Command::SetTrackLocked(lock) => lock.revert(project),
@@ -96,6 +108,8 @@ impl Command {
             Command::Batch(commands) => commands.iter().flat_map(Command::notices).collect(),
             Command::AddMedia(_)
             | Command::InsertClips(_)
+            | Command::SetVideoEdits(_)
+            | Command::SetAudioEdits(_)
             | Command::SetClipEnabled(_)
             | Command::Unlink(_)
             | Command::SetTrackLocked(_)
@@ -176,6 +190,44 @@ pub(crate) fn check_clip(project: &Project, clip: &Clip) -> Result<(), Rejection
     if clip.position < Frame(0) {
         return Err(Rejection::BeforeStart(clip.id));
     }
+    match &clip.edits {
+        ClipEdits::Video(edits) => check_video_edits(project, clip, edits),
+        ClipEdits::Audio(edits) => check_audio_edits(clip, edits),
+    }
+}
+
+/// Picture edits `edits` fit `clip`: a crop lies inside the picture.
+pub(crate) fn check_video_edits(
+    project: &Project,
+    clip: &Clip,
+    edits: &VideoEdits,
+) -> Result<(), Rejection> {
+    let Some(crop) = edits.crop else {
+        return Ok(());
+    };
+    let (width, height) = project
+        .media_ref(clip.media_id)
+        .map_or((0, 0), |media| (media.info.width, media.info.height));
+    let inside = crop.width > 0
+        && crop.height > 0
+        && u64::from(crop.x) + u64::from(crop.width) <= u64::from(width)
+        && u64::from(crop.y) + u64::from(crop.height) <= u64::from(height);
+    if inside {
+        Ok(())
+    } else {
+        Err(Rejection::Crop(clip.id))
+    }
+}
+
+/// Sound edits `edits` fit `clip`: a volume in range, and fades that fit inside it.
+pub(crate) fn check_audio_edits(clip: &Clip, edits: &AudioEdits) -> Result<(), Rejection> {
+    if !AudioEdits::VOLUME_RANGE.contains(&edits.volume_db) {
+        return Err(Rejection::Volume(clip.id));
+    }
+    let (fade_in, fade_out) = (edits.fade_in, edits.fade_out);
+    if fade_in < Frame(0) || fade_out < Frame(0) || fade_in + fade_out > clip.length {
+        return Err(Rejection::Fades(clip.id));
+    }
     Ok(())
 }
 
@@ -238,6 +290,21 @@ pub enum Rejection {
     /// The clip is not linked to another clip.
     #[error("that clip is not linked to another clip")]
     NotLinked(ClipId),
+    /// Volume and fades were given to a video clip.
+    #[error("volume and fades apply to audio clips")]
+    NotAudio(ClipId),
+    /// Fit, crop or rotation were given to an audio clip.
+    #[error("fit, crop and rotation apply to video clips")]
+    NotVideo(ClipId),
+    /// The fades are negative or longer together than the clip.
+    #[error("the fades must fit inside the clip; shorten them first")]
+    Fades(ClipId),
+    /// The volume is outside the range a clip can be set to.
+    #[error("the volume must be between -60 and +12 dB")]
+    Volume(ClipId),
+    /// The crop is empty or reaches outside the picture.
+    #[error("the crop must lie inside the picture")]
+    Crop(ClipId),
 }
 
 /// Something a command did beyond what was asked.

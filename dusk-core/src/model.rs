@@ -86,13 +86,74 @@ pub enum ClipEdits {
     Audio(AudioEdits),
 }
 
-/// The edits of a video clip. Crop, rotation, flips and fit arrive with the pop-out editor.
+/// The edits of a video clip. Fit is set on the timeline; crop, rotation and flips arrive
+/// with the pop-out editor (M3).
 #[derive(Clone, Debug, Default, PartialEq)]
-pub struct VideoEdits {}
+pub struct VideoEdits {
+    /// The part of the upright source picture to show; `None` for all of it.
+    pub crop: Option<Rect>,
+    /// Turned clockwise after the crop.
+    pub rotate: Rotation,
+    /// Mirrored left to right, after the rotation.
+    pub flip_h: bool,
+    /// Mirrored top to bottom, after the rotation.
+    pub flip_v: bool,
+    /// How a picture whose shape differs from the sequence fills the frame.
+    pub fit: Fit,
+}
 
-/// The edits of an audio clip. Volume and fades arrive in M2.
+/// How a clip whose shape differs from the sequence fills the frame.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Fit {
+    /// All of the picture shows, centered, with black bars where it does not reach.
+    #[default]
+    Fit,
+    /// The picture covers the frame, centered; what overflows is cropped.
+    Fill,
+}
+
+/// A clockwise turn by a multiple of 90 degrees.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Rotation {
+    /// Upright.
+    #[default]
+    None,
+    /// A quarter turn clockwise.
+    Quarter,
+    /// Upside down.
+    Half,
+    /// Three quarter turns clockwise, a quarter turn counterclockwise.
+    ThreeQuarters,
+}
+
+/// A rectangle in a picture, in pixels from its top-left corner.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Rect {
+    /// Pixels from the left edge.
+    pub x: u32,
+    /// Pixels from the top edge.
+    pub y: u32,
+    /// Width in pixels.
+    pub width: u32,
+    /// Height in pixels.
+    pub height: u32,
+}
+
+/// The edits of an audio clip.
 #[derive(Clone, Debug, Default, PartialEq)]
-pub struct AudioEdits {}
+pub struct AudioEdits {
+    /// Gain in decibels: 0 leaves the sound as recorded.
+    pub volume_db: f32,
+    /// How long the sound rises from silence at the clip's start.
+    pub fade_in: Frame,
+    /// How long it falls to silence at the clip's end.
+    pub fade_out: Frame,
+}
+
+impl AudioEdits {
+    /// The quietest and loudest volumes a clip can be set to, in decibels.
+    pub const VOLUME_RANGE: std::ops::RangeInclusive<f32> = -60.0..=12.0;
+}
 
 /// A piece of a media file placed on a track.
 #[derive(Clone, Debug, PartialEq)]

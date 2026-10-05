@@ -1,7 +1,7 @@
 //! Moving the start or the end of a clip and its linked partners.
 
 use crate::command::{Notice, Rejection, group_indices, next_start, previous_end};
-use crate::model::{Clip, ClipId, Project, TrackId};
+use crate::model::{Clip, ClipEdits, ClipId, Project, TrackId};
 use crate::time::{Frame, MediaTime, length_for, source_span};
 
 /// Which end of a clip a trim moves.
@@ -123,6 +123,11 @@ impl TrimClips {
             clip.source_out = source_out;
             clip.position = position;
             clip.length = length;
+            // Fades longer than the trimmed clip are shortened to fit, fade-in first.
+            if let ClipEdits::Audio(edits) = &mut clip.edits {
+                edits.fade_in = edits.fade_in.min(length);
+                edits.fade_out = edits.fade_out.min(length - edits.fade_in);
+            }
         }
         Ok(())
     }

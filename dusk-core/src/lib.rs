@@ -10,13 +10,13 @@ mod picture;
 pub mod time;
 
 pub use command::{
-    Command, Edge, InsertClips, Notice, Rejection, SetClipEnabled, SetTrackLocked, SetTrackMuted,
-    TrimClips, Unlink,
+    Command, Edge, InsertClips, Notice, Rejection, SetAudioEdits, SetClipEnabled, SetTrackLocked,
+    SetTrackMuted, SetVideoEdits, TrimClips, Unlink,
 };
 pub use import::import;
 pub use model::{
-    AudioEdits, Clip, ClipEdits, ClipId, FreshIds, LinkId, MediaId, MediaInfo, MediaKind, MediaRef,
-    Project, Sequence, Track, TrackId, TrackKind, VideoEdits,
+    AudioEdits, Clip, ClipEdits, ClipId, Fit, FreshIds, LinkId, MediaId, MediaInfo, MediaKind,
+    MediaRef, Project, Rect, Rotation, Sequence, Track, TrackId, TrackKind, VideoEdits,
 };
 pub use picture::{ColorMatrix, ColorRange, Picture, PictureLayout};
 pub use time::{Frame, MediaTime, Rational};
