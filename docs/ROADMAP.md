@@ -36,7 +36,7 @@ Import one file, see it as a linked video clip and audio clip on one video track
 - Decoder pool with the visibility rule and size budget; 4K single-decoder rule.
 - Per-clip volume, mute, fades; detach audio.
 - Undo/redo for everything. Project save/load (JSON). Autosave and crash recovery.
-- Media bin with thumbnails; drag and drop import; WhatsApp/Telegram audio formats verified. Slint 1.18's winit backend does not pass files dropped from Explorer to the app; receiving them needs Slint's `unstable-winit-030` window-event hook, a change to the pinned Slint features that is decided at M2.
+- Media bin with thumbnails; import by drag and drop from Explorer, by an Import button (the system file dialog), and from the command line as in M1; WhatsApp/Telegram audio formats verified. Decided at M2: Slint's `unstable-winit-030` feature joins the pinned set, because Slint 1.18's winit backend does not pass files dropped from Explorer to the app and its window-event hook does (ARCHITECTURE.md, Slint specifics).
 - Variable-speed playback (0.1x to 32x, both directions; slow reverse via GOP buffer, fast via keyframes).
 
 **Done when**: a three-clip edit with music survives save, quit, reopen, and undo history behaves.

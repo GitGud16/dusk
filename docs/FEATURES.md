@@ -5,7 +5,7 @@ Written as user stories. **MVP** is what the first usable version must do. **Lat
 ## MVP
 
 ### Import
-- I can drag and drop video, audio, and image files into a media bin.
+- I can drag and drop video, audio, and image files into a media bin, or pick them with an Import button. Files named on Dusk's command line are imported too.
 - A file with video and audio lands as two linked clips (video track + audio track) that move together.
 - Still images become clips with an editable duration (default 5 s).
 - I can import any audio format FFmpeg can read, including voice notes and audio files from WhatsApp and Telegram (Opus in `.opus` / `.ogg` / `.oga`, `.m4a` / `.aac`, `.amr`, `.mp3`).
