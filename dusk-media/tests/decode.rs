@@ -4,7 +4,7 @@
 use std::path::{Path, PathBuf};
 
 use dusk_core::{ColorMatrix, ColorRange, MediaTime, PictureLayout};
-use dusk_media::{Acceleration, Following, MediaError, VideoDecoder};
+use dusk_media::{Acceleration, Following, MediaError, Step, VideoDecoder};
 
 fn sample() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../testdata/sample-h264-aac.mp4")
@@ -192,6 +192,26 @@ fn frames_come_one_after_another_from_a_seek() {
         .collect();
     let expected: Vec<_> = (0..12).map(frame_time).collect();
     assert_eq!(times, expected);
+}
+
+#[test]
+fn stepping_decodes_one_frame_at_a_time_to_what_frame_at_finds() {
+    let mut stepped = decoder();
+    stepped.seek(frame_time(12)).unwrap();
+    let mut steps = 0;
+    let frame = loop {
+        match stepped.step_to(frame_time(12)).unwrap() {
+            Step::Working => steps += 1,
+            Step::Done(frame) => break frame.expect("a frame"),
+        }
+    };
+    // From the keyframe at frame 0 up to frame 13, which shows frame 12 is the one wanted.
+    assert_eq!(steps, 14);
+    assert_eq!(stepped.following(), Following::Next(frame_time(13)));
+    let expected = decoder().frame_at(frame_time(12)).unwrap().unwrap();
+    assert_eq!(frame.time, expected.time);
+    assert_eq!(frame.picture.luma, expected.picture.luma);
+    assert_eq!(frame.picture.chroma, expected.picture.chroma);
 }
 
 #[test]

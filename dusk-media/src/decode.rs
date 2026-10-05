@@ -35,6 +35,16 @@ pub enum Following {
     Unknown,
 }
 
+/// How far [`VideoDecoder::step_to`] got.
+#[derive(Debug)]
+pub enum Step {
+    /// On the way: one more frame was decoded.
+    Working,
+    /// There: the frame shown at the time asked for, or `None` before the stream's first
+    /// frame, as [`VideoDecoder::frame_at`] returns it.
+    Done(Option<DecodedFrame>),
+}
+
 /// A decoded frame: when it starts in the source and its picture.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DecodedFrame {
@@ -128,14 +138,29 @@ impl VideoDecoder {
             self.seek(time)?;
         }
         loop {
+            if let Step::Done(frame) = self.step_to(time)? {
+                return Ok(frame);
+            }
+        }
+    }
+
+    /// Goes on toward the frame shown at `time`, decoding at most one frame, so that getting
+    /// there from a [`seek`](Self::seek) can be spread over several calls. Once there,
+    /// [`following`](Self::following) knows when the next frame starts, as after
+    /// [`frame_at`](Self::frame_at). It never seeks: the frame wanted must not be behind.
+    pub fn step_to(&mut self, time: MediaTime) -> Result<Step, MediaError> {
+        loop {
             match &self.ahead {
                 Some((next, _)) if *next > time => break,
                 Some(_) => self.shown = self.ahead.take(),
                 None if self.ended => break,
-                None => self.ahead = self.decode_next()?,
+                None => {
+                    self.ahead = self.decode_next()?;
+                    return Ok(Step::Working);
+                }
             }
         }
-        self.copy_shown()
+        self.copy_shown().map(Step::Done)
     }
 
     /// What comes after the frame returned last: [`frame_at`](Self::frame_at) always knows,
