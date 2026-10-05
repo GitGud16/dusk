@@ -90,8 +90,7 @@ impl ApplyClipSession {
                 }
                 // Fades longer than the cut clip are shortened to fit, fade-in first.
                 if let ClipEdits::Audio(edits) = &mut clip.edits {
-                    edits.fade_in = edits.fade_in.min(length);
-                    edits.fade_out = edits.fade_out.min(length - edits.fade_in);
+                    edits.fit_into(length);
                 }
                 clip
             })

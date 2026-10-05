@@ -157,6 +157,12 @@ pub struct AudioEdits {
 impl AudioEdits {
     /// The quietest and loudest volumes a clip can be set to, in decibels.
     pub const VOLUME_RANGE: std::ops::RangeInclusive<f32> = -60.0..=12.0;
+
+    /// Shortens the fades to fit a clip lasting `length`, the fade-in first.
+    pub fn fit_into(&mut self, length: Frame) {
+        self.fade_in = self.fade_in.min(length);
+        self.fade_out = self.fade_out.min(length - self.fade_in);
+    }
 }
 
 /// A piece of a media file placed on a track.
@@ -507,6 +513,21 @@ mod tests {
         );
         clip.speed = speed;
         clip
+    }
+
+    #[test]
+    fn fades_are_shortened_to_fit_a_clip_fade_in_first() {
+        let mut edits = AudioEdits {
+            volume_db: 0.0,
+            fade_in: Frame(40),
+            fade_out: Frame(30),
+        };
+        edits.fit_into(Frame(100));
+        assert_eq!((edits.fade_in, edits.fade_out), (Frame(40), Frame(30)));
+        edits.fit_into(Frame(50));
+        assert_eq!((edits.fade_in, edits.fade_out), (Frame(40), Frame(10)));
+        edits.fit_into(Frame(20));
+        assert_eq!((edits.fade_in, edits.fade_out), (Frame(20), Frame(0)));
     }
 
     #[test]
