@@ -171,6 +171,27 @@ pub(crate) fn has_rgb_icc_profile(frame: &ffmpeg_next::frame::Video) -> bool {
     }
 }
 
+/// Bits per sample of the pictures a video stream decodes to, from the pixel format its codec
+/// parameters name; 8 when they name none.
+pub(crate) fn bit_depth(parameters: &Parameters) -> u8 {
+    use ffmpeg_next::ffi::{av_pix_fmt_desc_get_id, av_pix_fmt_desc_next};
+    // SAFETY: as in `codec_fields`, one integer field of the parameters is read. The pixel
+    // format descriptors are FFmpeg's static table, walked with av_pix_fmt_desc_next until it
+    // returns null; comparing each one's id with the stored integer avoids making an enum
+    // value out of an integer nobody checked.
+    unsafe {
+        let format = (*parameters.as_ptr()).format;
+        let mut descriptor = av_pix_fmt_desc_next(std::ptr::null());
+        while let Some(found) = descriptor.as_ref() {
+            if av_pix_fmt_desc_get_id(descriptor) as i32 == format {
+                return u8::try_from(found.comp[0].depth).unwrap_or(8);
+            }
+            descriptor = av_pix_fmt_desc_next(descriptor);
+        }
+        8
+    }
+}
+
 /// How many bytes a frame of `format` at `width` by `height` takes, rows unpadded.
 pub(crate) fn frame_bytes(format: ffmpeg_next::format::Pixel, width: u32, height: u32) -> u64 {
     let (Ok(width), Ok(height)) = (i32::try_from(width), i32::try_from(height)) else {

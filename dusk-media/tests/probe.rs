@@ -26,8 +26,10 @@ fn probe_reads_the_video_and_audio_streams_of_the_sample() {
             base_frame_rate,
             cover_art,
             orientation,
+            bit_depth,
         } => {
             assert_eq!((width, height), (320, 240));
+            assert_eq!(bit_depth, 8);
             assert_eq!(frame_rate, Some((30, 1)));
             // A constant-rate file: the base rate equals the average.
             assert_eq!(base_frame_rate, Some((30, 1)));
@@ -48,6 +50,16 @@ fn probe_reads_the_video_and_audio_streams_of_the_sample() {
             assert_eq!((sample_rate, channels), (48_000, 1));
         }
         ref other => panic!("expected audio details, got {other:?}"),
+    }
+}
+
+#[test]
+fn probe_reads_the_bit_depth_of_10_bit_video() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../testdata/sample-vp9-10bit.webm");
+    let info = probe(&path).unwrap();
+    match info.streams[0].detail {
+        StreamDetail::Video { bit_depth, .. } => assert_eq!(bit_depth, 10),
+        ref other => panic!("expected video details, got {other:?}"),
     }
 }
 

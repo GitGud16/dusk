@@ -70,6 +70,9 @@ pub enum StreamDetail {
         cover_art: bool,
         /// How its frames are turned and mirrored for display, from its display matrix.
         orientation: Orientation,
+        /// Bits per sample of its decoded pictures: 8, or 10 and more for HDR and much
+        /// camera footage; 8 when FFmpeg cannot tell before decoding.
+        bit_depth: u8,
     },
     /// An audio stream.
     Audio {
@@ -123,6 +126,7 @@ fn summarize(stream: ffmpeg::format::stream::Stream<'_>) -> StreamSummary {
                     .contains(ffmpeg::format::stream::Disposition::ATTACHED_PIC),
                 orientation: ffi::display_matrix(&parameters)
                     .map_or(Orientation::UPRIGHT, |matrix| from_display_matrix(&matrix)),
+                bit_depth: ffi::bit_depth(&parameters),
             }
         }
         StreamKind::Audio => StreamDetail::Audio {

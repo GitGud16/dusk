@@ -16,7 +16,7 @@ mod probe;
 mod still;
 
 pub use audio::AudioDecoder;
-pub use decode::{Acceleration, DecodedFrame, Following, Step, VideoDecoder};
+pub use decode::{Acceleration, DecodedFrame, Following, HUGE_FRAME, Step, VideoDecoder};
 pub use encode::{AudioSettings, Mp4Writer, VideoSettings};
 pub use error::MediaError;
 pub use probe::{ProbeInfo, StreamDetail, StreamKind, StreamSummary, probe};

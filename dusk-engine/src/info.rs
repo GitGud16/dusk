@@ -5,7 +5,7 @@ use std::path::Path;
 
 use dusk_core::time::{STANDARD_RATES, snap_to_standard};
 use dusk_core::{MediaInfo, MediaKind, MediaTime, Rational};
-use dusk_media::{ProbeInfo, StillInfo, StreamDetail, StreamKind};
+use dusk_media::{HUGE_FRAME, ProbeInfo, StillInfo, StreamDetail, StreamKind};
 
 use crate::EngineError;
 
@@ -23,6 +23,15 @@ pub fn media_info(path: &Path) -> Result<MediaInfo, EngineError> {
         reason,
     })
 }
+
+/// What the decoder of one source above the 1080p class may take (docs/REQUIREMENTS.md: the
+/// measured ceiling of about 550 MB).
+const LARGE_DECODER_CEILING: u64 = 550_000_000;
+
+/// The pictures a decoder of a source above [`HUGE_FRAME`] holds at once: up to 6 references
+/// and pictures waiting to be shown, the most a conforming stream may keep at that size, and
+/// the 3 Dusk holds while stepping through them (docs/ARCHITECTURE.md, "Decoder pool").
+const HUGE_PICTURES_HELD: u64 = 9;
 
 /// The most memory decoding one still may take: half the default frame cache cap
 /// (docs/ARCHITECTURE.md, "Decoder pool"), since the decode is a transient inside the cap.
@@ -86,7 +95,15 @@ fn describe(probe: &ProbeInfo) -> Result<MediaInfo, &'static str> {
             base_frame_rate,
             cover_art: false,
             orientation,
-        } => Some((width, height, frame_rate, base_frame_rate, orientation)),
+            bit_depth,
+        } => Some((
+            width,
+            height,
+            frame_rate,
+            base_frame_rate,
+            orientation,
+            bit_depth,
+        )),
         _ => None,
     });
     let has_audio = probe
@@ -102,7 +119,12 @@ fn describe(probe: &ProbeInfo) -> Result<MediaInfo, &'static str> {
         .ok_or("FFmpeg cannot tell how long it is; convert it to MP4 and try again")?;
     let (width, height, frame_rate, vfr, orientation) = match video {
         None => (0, 0, None, false, dusk_core::Orientation::UPRIGHT),
-        Some((width, height, average, base, orientation)) => {
+        Some((width, height, average, base, orientation, bit_depth)) => {
+            if !fits_one_decoder(width, height, bit_depth) {
+                return Err(
+                    "it is too large for Dusk to decode within its memory budget; make a smaller copy with dusq compress and import that",
+                );
+            }
             let rate = |rate: Option<(i32, i32)>| {
                 let (num, den) = rate?;
                 Rational::new(u32::try_from(num).ok()?, u32::try_from(den).ok()?)
@@ -139,6 +161,19 @@ fn describe(probe: &ProbeInfo) -> Result<MediaInfo, &'static str> {
     })
 }
 
+/// Whether video of `width` by `height` pictures, `bit_depth` deep, fits the decoder budget:
+/// always up to [`HUGE_FRAME`], where the pool's rules apply; above it, if a decoder's
+/// pictures, 4:2:0 as phones and cameras record them, stay under the ceiling.
+fn fits_one_decoder(width: u32, height: u32, bit_depth: u8) -> bool {
+    let pixels = u64::from(width) * u64::from(height);
+    if pixels <= HUGE_FRAME {
+        return true;
+    }
+    let bytes_per_sample = if bit_depth > 8 { 2 } else { 1 };
+    let picture = pixels * 3 / 2 * bytes_per_sample;
+    picture * HUGE_PICTURES_HELD <= LARGE_DECODER_CEILING
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -160,8 +195,19 @@ mod tests {
                 base_frame_rate: Some(base),
                 cover_art: false,
                 orientation: dusk_core::Orientation::UPRIGHT,
+                bit_depth: 8,
             },
         }
+    }
+
+    /// 30 fps HEVC of `width` by `height` pictures, `bits` deep.
+    fn hevc(width: u32, height: u32, bits: u8) -> StreamSummary {
+        let mut stream = video(width, height, (30, 1), (30, 1));
+        stream.codec = "hevc".to_owned();
+        if let StreamDetail::Video { bit_depth, .. } = &mut stream.detail {
+            *bit_depth = bits;
+        }
+        stream
     }
 
     #[test]
@@ -199,6 +245,7 @@ mod tests {
                 base_frame_rate: None,
                 cover_art: true,
                 orientation: dusk_core::Orientation::UPRIGHT,
+                bit_depth: 8,
             },
         }
     }
@@ -254,6 +301,17 @@ mod tests {
         assert!(!info.has_video && info.has_audio);
         assert_eq!(info.frame_rate, None);
         assert_eq!((info.width, info.height), (0, 0));
+    }
+
+    #[test]
+    fn video_above_9_megapixels_must_fit_one_decoder() {
+        let mov = "mov,mp4,m4a,3gp,3g2,mj2";
+        // 8-bit 8K fits a single decoder's share of memory; 10-bit 8K does not.
+        assert!(describe(&file(mov, vec![hevc(7680, 4320, 8)])).is_ok());
+        let refused = describe(&file(mov, vec![hevc(7680, 4320, 10)])).unwrap_err();
+        assert!(refused.contains("dusq compress"), "{refused}");
+        // 10-bit 4K is under the line, where the decoder pool's own rules apply.
+        assert!(describe(&file(mov, vec![hevc(3840, 2160, 10)])).is_ok());
     }
 
     #[test]

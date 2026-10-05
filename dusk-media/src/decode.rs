@@ -270,6 +270,22 @@ impl VideoDecoder {
     }
 }
 
+/// Pictures with more pixels than this, 6K and 8K video, decode on one thread: every further
+/// thread holds frames of its own, which at that size adds up to more than the decoder budget
+/// (docs/ARCHITECTURE.md, "Decoder pool").
+pub const HUGE_FRAME: u64 = 9_000_000;
+
+/// How many threads a software decoder of `width` by `height` pictures uses: half the cores,
+/// at most 4, and one above [`HUGE_FRAME`].
+fn software_threads(width: i32, height: i32) -> usize {
+    let pixels = u64::try_from(width).unwrap_or(0) * u64::try_from(height).unwrap_or(0);
+    if pixels > HUGE_FRAME {
+        return 1;
+    }
+    let cores = std::thread::available_parallelism().map_or(2, |cores| cores.get());
+    (cores / 2).clamp(1, 4)
+}
+
 /// Opens a decoder for `parameters`, whose packets come in `time_base`, on the GPU when
 /// `hardware` is set and possible.
 fn open_decoder(
@@ -283,8 +299,8 @@ fn open_decoder(
     let count = if on_gpu {
         1
     } else {
-        let cores = std::thread::available_parallelism().map_or(2, |cores| cores.get());
-        (cores / 2).clamp(1, 4)
+        let fields = ffi::codec_fields(parameters);
+        software_threads(fields.width, fields.height)
     };
     context.set_threading(ffmpeg::codec::threading::Config {
         kind: ffmpeg::codec::threading::Type::Frame,
@@ -477,5 +493,18 @@ fn decode_error(path: &Path, source: ffmpeg::Error) -> MediaError {
     MediaError::Decode {
         path: path.to_path_buf(),
         source,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pictures_above_9_megapixels_decode_on_one_thread() {
+        assert_eq!(software_threads(7680, 4320), 1);
+        assert_eq!(software_threads(6144, 3456), 1);
+        assert!((1..=4).contains(&software_threads(3840, 2160)));
+        assert!((1..=4).contains(&software_threads(1920, 1080)));
     }
 }
