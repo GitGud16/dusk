@@ -3,8 +3,7 @@
 #![cfg(feature = "gpu")]
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::sync::mpsc;
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError, mpsc};
 use std::time::{Duration, Instant};
 
 use dusk_core::{Command, Frame, Project, RemoveClips, import, split_at};
@@ -44,13 +43,21 @@ fn project_with_a_jump() -> Arc<Project> {
     Arc::new(project)
 }
 
+/// The engines of these tests run one at a time: the checks of playback in real time need
+/// the machine to themselves, and CI runners draw with WARP, on their few cores.
+static ONE_AT_A_TIME: Mutex<()> = Mutex::new(());
+
 struct Running {
     engine: Engine,
     events: mpsc::Receiver<EngineEvent>,
     gpu: Gpu,
+    /// Dropped last, once the engine has stopped.
+    _turn: MutexGuard<'static, ()>,
 }
 
 fn start_with(options: EngineOptions, project: Arc<Project>) -> Running {
+    // A test that failed holding the turn leaves nothing behind that matters here.
+    let turn = ONE_AT_A_TIME.lock().unwrap_or_else(PoisonError::into_inner);
     let gpu = Gpu::new().expect("a graphics adapter: hardware, or WARP on CI");
     let (sender, events) = mpsc::channel();
     let engine = Engine::new(&gpu, options, move |event| {
@@ -63,6 +70,7 @@ fn start_with(options: EngineOptions, project: Arc<Project>) -> Running {
         engine,
         events,
         gpu,
+        _turn: turn,
     }
 }
 
