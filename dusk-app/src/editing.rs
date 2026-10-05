@@ -616,6 +616,7 @@ mod tests {
             vfr: false,
             width,
             height,
+            orientation: dusk_core::Orientation::UPRIGHT,
         }
     }
 

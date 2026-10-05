@@ -4,9 +4,12 @@ use std::path::Path;
 use ffmpeg_next as ffmpeg;
 use ffmpeg_next::media::Type as Medium;
 
+use dusk_core::Orientation;
+
 use crate::MediaError;
 use crate::ffi;
 use crate::input::open_input;
+use crate::orientation::from_display_matrix;
 
 /// What a media file contains, read from its container without decoding any frames.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -65,6 +68,8 @@ pub enum StreamDetail {
         base_frame_rate: Option<(i32, i32)>,
         /// Whether the stream is an attached picture (cover art) rather than video.
         cover_art: bool,
+        /// How its frames are turned and mirrored for display, from its display matrix.
+        orientation: Orientation,
     },
     /// An audio stream.
     Audio {
@@ -116,6 +121,8 @@ fn summarize(stream: ffmpeg::format::stream::Stream<'_>) -> StreamSummary {
                 cover_art: stream
                     .disposition()
                     .contains(ffmpeg::format::stream::Disposition::ATTACHED_PIC),
+                orientation: ffi::display_matrix(&parameters)
+                    .map_or(Orientation::UPRIGHT, |matrix| from_display_matrix(&matrix)),
             }
         }
         StreamKind::Audio => StreamDetail::Audio {

@@ -390,6 +390,7 @@ mod tests {
             vfr: false,
             width: if video { 1920 } else { 0 },
             height: if video { 1080 } else { 0 },
+            orientation: dusk_core::Orientation::UPRIGHT,
         }
     }
 

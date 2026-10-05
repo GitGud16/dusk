@@ -2,7 +2,9 @@
 //
 // Each plane is resampled across in its own pass into a half-float intermediate; the last
 // pass resamples both intermediates down and turns YUV into RGB, so only two intermediates
-// exist per frame. Values stay in code units of the picture's bit depth (16 to 235 is video
+// exist per frame. A picture turned a quarter is read down its columns in the first pass
+// (`transposed`), so its rows become the output's columns; a mirrored one is read with a
+// negative step. Taps stay inside the crop. Values stay in code units of the picture's bit depth (16 to 235 is video
 // black to white at 8 bits) until that last pass. Half floats hold them closely enough for
 // 8-bit output: a 10-bit code is off by at most half a code, an eighth of an 8-bit one.
 //
@@ -10,14 +12,17 @@
 // point uses.
 
 struct Resample {
-    // Width of the plane being read, in texels.
-    src_width: i32,
-    // Source texels per output texel.
+    // The texels this pass reads along its axis: from src_min to src_max, the end excluded.
+    src_min: i32,
+    src_max: i32,
+    // Source texels per output texel; negative where the picture is mirrored.
     step: f32,
-    // Added to the source position, in source texels (chroma siting).
+    // The source position of the output's edge, in source texels (crop and chroma siting).
     offset: f32,
-    // Kernel scale, max(step, 1): a downscale widens the kernel so it does not alias.
+    // Kernel scale, max(|step|, 1): a downscale widens the kernel so it does not alias.
     scale: f32,
+    // 1 when this pass reads down the plane's columns.
+    transposed: i32,
 }
 
 struct Convert {
@@ -28,10 +33,11 @@ struct Convert {
     to_r: vec4<f32>,
     to_g: vec4<f32>,
     to_b: vec4<f32>,
-    // Resampling down: each intermediate's rows, and per plane the source rows per output
-    // row, the offset in source rows (chroma siting) and the kernel scale, as in Resample.
-    luma_rows: i32,
-    chroma_rows: i32,
+    // Resampling down: the rows of each intermediate that the picture shows (from .x to .y,
+    // .y excluded), and per plane the source rows per output row, the source position of the
+    // output's top edge and the kernel scale, as in Resample.
+    luma_rows: vec2<i32>,
+    chroma_rows: vec2<i32>,
     luma_step: f32,
     luma_offset: f32,
     luma_scale: f32,
@@ -71,9 +77,14 @@ fn source_center(position: vec4<f32>) -> f32 {
     return position.x * resample.step + resample.offset;
 }
 
-// The source texel to read for tap `i`, clamped to the edge.
+// The source texel to read for tap `i`, clamped to the shown part.
 fn tap(position: vec4<f32>, i: i32) -> vec2<i32> {
-    return vec2<i32>(clamp(i, 0, resample.src_width - 1), i32(position.y));
+    let along = clamp(i, resample.src_min, resample.src_max - 1);
+    let across = i32(position.y);
+    if resample.transposed != 0 {
+        return vec2<i32>(across, along);
+    }
+    return vec2<i32>(along, across);
 }
 
 // 8-bit planes are normalized, so a sample times 255 is its code.
@@ -108,14 +119,14 @@ fn resample_uint(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f3
 }
 
 // Resamples column `x` of `plane` down to output row `row` (centered at row + 0.5).
-fn down(plane: texture_2d<f32>, x: i32, row: f32, rows: i32, step: f32, offset: f32, scale: f32) -> vec2<f32> {
+fn down(plane: texture_2d<f32>, x: i32, row: f32, rows: vec2<i32>, step: f32, offset: f32, scale: f32) -> vec2<f32> {
     let center = row * step + offset;
     let radius = 2.0 * scale;
     var sum = vec2<f32>(0.0);
     var total = 0.0;
     for (var i = i32(floor(center - 0.5 - radius)); i <= i32(ceil(center - 0.5 + radius)); i++) {
         let weight = catmull_rom((f32(i) + 0.5 - center) / scale);
-        sum += textureLoad(plane, vec2<i32>(x, clamp(i, 0, rows - 1)), 0).xy * weight;
+        sum += textureLoad(plane, vec2<i32>(x, clamp(i, rows.x, rows.y - 1)), 0).xy * weight;
         total += weight;
     }
     return sum / total;

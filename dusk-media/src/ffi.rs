@@ -30,6 +30,32 @@ pub(crate) fn codec_fields(parameters: &Parameters) -> CodecFields {
     }
 }
 
+/// A stream's display matrix: how its frames are turned and mirrored for display, when the
+/// file says (FFmpeg keeps it with the codec parameters since 6.1).
+pub(crate) fn display_matrix(parameters: &Parameters) -> Option<[i32; 9]> {
+    use ffmpeg_next::ffi::{AVPacketSideDataType, av_packet_side_data_get};
+    // SAFETY: as in `codec_fields`, the parameters are alive and initialized for the borrow.
+    // FFmpeg keeps `coded_side_data` and `nb_coded_side_data` consistent, and
+    // av_packet_side_data_get only reads them. A display matrix is nine i32 values: the
+    // entry's size is checked first, and it is read unaligned because its bytes come from a
+    // byte buffer. Nothing is written.
+    unsafe {
+        let raw = &*parameters.as_ptr();
+        let entry = av_packet_side_data_get(
+            raw.coded_side_data,
+            raw.nb_coded_side_data,
+            AVPacketSideDataType::AV_PKT_DATA_DISPLAYMATRIX,
+        );
+        if entry.is_null()
+            || (*entry).data.is_null()
+            || (*entry).size < std::mem::size_of::<[i32; 9]>()
+        {
+            return None;
+        }
+        Some(std::ptr::read_unaligned((*entry).data.cast::<[i32; 9]>()))
+    }
+}
+
 /// A D3D11VA hardware device. The decoder that uses it holds its own reference, so this one
 /// may be dropped once it is attached.
 #[cfg(windows)]

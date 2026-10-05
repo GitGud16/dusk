@@ -77,6 +77,7 @@ mod tests {
             vfr: false,
             width: 1920,
             height: 1080,
+            orientation: dusk_core::Orientation::UPRIGHT,
         }
     }
 

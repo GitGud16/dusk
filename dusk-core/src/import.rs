@@ -171,6 +171,7 @@ mod tests {
             vfr: false,
             width: 1920,
             height: 1080,
+            orientation: crate::orientation::Orientation::UPRIGHT,
         }
     }
 
@@ -232,6 +233,7 @@ mod tests {
             vfr: false,
             width: 4032,
             height: 3024,
+            orientation: crate::orientation::Orientation::UPRIGHT,
         };
         import(&project, "photo.heic".into(), photo, Frame(30))
             .apply(&mut project)

@@ -11,11 +11,12 @@ use dusk_audio::PlaybackClock;
 use dusk_core::time::{frame_at, frame_to_media};
 use dusk_core::{Frame, MediaId, MediaTime, Picture, Project};
 use dusk_media::{Acceleration, Following, VideoDecoder};
-use dusk_render::{Compositor, Gpu};
+use dusk_render::{Compositor, Gpu, fit_size};
 
 use crate::EngineError;
 use crate::cache::FrameCache;
 use crate::engine::{EngineEvent, EngineOptions, Report, SharedTransport, lock};
+use crate::placement::placement_at;
 
 /// What the front asks of the video thread.
 pub(crate) enum VideoRequest {
@@ -463,15 +464,28 @@ impl VideoThread {
     /// or a stand-in while scrubbing.
     fn present(&mut self, frame: Frame, shown: Shown, exact: bool) {
         self.target = Some(frame);
-        let texture = match shown {
-            Shown::Unknown => return,
-            Shown::Black => None,
-            // Nothing to draw into before the preview has a size.
-            Shown::Picture(_) if self.size.0 == 0 || self.size.1 == 0 => return,
-            Shown::Picture(picture) => match self.compositor.render(&picture, self.size) {
-                Ok(texture) => Some(texture),
-                Err(error) => return self.fail(error.into()),
-            },
+        // Nothing to draw into before the preview has a size.
+        if matches!(shown, Shown::Unknown) || self.size.0 == 0 || self.size.1 == 0 {
+            return;
+        }
+        // The sequence's frame, as large as fits in the preview; the preview's own
+        // background shows around it.
+        let project = self.project.as_deref();
+        let size = project.map_or(self.size, |project| {
+            fit_size(project.sequence().resolution(), self.size)
+        });
+        let drawn = match shown {
+            Shown::Picture(picture) => {
+                let placement = project
+                    .map(|project| placement_at(project, frame))
+                    .unwrap_or_default();
+                self.compositor.render_placed(&picture, &placement, size)
+            }
+            Shown::Black | Shown::Unknown => self.compositor.blank(size),
+        };
+        let texture = match drawn {
+            Ok(texture) => Some(texture),
+            Err(error) => return self.fail(error.into()),
         };
         self.shown_exactly = exact.then_some(frame);
         (self.report)(EngineEvent::Frame { frame, texture });

@@ -19,3 +19,12 @@ Half a second of `testsrc2` (320x240, 30 fps) as 10-bit VP9 (profile 2, `yuv420p
 ```powershell
 ffmpeg -hide_banner -y -f lavfi -i "testsrc2=size=320x240:rate=30:duration=0.5" -c:v libvpx-vp9 -pix_fmt yuv420p10le -profile:v 2 -b:v 200k -g 15 -row-mt 0 -threads 1 -map_metadata -1 -fflags +bitexact -flags:v +bitexact testdata/sample-vp9-10bit.webm
 ```
+
+## `sample-rotated.mp4`
+
+`sample-h264-aac.mp4` copied with a display matrix that turns it a quarter clockwise, as a
+portrait phone video is stored (ffprobe reports `rotation=-90`):
+
+```powershell
+ffmpeg -hide_banner -y -display_rotation:v:0 -90 -i testdata/sample-h264-aac.mp4 -c copy -map_metadata -1 -fflags +bitexact testdata/sample-rotated.mp4
+```

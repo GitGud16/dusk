@@ -25,12 +25,14 @@ fn probe_reads_the_video_and_audio_streams_of_the_sample() {
             frame_rate,
             base_frame_rate,
             cover_art,
+            orientation,
         } => {
             assert_eq!((width, height), (320, 240));
             assert_eq!(frame_rate, Some((30, 1)));
             // A constant-rate file: the base rate equals the average.
             assert_eq!(base_frame_rate, Some((30, 1)));
             assert!(!cover_art);
+            assert_eq!(orientation, dusk_core::Orientation::UPRIGHT);
         }
         ref other => panic!("expected video details, got {other:?}"),
     }
@@ -85,4 +87,29 @@ fn each_stream_prints_as_one_readable_line() {
         "#0 video h264 320x240 30/1 fps"
     );
     assert_eq!(info.streams[1].to_string(), "#1 audio aac 48000 Hz 1 ch");
+}
+
+#[test]
+fn a_video_shot_upright_on_a_phone_says_how_to_turn_it() {
+    // Stored landscape with a display matrix turning it a quarter clockwise, as a portrait
+    // phone video is (ffprobe: rotation -90).
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../testdata/sample-rotated.mp4");
+    let info = probe(&path).unwrap();
+    let video = info
+        .streams
+        .iter()
+        .find(|stream| stream.kind == StreamKind::Video)
+        .unwrap();
+    match video.detail {
+        StreamDetail::Video {
+            width,
+            height,
+            orientation,
+            ..
+        } => {
+            assert_eq!((width, height), (320, 240));
+            assert_eq!(orientation, dusk_core::Orientation::new(1, false));
+        }
+        ref other => panic!("expected video details, got {other:?}"),
+    }
 }

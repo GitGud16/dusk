@@ -13,6 +13,8 @@ mod info;
 #[cfg(feature = "gpu")]
 mod mixer;
 #[cfg(feature = "gpu")]
+mod placement;
+#[cfg(feature = "gpu")]
 mod sound;
 #[cfg(feature = "gpu")]
 mod video;

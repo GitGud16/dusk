@@ -30,12 +30,12 @@ pub const DECODER_IDLE: Duration = Duration::from_secs(5);
 /// event to the UI thread and return.
 #[derive(Debug)]
 pub enum EngineEvent {
-    /// The preview shows timeline frame `frame` now: drawn at the preview size, or black
-    /// (`None`) where no video clip is visible.
+    /// The preview shows timeline frame `frame` now: the sequence's frame as large as fits in
+    /// the preview, black where no video clip is visible.
     Frame {
         /// The timeline frame.
         frame: Frame,
-        /// The picture, or `None` for black.
+        /// The frame drawn, or `None` when there is nothing to show.
         texture: Option<wgpu::Texture>,
     },
     /// Playback reached the end of the sequence (or its start, playing backwards) and

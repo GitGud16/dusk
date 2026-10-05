@@ -7,6 +7,7 @@ mod command;
 pub mod file;
 mod import;
 mod model;
+mod orientation;
 mod picture;
 pub mod time;
 
@@ -20,5 +21,6 @@ pub use model::{
     AudioEdits, Clip, ClipEdits, ClipId, Fit, FreshIds, LinkId, MediaId, MediaInfo, MediaKind,
     MediaRef, Project, Rect, Rotation, Sequence, Track, TrackId, TrackKind, VideoEdits,
 };
+pub use orientation::Orientation;
 pub use picture::{ColorMatrix, ColorRange, Picture, PictureLayout};
 pub use time::{Frame, MediaTime, Rational};

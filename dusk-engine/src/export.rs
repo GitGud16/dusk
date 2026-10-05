@@ -18,6 +18,7 @@ use dusk_render::{Compositor, Gpu, ToYuv};
 use crate::EngineError;
 use crate::engine::{EngineEvent, Report};
 use crate::mixer::Mixer;
+use crate::placement::placement_at;
 
 /// What an export reports, as [`EngineEvent::Export`].
 #[derive(Debug)]
@@ -173,7 +174,10 @@ fn write(
             return Ok(None);
         }
         let texture = match decoders.picture(project, Frame(frame))? {
-            Some(picture) => compositor.render(&picture, size)?,
+            Some(picture) => {
+                let placement = placement_at(project, Frame(frame));
+                compositor.render_placed(&picture, &placement, size)?
+            }
             None => compositor.blank(size)?,
         };
         writer.write_video(&to_yuv.convert(&texture)?)?;

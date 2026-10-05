@@ -17,6 +17,7 @@ use crate::model::{
     AudioEdits, Clip, ClipEdits, ClipId, Fit, LinkId, MediaId, MediaInfo, MediaKind, MediaRef,
     Project, Rect, Rotation, Sequence, Track, TrackId, TrackKind, VideoEdits,
 };
+use crate::orientation::Orientation;
 use crate::time::{Frame, MediaTime, Rational};
 
 /// The format version this Dusk writes, and the only one it reads.
@@ -187,6 +188,9 @@ struct SavedMedia {
     vfr: bool,
     width: u32,
     height: u32,
+    /// The orientation: clockwise turns in degrees, after mirroring left to right.
+    rotation: Degrees,
+    mirrored: bool,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -392,6 +396,26 @@ fn saved_media(media: &MediaRef, folder: &Path) -> SavedMedia {
         vfr: info.vfr,
         width: info.width,
         height: info.height,
+        rotation: Degrees(turns_to_rotation(info.orientation.turns())),
+        mirrored: info.orientation.mirrored(),
+    }
+}
+
+fn rotation_to_turns(rotation: Rotation) -> u8 {
+    match rotation {
+        Rotation::None => 0,
+        Rotation::Quarter => 1,
+        Rotation::Half => 2,
+        Rotation::ThreeQuarters => 3,
+    }
+}
+
+fn turns_to_rotation(turns: u8) -> Rotation {
+    match turns {
+        1 => Rotation::Quarter,
+        2 => Rotation::Half,
+        3 => Rotation::ThreeQuarters,
+        _ => Rotation::None,
     }
 }
 
@@ -484,6 +508,7 @@ fn loaded_media(media: SavedMedia, folder: &Path) -> MediaRef {
             vfr: media.vfr,
             width: media.width,
             height: media.height,
+            orientation: Orientation::new(rotation_to_turns(media.rotation.0), media.mirrored),
         },
     }
 }
@@ -644,7 +669,9 @@ mod tests {
       "frame_rate": "30000/1001",
       "vfr": false,
       "width": 1920,
-      "height": 1080
+      "height": 1080,
+      "rotation": 0,
+      "mirrored": false
     }
   ],
   "sequence": {
@@ -760,6 +787,7 @@ mod tests {
                     vfr: false,
                     width: 1920,
                     height: 1080,
+                    orientation: crate::orientation::Orientation::UPRIGHT,
                 },
             }],
             sequence: Sequence {

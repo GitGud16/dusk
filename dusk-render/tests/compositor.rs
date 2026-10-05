@@ -1,7 +1,7 @@
 //! Needs a graphics adapter; CI runners use WARP (see tests/gpu.rs).
 
-use dusk_core::{ColorMatrix, ColorRange, Picture, PictureLayout};
-use dusk_render::{Compositor, Gpu};
+use dusk_core::{ColorMatrix, ColorRange, Fit, Orientation, Picture, PictureLayout, Rect};
+use dusk_render::{Compositor, Gpu, Placement};
 
 fn compositor() -> Compositor {
     Compositor::new(&Gpu::new().expect("a graphics adapter: hardware, or WARP on CI"))
@@ -245,4 +245,137 @@ fn a_frame_keeps_its_picture_until_two_newer_ones_are_drawn() {
     compositor.render(&gray, (16, 16)).unwrap();
     let reused = compositor.read_rgba(&first).unwrap();
     assert!(close(pixel(&reused, 16, 8, 8), [128, 128, 128, 255], 3));
+}
+
+/// An 8-bit picture whose pixels and chroma samples come from `luma(x, y)` and
+/// `chroma(x, y)`, chroma at half resolution.
+fn painted(
+    width: u32,
+    height: u32,
+    luma: impl Fn(u32, u32) -> u8,
+    chroma: impl Fn(u32, u32) -> [u8; 2],
+) -> Picture {
+    let (chroma_width, chroma_height) = (width.div_ceil(2), height.div_ceil(2));
+    Picture {
+        width,
+        height,
+        layout: PictureLayout::Nv12,
+        matrix: ColorMatrix::Bt709,
+        range: ColorRange::Limited,
+        luma: (0..height)
+            .flat_map(|y| (0..width).map(move |x| (x, y)))
+            .map(|(x, y)| luma(x, y))
+            .collect(),
+        chroma: (0..chroma_height)
+            .flat_map(|y| (0..chroma_width).map(move |x| (x, y)))
+            .flat_map(|(x, y)| chroma(x, y))
+            .collect(),
+    }
+}
+
+const BLACK: [u8; 4] = [0, 0, 0, 255];
+const WHITE: [u8; 4] = [255, 255, 255, 255];
+const GREY: [u8; 2] = [128, 128];
+
+fn render_placed(
+    compositor: &Compositor,
+    picture: &Picture,
+    placement: Placement,
+    size: (u32, u32),
+) -> Vec<u8> {
+    let texture = compositor
+        .render_placed(picture, &placement, size)
+        .expect("the picture renders");
+    assert_eq!((texture.width(), texture.height()), size);
+    compositor
+        .read_rgba(&texture)
+        .expect("the frame reads back")
+}
+
+#[test]
+fn a_mirrored_picture_shows_its_left_on_the_right() {
+    let compositor = compositor();
+    // Black on the left, white on the right.
+    let picture = painted(64, 32, |x, _| if x < 32 { 16 } else { 235 }, |_, _| GREY);
+    let placement = Placement {
+        edits: Orientation::new(0, true),
+        ..Placement::default()
+    };
+    let rgba = render_placed(&compositor, &picture, placement, (64, 32));
+    assert!(close(pixel(&rgba, 64, 8, 16), WHITE, 2));
+    assert!(close(pixel(&rgba, 64, 56, 16), BLACK, 2));
+}
+
+#[test]
+fn a_picture_turned_a_quarter_shows_its_bottom_on_the_left() {
+    let compositor = compositor();
+    // White above, black below; and in color, red above and blue below.
+    let red = [102, 240];
+    let blue = [240, 118];
+    let luma = painted(64, 32, |_, y| if y < 16 { 235 } else { 16 }, |_, _| GREY);
+    let color = painted(64, 32, |_, _| 63, |_, y| if y < 8 { red } else { blue });
+    let placement = Placement {
+        orientation: Orientation::new(1, false),
+        ..Placement::default()
+    };
+    let rgba = render_placed(&compositor, &luma, placement, (32, 64));
+    assert!(close(pixel(&rgba, 32, 8, 32), BLACK, 2));
+    assert!(close(pixel(&rgba, 32, 24, 32), WHITE, 2));
+    let rgba = render_placed(&compositor, &color, placement, (32, 64));
+    let (left, right) = (pixel(&rgba, 32, 6, 32), pixel(&rgba, 32, 26, 32));
+    assert!(
+        left[2] > 200 && left[0] < 60,
+        "left should be blue: {left:?}"
+    );
+    assert!(
+        right[0] > 200 && right[2] < 60,
+        "right should be red: {right:?}"
+    );
+}
+
+#[test]
+fn a_crop_shows_only_its_part() {
+    let compositor = compositor();
+    // White in the top-left quarter only.
+    let picture = painted(
+        64,
+        64,
+        |x, y| if x < 32 && y < 32 { 235 } else { 16 },
+        |_, _| GREY,
+    );
+    let placement = Placement {
+        crop: Some(Rect {
+            x: 0,
+            y: 0,
+            width: 32,
+            height: 32,
+        }),
+        ..Placement::default()
+    };
+    let rgba = render_placed(&compositor, &picture, placement, (64, 64));
+    for (x, y) in [(2, 2), (61, 2), (2, 61), (61, 61), (32, 32)] {
+        assert!(close(pixel(&rgba, 64, x, y), WHITE, 2), "({x}, {y})");
+    }
+}
+
+#[test]
+fn filling_covers_the_frame_without_bars() {
+    let compositor = compositor();
+    let picture = flat(
+        48,
+        48,
+        [126, 128, 128],
+        ColorMatrix::Bt709,
+        ColorRange::Limited,
+    );
+    let fitted = render_placed(&compositor, &picture, Placement::default(), (96, 48));
+    assert_eq!(pixel(&fitted, 96, 2, 24), BLACK);
+    let placement = Placement {
+        fit: Fit::Fill,
+        ..Placement::default()
+    };
+    let filled = render_placed(&compositor, &picture, placement, (96, 48));
+    for x in [1, 48, 94] {
+        assert!(pixel(&filled, 96, x, 24)[0] > 100, "x {x}");
+    }
 }

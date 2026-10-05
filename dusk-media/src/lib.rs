@@ -11,6 +11,7 @@ mod error;
 #[allow(unsafe_code)]
 mod ffi;
 mod input;
+mod orientation;
 mod probe;
 
 pub use audio::AudioDecoder;

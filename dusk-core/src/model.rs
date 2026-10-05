@@ -5,6 +5,7 @@
 
 use std::path::PathBuf;
 
+use crate::orientation::Orientation;
 use crate::time::{Frame, MediaTime, Rational, length_for, source_span};
 
 /// Identifies a media file within a project.
@@ -55,6 +56,9 @@ pub struct MediaInfo {
     pub width: u32,
     /// Picture height in pixels, after rotation; 0 without video.
     pub height: u32,
+    /// How the stored picture is turned and mirrored to show it upright: the display matrix
+    /// of a video, the EXIF orientation of a photo. `width` and `height` are already upright.
+    pub orientation: Orientation,
 }
 
 /// A media file the project uses. Dusk never modifies or copies it.

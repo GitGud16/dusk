@@ -96,12 +96,31 @@ fn shows_the_requested_frame_at_the_preview_size() {
 }
 
 #[test]
-fn a_gap_is_black() {
+fn a_gap_is_a_black_frame() {
     let running = start(project_at(Frame(15)));
     running.engine.show(Frame(5));
     let (frame, texture) = running.next_frame();
     assert_eq!(frame, Frame(5));
-    assert!(texture.is_none());
+    let texture = texture.expect("a frame");
+    assert_eq!((texture.width(), texture.height()), (64, 48));
+    let rgba = Compositor::new(&running.gpu).read_rgba(&texture).unwrap();
+    assert!(rgba.chunks(4).all(|pixel| pixel == [0, 0, 0, 255]));
+}
+
+#[test]
+fn the_preview_has_the_shape_of_the_sequence() {
+    // A portrait sequence in a landscape preview: the frame is portrait, the bars around it
+    // are the preview's own background.
+    let info = media_info(&sample()).unwrap();
+    let mut project = Project::new(info.frame_rate.unwrap(), (240, 320));
+    import(&project, sample(), info, Frame(0))
+        .apply(&mut project)
+        .unwrap();
+    let running = start(Arc::new(project));
+    running.engine.show(Frame(5));
+    let (_, texture) = running.next_frame();
+    let texture = texture.expect("a picture");
+    assert_eq!((texture.width(), texture.height()), (36, 48));
 }
 
 #[test]

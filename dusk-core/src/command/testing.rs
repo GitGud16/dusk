@@ -48,6 +48,7 @@ pub(crate) fn project() -> Project {
             vfr: false,
             width: 1920,
             height: 1080,
+            orientation: crate::orientation::Orientation::UPRIGHT,
         },
     };
     Command::AddMedia(media).apply(&mut project).unwrap();
@@ -69,6 +70,7 @@ pub(crate) fn add_still(project: &mut Project) -> MediaId {
             vfr: false,
             width: 4032,
             height: 3024,
+            orientation: crate::orientation::Orientation::UPRIGHT,
         },
     };
     Command::AddMedia(media).apply(project).unwrap();

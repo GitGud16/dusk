@@ -32,7 +32,8 @@ fn describe(probe: &ProbeInfo) -> Result<MediaInfo, &'static str> {
             frame_rate,
             base_frame_rate,
             cover_art: false,
-        } => Some((width, height, frame_rate, base_frame_rate)),
+            orientation,
+        } => Some((width, height, frame_rate, base_frame_rate, orientation)),
         _ => None,
     });
     let has_audio = probe
@@ -46,9 +47,9 @@ fn describe(probe: &ProbeInfo) -> Result<MediaInfo, &'static str> {
         .duration_us
         .filter(|us| *us > 0)
         .ok_or("FFmpeg cannot tell how long it is; convert it to MP4 and try again")?;
-    let (width, height, frame_rate, vfr) = match video {
-        None => (0, 0, None, false),
-        Some((width, height, average, base)) => {
+    let (width, height, frame_rate, vfr, orientation) = match video {
+        None => (0, 0, None, false, dusk_core::Orientation::UPRIGHT),
+        Some((width, height, average, base, orientation)) => {
             let rate = |rate: Option<(i32, i32)>| {
                 let (num, den) = rate?;
                 Rational::new(u32::try_from(num).ok()?, u32::try_from(den).ok()?)
@@ -63,7 +64,9 @@ fn describe(probe: &ProbeInfo) -> Result<MediaInfo, &'static str> {
                 // No rate at all: 30 fps, the default sequence rate.
                 None => STANDARD_RATES[4],
             };
-            (width, height, Some(rate), vfr)
+            // Width and height are the upright picture's.
+            let (width, height) = orientation.apply_to_size((width, height));
+            (width, height, Some(rate), vfr, orientation)
         }
     };
     Ok(MediaInfo {
@@ -79,6 +82,7 @@ fn describe(probe: &ProbeInfo) -> Result<MediaInfo, &'static str> {
         vfr,
         width,
         height,
+        orientation,
     })
 }
 
@@ -102,8 +106,20 @@ mod tests {
                 frame_rate: Some(average),
                 base_frame_rate: Some(base),
                 cover_art: false,
+                orientation: dusk_core::Orientation::UPRIGHT,
             },
         }
+    }
+
+    #[test]
+    fn a_turned_video_is_described_upright() {
+        let mut phone = video(1920, 1080, (30, 1), (30, 1));
+        if let StreamDetail::Video { orientation, .. } = &mut phone.detail {
+            *orientation = dusk_core::Orientation::new(1, false);
+        }
+        let info = describe(&file("mov,mp4,m4a,3gp,3g2,mj2", vec![phone])).unwrap();
+        assert_eq!((info.width, info.height), (1080, 1920));
+        assert_eq!(info.orientation, dusk_core::Orientation::new(1, false));
     }
 
     fn audio() -> StreamSummary {
@@ -129,6 +145,7 @@ mod tests {
                 frame_rate: None,
                 base_frame_rate: None,
                 cover_art: true,
+                orientation: dusk_core::Orientation::UPRIGHT,
             },
         }
     }
@@ -159,6 +176,7 @@ mod tests {
                 vfr: false,
                 width: 1920,
                 height: 1080,
+                orientation: dusk_core::Orientation::UPRIGHT,
             }
         );
     }
