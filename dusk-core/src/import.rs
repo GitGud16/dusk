@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-use crate::command::{Command, InsertClips, Rejection};
+use crate::command::{Command, InsertClips, Rejection, nearest_free_position};
 use crate::model::{Clip, MediaId, MediaInfo, MediaKind, MediaRef, Project, TrackId, TrackKind};
 use crate::time::{Frame, MediaTime, media_to_frame};
 
@@ -69,6 +69,27 @@ pub fn place_where_free(
         }
     }
     Err(first_refusal.unwrap_or(Rejection::UnknownMedia(media)))
+}
+
+/// Where media `media`, placed by [`place`] on tracks `video` and `audio`, could start nearest
+/// to frame `wanted` without overlapping anything; `None` when it cannot go on those tracks at
+/// all, for example because one is locked.
+pub fn nearest_free_place(
+    project: &Project,
+    media: MediaId,
+    wanted: Frame,
+    video: TrackId,
+    audio: TrackId,
+) -> Option<Frame> {
+    // Placed after everything, where it always fits, the new clips can be asked where they
+    // would fit nearest to `wanted`.
+    let mut trial = project.clone();
+    place(project, media, project.sequence().end(), video, audio)
+        .ok()?
+        .apply(&mut trial)
+        .ok()?;
+    let first = project.fresh_ids().clip();
+    nearest_free_position(&trial, first, wanted, None)
 }
 
 /// The clips that show all of `media` from `position`, on track `video` and track `audio`.
@@ -352,5 +373,35 @@ mod tests {
             place_where_free(&project, MediaId(99), Frame(0)).map(|_| ()),
             Err(Rejection::UnknownMedia(MediaId(99)))
         );
+    }
+
+    #[test]
+    fn a_placement_snaps_to_the_nearest_room() {
+        let mut project = occupied(); // MediaId(1) on V1 and A1, frames 0..60
+        let media = add(&mut project, info(true, true)); // 60 frames
+        let ids: Vec<TrackId> = project.sequence().tracks().iter().map(|t| t.id()).collect();
+        let (v1, v2, a1, a2) = (ids[0], ids[1], ids[2], ids[3]);
+        assert_eq!(
+            nearest_free_place(&project, media, Frame(30), v1, a1),
+            Some(Frame(60))
+        );
+        assert_eq!(
+            nearest_free_place(&project, media, Frame(90), v1, a1),
+            Some(Frame(90))
+        );
+        assert_eq!(
+            nearest_free_place(&project, media, Frame(10), v2, a2),
+            Some(Frame(10))
+        );
+        assert_eq!(
+            nearest_free_place(&project, media, Frame(-5), v2, a2),
+            Some(Frame(0))
+        );
+        Command::SetTrackLocked(crate::command::SetTrackLocked::new(v2, true))
+            .apply(&mut project)
+            .unwrap();
+        assert_eq!(nearest_free_place(&project, media, Frame(10), v2, a2), None);
+        // Nothing of the project changed.
+        assert_eq!(project.sequence().tracks()[0].clips().len(), 1);
     }
 }
