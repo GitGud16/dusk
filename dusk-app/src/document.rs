@@ -327,14 +327,24 @@ impl App {
         dialog: Dialog,
         done: impl FnOnce(Vec<PathBuf>) + Send + 'static,
     ) {
+        if let Some(window) = self.window() {
+            self.show_dialog_over(window.window(), dialog, done);
+        }
+    }
+
+    /// Shows a file dialog over `owner` unless one is open already, and calls `done` with
+    /// what was picked.
+    pub(crate) fn show_dialog_over(
+        &mut self,
+        owner: &slint::Window,
+        dialog: Dialog,
+        done: impl FnOnce(Vec<PathBuf>) + Send + 'static,
+    ) {
         if self.dialog_open {
             return;
         }
-        let Some(window) = self.window() else {
-            return;
-        };
         self.dialog_open = true;
-        platform::show_dialog(window.window(), dialog, move |paths| {
+        platform::show_dialog(owner, dialog, move |paths| {
             with_app(|app| app.dialog_open = false);
             done(paths);
         });

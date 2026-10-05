@@ -78,21 +78,44 @@ pub fn part_path(path: &Path) -> PathBuf {
     PathBuf::from(part)
 }
 
+/// The name the clip editor suggests for an export of a clip of `source`: "<name> edit.mp4"
+/// in `folder`, numbered so no existing file is replaced.
+pub fn clip_export_path(folder: &Path, source: &Path) -> PathBuf {
+    free_mp4(folder, &format!("{} edit", stem(source)))
+}
+
+/// Whether `a` and `b` name the same existing file, however their paths are written.
+pub fn same_file(a: &Path, b: &Path) -> bool {
+    match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => false,
+    }
+}
+
+/// `name`.mp4 in `folder`, or `name` 2.mp4, 3 and so on: the first that replaces no file,
+/// not even the part file of an export that was cut off.
+fn free_mp4(folder: &Path, name: &str) -> PathBuf {
+    let taken = |path: &Path| path.exists() || part_path(path).exists();
+    (1..)
+        .map(|n| match n {
+            1 => folder.join(format!("{name}.mp4")),
+            n => folder.join(format!("{name} {n}.mp4")),
+        })
+        .find(|path| !taken(path))
+        .unwrap_or_else(|| folder.join(format!("{name}.mp4")))
+}
+
+/// The file name of `path` without its extension; "Dusk" when it has none.
+fn stem(path: &Path) -> std::borrow::Cow<'_, str> {
+    path.file_stem()
+        .map_or_else(|| "Dusk".into(), |stem| stem.to_string_lossy())
+}
+
 /// Where an export of the project made from `source` goes, until M4 brings the export dialog:
 /// beside the source as "<name> export.mp4", numbered so no existing file is replaced.
 pub fn export_path(source: &Path) -> PathBuf {
     let folder = source.parent().unwrap_or(Path::new("."));
-    let stem = source
-        .file_stem()
-        .map_or_else(|| "Dusk".into(), |stem| stem.to_string_lossy());
-    let taken = |path: &Path| path.exists() || part_path(path).exists();
-    (1..)
-        .map(|n| match n {
-            1 => folder.join(format!("{stem} export.mp4")),
-            n => folder.join(format!("{stem} export {n}.mp4")),
-        })
-        .find(|path| !taken(path))
-        .unwrap_or_else(|| folder.join(format!("{stem} export.mp4")))
+    free_mp4(folder, &format!("{} export", stem(source)))
 }
 
 #[cfg(test)]
@@ -153,6 +176,33 @@ mod tests {
         let nowhere = dir.join("missing").join("edit.dusk");
         assert!(write_atomically(&nowhere, b"text").is_err());
         assert!(!nowhere.exists() && !part_path(&nowhere).exists());
+    }
+
+    #[test]
+    fn a_clip_export_is_named_after_its_source() {
+        let dir = folder("clip-export");
+        let source = Path::new("D:/phone/IMG_0042.MOV");
+        assert_eq!(
+            clip_export_path(&dir, source),
+            dir.join("IMG_0042 edit.mp4")
+        );
+        std::fs::write(dir.join("IMG_0042 edit.mp4"), b"earlier").unwrap();
+        assert_eq!(
+            clip_export_path(&dir, source),
+            dir.join("IMG_0042 edit 2.mp4")
+        );
+    }
+
+    #[test]
+    fn a_file_is_known_however_its_path_is_written() {
+        let dir = folder("same");
+        let media = dir.join("clip.mp4");
+        std::fs::write(&media, b"media").unwrap();
+        assert!(same_file(&media, &dir.join(".").join("clip.mp4")));
+        #[cfg(windows)]
+        assert!(same_file(&media, &dir.join("CLIP.MP4")));
+        // A file that is not there is no file of the project's.
+        assert!(!same_file(&media, &dir.join("clip edit.mp4")));
     }
 
     #[test]

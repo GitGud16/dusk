@@ -38,6 +38,8 @@ pub enum Dialog {
     OpenProject,
     /// Where to save the project, starting from the name `suggested`.
     SaveProject { suggested: String },
+    /// Where to export a clip as an MP4 file, starting from `suggested`, a whole path.
+    ExportClip { suggested: PathBuf },
 }
 
 /// Shows the system's file dialog for `dialog` over `window`, on a thread of its own so the

@@ -107,7 +107,9 @@ pub struct App {
     pub(crate) selected_clip: Option<ClipId>,
     pub(crate) selected_media: Option<MediaId>,
     /// The export that is running, if one is.
-    export: Option<ExportJob>,
+    pub(crate) export: Option<ExportJob>,
+    /// The running export is the clip editor's, which hears how it goes too.
+    pub(crate) export_from_editor: bool,
     pub(crate) view: View,
     /// The question on screen, if one is.
     pub(crate) question: Option<Question>,
@@ -152,6 +154,7 @@ impl App {
             selected_clip: None,
             selected_media: None,
             export: None,
+            export_from_editor: false,
             view: View::new(window.get_timeline_width()),
             question: None,
             dialog_open: false,
@@ -324,7 +327,8 @@ impl App {
             | Action::ApplyClip
             | Action::CloseClipEditor
             | Action::ReloadClip
-            | Action::KeepDraft => {}
+            | Action::KeepDraft
+            | Action::ExportClip => {}
         }
     }
 
@@ -347,16 +351,27 @@ impl App {
         let path = export_path(&base);
         match self.engine.export(Arc::clone(&self.project), path.clone()) {
             Ok(job) => {
-                self.export = Some(job);
-                if let Some(window) = self.window() {
-                    window.set_exporting(true);
-                    window.set_export_progress(0.0);
-                }
-                self.refresh_transport();
+                self.export_started(job, false);
                 self.say(&format!("Exporting to {}…", path.display()));
             }
             Err(error) => self.fail(&error.to_string()),
         }
+    }
+
+    /// An export started: the windows show its progress and a way to cancel it, and
+    /// playback stopped.
+    pub(crate) fn export_started(&mut self, job: ExportJob, from_editor: bool) {
+        self.export = Some(job);
+        self.export_from_editor = from_editor;
+        if let Some(window) = self.window() {
+            window.set_exporting(true);
+            window.set_export_progress(0.0);
+        }
+        if let Some(window) = &self.editor_window {
+            window.set_exporting(true);
+        }
+        self.refresh_transport();
+        self.refresh_editor_transport();
     }
 
     pub fn cancel_export(&mut self) {
@@ -370,22 +385,50 @@ impl App {
         let Some(window) = self.window() else {
             return;
         };
+        let from_editor = self.export_from_editor;
         if let ExportEvent::Progress { done, total } = event {
-            window.set_export_progress(done as f32 / total.max(1) as f32);
+            let progress = done as f32 / total.max(1) as f32;
+            window.set_export_progress(progress);
+            if from_editor {
+                self.editor_say(&format!(
+                    "Exporting the clip… {}%",
+                    (progress * 100.0).floor()
+                ));
+            }
             return;
         }
         self.export = None;
+        self.export_from_editor = false;
         window.set_exporting(false);
-        match event {
-            ExportEvent::Finished { path, encoder } => {
-                self.say(&format!("Exported to {} ({encoder}).", path.display()));
-            }
-            ExportEvent::Cancelled => self.say("Export cancelled; nothing was written."),
-            ExportEvent::Failed(error) => self.fail(&error.to_string()),
-            ExportEvent::Progress { .. } => {}
+        if let Some(window) = &self.editor_window {
+            window.set_exporting(false);
         }
-        // The preview showed cached frames only while exporting.
+        let (message, failed) = match event {
+            ExportEvent::Finished { path, encoder } => (
+                format!("Exported to {} ({encoder}).", path.display()),
+                false,
+            ),
+            ExportEvent::Cancelled => ("Export cancelled; nothing was written.".to_owned(), false),
+            ExportEvent::Failed(error) => (error.to_string(), true),
+            ExportEvent::Progress { .. } => return,
+        };
+        if failed {
+            self.fail(&message);
+        } else {
+            self.say(&message);
+        }
+        if from_editor {
+            if failed {
+                self.editor_fail(&message);
+            } else {
+                self.editor_say(&message);
+            }
+        }
+        // The previews showed cached frames only while exporting.
         self.engine.show(Preview::Main, self.playhead);
+        if let Some(playhead) = self.editor_playhead() {
+            self.engine.show(Preview::ClipEditor, playhead);
+        }
     }
 
     pub fn play_pause(&mut self) {

@@ -3,7 +3,9 @@
 //! project in one step or exported as a file of their own.
 
 use crate::command::{ApplyClipSession, Command, Rejection, check_clip};
-use crate::model::{AudioEdits, Clip, ClipEdits, ClipId, MediaKind, Project, Rotation, VideoEdits};
+use crate::model::{
+    AudioEdits, Clip, ClipEdits, ClipId, Fit, MediaKind, Project, Rotation, VideoEdits,
+};
 use crate::time::{Frame, MediaTime, Rational, frame_to_media, length_for, media_to_frame};
 
 /// What the clip editor changes in a link group, alike for every clip of it.
@@ -176,12 +178,18 @@ impl ClipEditSession {
     /// timeline is refused, with the reason.
     pub fn preview_project(&self, project: &Project) -> Result<Project, Rejection> {
         let sequence = &project.sequence;
-        self.alone(project, sequence.frame_rate, sequence.resolution)
+        self.alone(
+            &self.draft,
+            project,
+            sequence.frame_rate,
+            sequence.resolution,
+        )
     }
 
     /// A project of the group alone with the draft applied, at the clip's own snapped rate
     /// (a still at the sequence's) and its upright size after the crop and the turn: what
-    /// Export as file writes.
+    /// Export as file writes. The picture fills that frame, which has its shape, so an
+    /// encoder that rounds the size down crops a pixel rather than leaving a bar.
     pub fn export_project(&self, project: &Project) -> Result<Project, Rejection> {
         let first = &self.seen[0];
         let media = project
@@ -204,13 +212,18 @@ impl ClipEditSession {
                 Rotation::None | Rotation::Half => (width, height),
             }
         });
-        self.alone(project, rate, size)
+        let mut draft = self.draft.clone();
+        if let Some(edits) = draft.video.as_mut() {
+            edits.fit = Fit::Fill;
+        }
+        self.alone(&draft, project, rate, size)
     }
 
-    /// A project of the group alone with the draft applied, from frame 0, at `rate` and
+    /// A project of the group alone with `draft` applied, from frame 0, at `rate` and
     /// `size`. Fades and a still's length, in frames of the sequence, keep their duration.
     fn alone(
         &self,
+        draft: &ClipDraft,
         project: &Project,
         rate: Rational,
         size: (u32, u32),
@@ -222,7 +235,7 @@ impl ClipEditSession {
         let still = media.info.kind == MediaKind::Still;
         let from = project.sequence.frame_rate;
         let duration = |frames: Frame| media_to_frame(frame_to_media(frames, from), rate);
-        let mut draft = self.draft.clone();
+        let mut draft = draft.clone();
         draft.still_length = duration(draft.still_length);
         if let Some(audio) = draft.audio.as_mut() {
             audio.fade_in = duration(audio.fade_in);
@@ -266,7 +279,7 @@ mod tests {
     use super::*;
     use crate::command::testing::*;
     use crate::command::{Edge, Unlink, remove_one};
-    use crate::model::{Clip, MediaId, Rect, Rotation, TrackKind};
+    use crate::model::{Clip, Fit, MediaId, Rect, Rotation, TrackKind};
 
     fn group_of(session: &ClipEditSession) -> Vec<ClipId> {
         let mut group = session.group();
@@ -427,7 +440,14 @@ mod tests {
         for clip in clips {
             // 2 s at the clip's own 30 fps.
             assert_eq!((clip.position, clip.length), (Frame(0), Frame(60)));
+            // The frame has the picture's own shape: an encoder that rounds its size down
+            // must not leave a hairline bar.
+            if let ClipEdits::Video(edits) = &clip.edits {
+                assert_eq!(edits.fit, Fit::Fill);
+            }
         }
+        // The draft itself keeps fitting with bars, as the timeline shows it.
+        assert_eq!(session.draft.video.unwrap().fit, Fit::Fit);
     }
 
     #[test]

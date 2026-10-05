@@ -227,6 +227,8 @@ export component ClipEditorWindow inherits Window {
     // The status line: what just happened, or why a change was refused.
     in property <string> status;
     in property <bool> status-is-error;
+    // An export runs, so another cannot start.
+    in property <bool> exporting;
 
     // A question over the window.
     in property <bool> prompt-open;
@@ -780,6 +782,16 @@ export component ClipEditorWindow inherits Window {
                         vertical-alignment: center;
                         overflow: elide;
                         horizontal-stretch: 1;
+                    }
+
+                    ToolButton {
+                        y: (parent.height - self.height) / 2;
+                        text: "Export as file…";
+                        enabled: root.props.video && !root.exporting;
+                        clicked => {
+                            root.action("export-clip");
+                            keys.focus();
+                        }
                     }
 
                     ToolButton {

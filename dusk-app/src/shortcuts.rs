@@ -62,6 +62,8 @@ pub enum Action {
     /// or keeps its draft to apply over it.
     ReloadClip,
     KeepDraft,
+    /// The clip editor's Export as file.
+    ExportClip,
 }
 
 /// A key as Slint reports it: a character (lowercase for letters) or a named key.
@@ -261,6 +263,11 @@ pub const SHORTCUTS: &[Shortcut] = &[
         Action::KeepDraft,
         "Clip editor: the clip changed in the main window; keep the draft",
     )),
+    ctrl(shift(char_key(
+        'e',
+        Action::ExportClip,
+        "Clip editor: export the clip as a file of its own",
+    ))),
     alt(char_key('1', Action::ToggleMute(0), "Hide or show V1")),
     alt(char_key('2', Action::ToggleMute(1), "Hide or show V2")),
     alt(char_key('3', Action::ToggleMute(2), "Mute or unmute A1")),
@@ -417,6 +424,7 @@ pub fn action_named(name: &str) -> Option<Action> {
         "apply-clip" => Action::ApplyClip,
         "reload-clip" => Action::ReloadClip,
         "keep-draft" => Action::KeepDraft,
+        "export-clip" => Action::ExportClip,
         _ => return None,
     })
 }
@@ -536,6 +544,8 @@ mod tests {
             Some(Action::ReloadClip)
         );
         assert_eq!(action_for("k", true, false, false), Some(Action::KeepDraft));
+        assert_eq!(action_for("e", true, true, false), Some(Action::ExportClip));
+        assert_eq!(action_for("e", true, false, false), Some(Action::Export));
     }
 
     #[test]
