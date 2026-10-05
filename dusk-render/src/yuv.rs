@@ -164,6 +164,9 @@ impl ToYuv {
             layout: PictureLayout::Nv12,
             matrix: ColorMatrix::Bt709,
             range: ColorRange::Limited,
+            primaries: dusk_core::color::Primaries::Bt709,
+            transfer: dusk_core::color::Transfer::Bt1886,
+            peak_nits: 0,
             luma: luma_copy.rows()?,
             chroma: chroma_copy.rows()?,
         };

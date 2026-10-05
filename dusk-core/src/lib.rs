@@ -3,6 +3,7 @@
 //!
 //! Depends only on `serde`; no FFmpeg, wgpu, Slint or I/O (see docs/ARCHITECTURE.md).
 
+pub mod color;
 mod command;
 pub mod file;
 mod import;

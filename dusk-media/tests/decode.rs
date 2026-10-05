@@ -221,3 +221,13 @@ fn the_decoder_knows_when_the_next_frame_starts() {
     decoder.next_frame().unwrap();
     assert_eq!(decoder.following(), Following::Unknown);
 }
+
+#[test]
+fn an_untagged_video_is_sdr_bt709() {
+    let mut decoder = VideoDecoder::open(&sample(), Acceleration::Software).unwrap();
+    let frame = decoder.frame_at(dusk_core::MediaTime(0)).unwrap().unwrap();
+    let picture = frame.picture;
+    assert_eq!(picture.primaries, dusk_core::color::Primaries::Bt709);
+    assert_eq!(picture.transfer, dusk_core::color::Transfer::Bt1886);
+    assert_eq!(picture.peak_nits, 0);
+}

@@ -6,6 +6,8 @@
 use std::path::Path;
 
 use dusk_core::{ColorMatrix, ColorRange, Orientation, Picture, PictureLayout};
+
+use crate::decode::{primaries_of, transfer_of};
 use ffmpeg_next as ffmpeg;
 use ffmpeg_next::format::Pixel;
 use ffmpeg_next::frame;
@@ -38,7 +40,7 @@ pub fn is_still(probe: &ProbeInfo) -> bool {
 /// Decodes the still image at `path` once and describes it.
 pub fn still_info(path: &Path) -> Result<StillInfo, MediaError> {
     // The smallest size JPEG decodes at is enough to learn what the file holds.
-    let decoded = decode_first(path, None)?;
+    let decoded = decode_first(path, None, false)?;
     let orientation = ffi::frame_display_matrix(&decoded.frame)
         .map_or(Orientation::UPRIGHT, |matrix| from_display_matrix(&matrix));
     let frame_bytes = ffi::frame_bytes(decoded.frame.format(), decoded.width, decoded.height);
@@ -60,7 +62,18 @@ pub fn still_info(path: &Path) -> Result<StillInfo, MediaError> {
 /// Decodes the still image at `path` and scales it to `size` (width, height, as stored) as
 /// an NV12 picture tagged with its own matrix and range.
 pub fn decode_still(path: &Path, size: (u32, u32)) -> Result<Picture, MediaError> {
-    let decoded = decode_first(path, Some(size))?;
+    let mut decoded = decode_first(path, Some(size), false)?;
+    if ffi::has_rgb_icc_profile(&decoded.frame) {
+        // FFmpeg reads a profile's primaries only with its ICC support on, which refuses
+        // gray and CMYK profiles; this one is RGB. If it fails anyway, the picture is sRGB.
+        if let Ok(tagged) = decode_first(path, Some(size), true) {
+            decoded = tagged;
+        }
+    }
+    let (primaries, transfer) = (
+        primaries_of(&decoded.frame),
+        transfer_of(&decoded.frame, true),
+    );
     let colors = colors_of(&decoded.frame);
     let (luma, chroma) = ffi::scale_to_nv12(&decoded.frame, size, &colors)
         .map_err(|source| decode_error(path, source))?;
@@ -80,6 +93,9 @@ pub fn decode_still(path: &Path, size: (u32, u32)) -> Result<Picture, MediaError
         } else {
             ColorRange::Limited
         },
+        primaries,
+        transfer,
+        peak_nits: 0,
         luma,
         chroma,
     })
@@ -96,7 +112,11 @@ struct Decoded {
 /// Decodes the first picture of the image at `path`. JPEG decodes at a half, a quarter or an
 /// eighth of its size when that still covers `target` (the eighth when there is none); other
 /// formats decode at full size.
-fn decode_first(path: &Path, target: Option<(u32, u32)>) -> Result<Decoded, MediaError> {
+fn decode_first(
+    path: &Path,
+    target: Option<(u32, u32)>,
+    icc_profiles: bool,
+) -> Result<Decoded, MediaError> {
     let open_error = |source| MediaError::Open {
         path: path.to_path_buf(),
         source,
@@ -132,6 +152,9 @@ fn decode_first(path: &Path, target: Option<(u32, u32)>) -> Result<Decoded, Medi
     // Decoders that cannot decode smaller ignore this.
     if id == ffmpeg::codec::Id::MJPEG && lowres > 0 {
         options.set("lowres", &lowres.to_string());
+    }
+    if icc_profiles {
+        options.set("flags2", "+icc_profiles");
     }
     let mut decoder = context
         .decoder()

@@ -4,6 +4,7 @@
 
 use std::path::{Path, PathBuf};
 
+use dusk_core::color::{Primaries, Transfer, source_peak};
 use dusk_core::{ColorMatrix, ColorRange, MediaTime, Picture, PictureLayout};
 use ffmpeg_next as ffmpeg;
 use ffmpeg_next::format::Pixel;
@@ -332,12 +333,16 @@ fn picture_of(frame: &frame::Video, path: &Path) -> Result<(Picture, bool), Medi
         to_top_bits(&mut chroma);
     }
     // The color tags come from the decoded frame; a transferred copy does not carry them.
+    let transfer = transfer_of(frame, false);
     let picture = Picture {
         width,
         height,
         layout,
         matrix: matrix_of(frame, width, height),
         range: range_of(frame),
+        primaries: primaries_of(frame),
+        transfer,
+        peak_nits: peak_of(frame, transfer),
         luma,
         chroma,
     };
@@ -390,6 +395,40 @@ fn matrix_of(frame: &frame::Video, width: u32, height: u32) -> ColorMatrix {
         _ if width >= 1280 || height > 576 => ColorMatrix::Bt709,
         _ => ColorMatrix::Bt601,
     }
+}
+
+/// The frame's color primaries; untagged frames are taken as BT.709.
+pub(crate) fn primaries_of(frame: &frame::Video) -> Primaries {
+    use ffmpeg::color::Primaries as Tag;
+    match frame.color_primaries() {
+        Tag::BT470BG => Primaries::Bt601_625,
+        Tag::SMPTE170M | Tag::SMPTE240M => Primaries::Bt601_525,
+        Tag::BT2020 => Primaries::Bt2020,
+        Tag::SMPTE432 => Primaries::DisplayP3,
+        _ => Primaries::Bt709,
+    }
+}
+
+/// The frame's transfer; an untagged photo is sRGB, untagged video BT.1886.
+pub(crate) fn transfer_of(frame: &frame::Video, photo: bool) -> Transfer {
+    use ffmpeg::color::TransferCharacteristic as Tag;
+    match frame.color_transfer_characteristic() {
+        Tag::SMPTE2084 => Transfer::Pq,
+        Tag::ARIB_STD_B67 => Transfer::Hlg,
+        Tag::IEC61966_2_1 => Transfer::Srgb,
+        _ if photo => Transfer::Srgb,
+        _ => Transfer::Bt1886,
+    }
+}
+
+/// For an HDR frame, the peak tone mapping starts from, in nits; 0 for SDR.
+fn peak_of(frame: &frame::Video, transfer: Transfer) -> u16 {
+    if !transfer.is_hdr() {
+        return 0;
+    }
+    let (max_cll, mastering_max) = ffi::light_levels(frame);
+    // At most 10 000 nits, which fits.
+    source_peak(max_cll, mastering_max).round() as u16
 }
 
 /// The frame's YUV range; untagged frames are limited range unless the format says full.

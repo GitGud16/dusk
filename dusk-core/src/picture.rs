@@ -1,6 +1,8 @@
 //! Decoded pictures: the plain data `dusk-media` decodes into, the frame cache holds and
 //! `dusk-render` draws (docs/ARCHITECTURE.md, "Memory discipline").
 
+use crate::color::{Primaries, Transfer};
+
 /// How a picture's samples are stored.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PictureLayout {
@@ -55,6 +57,13 @@ pub struct Picture {
     pub matrix: ColorMatrix,
     /// The YUV value range.
     pub range: ColorRange,
+    /// The color primaries.
+    pub primaries: Primaries,
+    /// How the values relate to light.
+    pub transfer: Transfer,
+    /// For an HDR picture, the brightest it gets in nits, where tone mapping starts from
+    /// (`color::source_peak`); 0 for SDR.
+    pub peak_nits: u16,
     /// `height` rows of `width` luma samples.
     pub luma: Vec<u8>,
     /// Rows of interleaved U and V samples, sized by [`Picture::chroma_size`].
@@ -86,6 +95,9 @@ mod tests {
             layout,
             matrix: ColorMatrix::Bt709,
             range: ColorRange::Limited,
+            primaries: crate::color::Primaries::Bt709,
+            transfer: crate::color::Transfer::Bt1886,
+            peak_nits: 0,
             luma: vec![0; samples],
             chroma: vec![0; chroma * layout.bytes_per_sample()],
         }

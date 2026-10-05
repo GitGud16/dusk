@@ -40,3 +40,12 @@ ffmpeg -hide_banner -y -f lavfi -i "testsrc2=size=320x240:rate=1" -frames:v 1 -p
 ffmpeg -hide_banner -y -f lavfi -i "testsrc2=size=320x240:rate=1" -frames:v 1 -c:v mjpeg -q:v 3 -pix_fmt yuvj420p -map_metadata -1 -fflags +bitexact -flags:v +bitexact $env:TEMP\dusk-photo.jpg
 python scripts/exif-orientation.py $env:TEMP\dusk-photo.jpg testdata/photo-turned.jpg 6
 ```
+
+## `photo-p3.jpg`
+
+The same frame as `photo.png` as a JPEG with an embedded Display P3 ICC profile (FFmpeg's
+`iccgen` filter), for reading primaries through FFmpeg's ICC support:
+
+```powershell
+ffmpeg -hide_banner -y -f lavfi -i "testsrc2=size=320x240:rate=1" -frames:v 1 -vf "format=yuvj420p,iccgen=color_primaries=smpte432:color_trc=iec61966-2-1:force=1" -c:v mjpeg -q:v 3 -map_metadata -1 -fflags +bitexact -flags:v +bitexact testdata/photo-p3.jpg
+```

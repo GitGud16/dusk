@@ -78,6 +78,99 @@ pub(crate) fn frame_display_matrix(frame: &ffmpeg_next::frame::Video) -> Option<
     }
 }
 
+/// FFmpeg's `AVContentLightMetadata` (libavutil/mastering_display_metadata.h), which
+/// ffmpeg-sys-next does not bind; a public, stable layout.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct ContentLight {
+    max_cll: u32,
+    max_fall: u32,
+}
+
+/// FFmpeg's `AVRational`, as laid out in the structs below.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct Fraction {
+    num: i32,
+    den: i32,
+}
+
+/// FFmpeg's `AVMasteringDisplayMetadata`, likewise unbound.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct MasteringDisplay {
+    display_primaries: [[Fraction; 2]; 3],
+    white_point: [Fraction; 2],
+    min_luminance: Fraction,
+    max_luminance: Fraction,
+    has_primaries: i32,
+    has_luminance: i32,
+}
+
+/// An HDR frame's light levels in nits: MaxCLL from its content light level metadata, and
+/// its mastering display's maximum luminance, where it carries them.
+pub(crate) fn light_levels(frame: &ffmpeg_next::frame::Video) -> (Option<f64>, Option<f64>) {
+    use ffmpeg_next::ffi::{AVFrameSideDataType, av_frame_get_side_data};
+    /// The side data of `kind`, if the frame has at least `size` bytes of it.
+    ///
+    /// # Safety
+    ///
+    /// `frame` must be a valid frame.
+    unsafe fn data(
+        frame: *const ffmpeg_next::ffi::AVFrame,
+        kind: AVFrameSideDataType,
+        size: usize,
+    ) -> Option<*const u8> {
+        // SAFETY: the caller's promise; the entry is only read.
+        unsafe {
+            let entry = av_frame_get_side_data(frame, kind);
+            (!entry.is_null() && !(*entry).data.is_null() && (*entry).size >= size)
+                .then(|| (*entry).data.cast_const())
+        }
+    }
+    // SAFETY: the frame is alive for the borrow. Each entry is checked to hold the struct
+    // read from it, which is read unaligned because it sits in a byte buffer.
+    unsafe {
+        let frame = frame.as_ptr();
+        let max_cll = data(
+            frame,
+            AVFrameSideDataType::AV_FRAME_DATA_CONTENT_LIGHT_LEVEL,
+            std::mem::size_of::<ContentLight>(),
+        )
+        .map(|data| f64::from(std::ptr::read_unaligned(data.cast::<ContentLight>()).max_cll));
+        let mastering = data(
+            frame,
+            AVFrameSideDataType::AV_FRAME_DATA_MASTERING_DISPLAY_METADATA,
+            std::mem::size_of::<MasteringDisplay>(),
+        )
+        .and_then(|data| {
+            let display = std::ptr::read_unaligned(data.cast::<MasteringDisplay>());
+            let max = display.max_luminance;
+            (display.has_luminance != 0 && max.den != 0)
+                .then(|| f64::from(max.num) / f64::from(max.den))
+        });
+        (max_cll, mastering)
+    }
+}
+
+/// Whether a decoded frame carries an ICC profile for RGB, the only kind FFmpeg's ICC
+/// support takes (it refuses gray and CMYK profiles).
+pub(crate) fn has_rgb_icc_profile(frame: &ffmpeg_next::frame::Video) -> bool {
+    use ffmpeg_next::ffi::{AVFrameSideDataType, av_frame_get_side_data};
+    // SAFETY: as in `frame_display_matrix`; only the profile header's color space field,
+    // bytes 16 to 20, is read, after checking the profile is that long.
+    unsafe {
+        let entry = av_frame_get_side_data(
+            frame.as_ptr(),
+            AVFrameSideDataType::AV_FRAME_DATA_ICC_PROFILE,
+        );
+        if entry.is_null() || (*entry).data.is_null() || (*entry).size < 20 {
+            return false;
+        }
+        std::slice::from_raw_parts((*entry).data.add(16), 4) == b"RGB "
+    }
+}
+
 /// How many bytes a frame of `format` at `width` by `height` takes, rows unpadded.
 pub(crate) fn frame_bytes(format: ffmpeg_next::format::Pixel, width: u32, height: u32) -> u64 {
     let (Ok(width), Ok(height)) = (i32::try_from(width), i32::try_from(height)) else {

@@ -16,6 +16,9 @@ fn flat(width: u32, height: u32, yuv: [u8; 3], matrix: ColorMatrix, range: Color
         layout: PictureLayout::Nv12,
         matrix,
         range,
+        primaries: dusk_core::color::Primaries::Bt709,
+        transfer: dusk_core::color::Transfer::Bt1886,
+        peak_nits: 0,
         luma: vec![yuv[0]; (width * height) as usize],
         chroma: [yuv[1], yuv[2]].repeat((chroma_width * chroma_height) as usize),
     }
@@ -37,6 +40,9 @@ fn flat_10_bit(
         layout: PictureLayout::P010,
         matrix,
         range,
+        primaries: dusk_core::color::Primaries::Bt709,
+        transfer: dusk_core::color::Transfer::Bt1886,
+        peak_nits: 0,
         luma: sample(yuv[0]).repeat((width * height) as usize),
         chroma: [sample(yuv[1]), sample(yuv[2])]
             .concat()
@@ -262,6 +268,9 @@ fn painted(
         layout: PictureLayout::Nv12,
         matrix: ColorMatrix::Bt709,
         range: ColorRange::Limited,
+        primaries: dusk_core::color::Primaries::Bt709,
+        transfer: dusk_core::color::Transfer::Bt1886,
+        peak_nits: 0,
         luma: (0..height)
             .flat_map(|y| (0..width).map(move |x| (x, y)))
             .map(|(x, y)| luma(x, y))
@@ -378,4 +387,108 @@ fn filling_covers_the_frame_without_bars() {
     for x in [1, 48, 94] {
         assert!(pixel(&filled, 96, x, 24)[0] > 100, "x {x}");
     }
+}
+
+/// Codes for R'G'B' from 0 to 1 in `matrix` at `bits`, limited range or full.
+fn yuv_codes(rgb: [f64; 3], matrix: ColorMatrix, full: bool, bits: u32) -> [u16; 3] {
+    let (kr, kb) = match matrix {
+        ColorMatrix::Bt601 => (0.299, 0.114),
+        ColorMatrix::Bt709 => (0.2126, 0.0722),
+        ColorMatrix::Bt2020 => (0.2627, 0.0593),
+    };
+    let [r, g, b] = rgb;
+    let y = kr * r + (1.0 - kr - kb) * g + kb * b;
+    let (cb, cr) = ((b - y) / (2.0 * (1.0 - kb)), (r - y) / (2.0 * (1.0 - kr)));
+    let scale = f64::from(1u32 << (bits - 8));
+    let codes = if full {
+        [y * 255.0, 128.0 + cb * 255.0, 128.0 + cr * 255.0]
+    } else {
+        [16.0 + 219.0 * y, 128.0 + 224.0 * cb, 128.0 + 224.0 * cr]
+    };
+    codes.map(|code| (code * scale).round() as u16)
+}
+
+/// The 8-bit RGB the compositor should show for linear BT.709 light, encoded with `encode`.
+fn shown(light: [f64; 3], encode: impl Fn(f64) -> f64) -> [u8; 4] {
+    let [r, g, b] = light.map(|v| (encode(v.clamp(0.0, 1.0)) * 255.0).round() as u8);
+    [r, g, b, 255]
+}
+
+fn apply(matrix: [[f64; 3]; 3], rgb: [f64; 3]) -> [f64; 3] {
+    matrix.map(|row| row.iter().zip(rgb).map(|(m, v)| m * v).sum())
+}
+
+#[test]
+fn a_display_p3_photo_is_brought_into_bt709() {
+    use dusk_core::color::{Primaries, Transfer, linear_to_sdr, sdr_to_linear, to_bt709};
+    let compositor = compositor();
+    let color = [0.6, 0.5, 0.25];
+    let [y, u, v] = yuv_codes(color, ColorMatrix::Bt709, true, 8);
+    let mut picture = flat(
+        16,
+        16,
+        [y as u8, u as u8, v as u8],
+        ColorMatrix::Bt709,
+        ColorRange::Full,
+    );
+    picture.primaries = Primaries::DisplayP3;
+    picture.transfer = Transfer::Srgb;
+    let rgba = render(&compositor, &picture, (16, 16));
+    let light = apply(
+        to_bt709(Primaries::DisplayP3),
+        color.map(|v| sdr_to_linear(Transfer::Srgb, v)),
+    );
+    let expected = shown(light, |v| linear_to_sdr(Transfer::Srgb, v));
+    let actual = pixel(&rgba, 16, 8, 8);
+    assert!(close(actual, expected, 2), "{actual:?} != {expected:?}");
+    // The same values as plain sRGB come out as they are.
+    picture.primaries = Primaries::Bt709;
+    let plain = pixel(&render(&compositor, &picture, (16, 16)), 16, 8, 8);
+    assert!(close(plain, shown(color, |v| v), 2), "{plain:?}");
+}
+
+#[test]
+fn an_hdr_pq_picture_is_tone_mapped_to_sdr() {
+    use dusk_core::color::{Primaries, Transfer, nits_to_pq, pq_to_nits, to_bt709, tone_map};
+    let compositor = compositor();
+    for nits in [
+        [1000.0, 1000.0, 1000.0],
+        [600.0, 200.0, 50.0],
+        [40.0, 30.0, 20.0],
+    ] {
+        let signal = nits.map(nits_to_pq);
+        let codes = yuv_codes(signal, ColorMatrix::Bt2020, false, 10);
+        let mut picture = flat_10_bit(16, 16, codes, ColorMatrix::Bt2020, ColorRange::Limited);
+        picture.primaries = Primaries::Bt2020;
+        picture.transfer = Transfer::Pq;
+        picture.peak_nits = 1000;
+        let rgba = render(&compositor, &picture, (16, 16));
+        // What the codes stand for, tone-mapped, moved into BT.709, shown on a gamma 2.4
+        // display (docs/ARCHITECTURE.md: HDR is encoded again with inverse BT.1886).
+        let decoded = signal.map(pq_to_nits);
+        let light = apply(to_bt709(Primaries::Bt2020), tone_map(decoded, 1000.0));
+        let expected = shown(light, |v| v.powf(1.0 / 2.4));
+        let actual = pixel(&rgba, 16, 8, 8);
+        assert!(
+            close(actual, expected, 2),
+            "{nits:?}: {actual:?} != {expected:?}"
+        );
+    }
+}
+
+#[test]
+fn an_hlg_picture_is_tone_mapped_through_its_ootf() {
+    use dusk_core::color::{Primaries, Transfer, hlg_ootf, hlg_to_scene, to_bt709, tone_map};
+    let compositor = compositor();
+    let signal = [0.75, 0.5, 0.25];
+    let codes = yuv_codes(signal, ColorMatrix::Bt2020, false, 10);
+    let mut picture = flat_10_bit(16, 16, codes, ColorMatrix::Bt2020, ColorRange::Limited);
+    picture.primaries = Primaries::Bt2020;
+    picture.transfer = Transfer::Hlg;
+    let rgba = render(&compositor, &picture, (16, 16));
+    let display = hlg_ootf(signal.map(hlg_to_scene));
+    let light = apply(to_bt709(Primaries::Bt2020), tone_map(display, 1000.0));
+    let expected = shown(light, |v| v.powf(1.0 / 2.4));
+    let actual = pixel(&rgba, 16, 8, 8);
+    assert!(close(actual, expected, 2), "{actual:?} != {expected:?}");
 }

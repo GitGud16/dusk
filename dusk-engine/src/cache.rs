@@ -142,6 +142,9 @@ mod tests {
             layout: PictureLayout::Nv12,
             matrix: ColorMatrix::Bt709,
             range: ColorRange::Limited,
+            primaries: dusk_core::color::Primaries::Bt709,
+            transfer: dusk_core::color::Transfer::Bt1886,
+            peak_nits: 0,
             luma: vec![shade; 256],
             chroma: vec![128; 128],
         }

@@ -3,6 +3,7 @@
 
 use std::path::{Path, PathBuf};
 
+use dusk_core::color::{Primaries, Transfer};
 use dusk_core::{ColorMatrix, ColorRange, Orientation, Picture, PictureLayout};
 use dusk_media::{decode_still, is_still, probe, still_info};
 
@@ -93,4 +94,21 @@ fn a_file_that_is_not_a_picture_is_refused() {
     let toml = Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
     assert!(still_info(&toml).is_err());
     assert!(decode_still(&toml, (16, 16)).is_err());
+}
+
+#[test]
+fn a_photo_says_which_colors_it_holds() {
+    // An embedded Display P3 profile, read through FFmpeg's ICC support.
+    let p3 = decode_still(&testdata("photo-p3.jpg"), (160, 120)).unwrap();
+    assert_eq!(
+        (p3.primaries, p3.transfer),
+        (Primaries::DisplayP3, Transfer::Srgb)
+    );
+    // Without a profile, a photo is sRGB.
+    let plain = decode_still(&testdata("photo.png"), (160, 120)).unwrap();
+    assert_eq!(
+        (plain.primaries, plain.transfer),
+        (Primaries::Bt709, Transfer::Srgb)
+    );
+    assert_eq!(plain.peak_nits, 0);
 }

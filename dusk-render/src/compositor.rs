@@ -8,6 +8,7 @@ use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, mpsc};
 
+use dusk_core::color::{self, Primaries, Transfer};
 use dusk_core::{ColorMatrix, ColorRange, Picture, PictureLayout};
 use wgpu::util::DeviceExt;
 
@@ -321,6 +322,7 @@ impl Compositor {
         let convert = Convert {
             rect: map.rect,
             to_rgb: yuv_to_rgb(picture.matrix, picture.range, bits),
+            color: ColorStep::of(picture),
             luma_down: Pass::new(down_window, map.y_step, map.y_origin, false),
             chroma_down: Pass::new(
                 half(down_window),
@@ -737,8 +739,67 @@ impl Pass {
 struct Convert {
     rect: FrameRect,
     to_rgb: [[f32; 4]; 3],
+    color: ColorStep,
     luma_down: Pass,
     chroma_down: Pass,
+}
+
+/// Color step 3 for a picture (docs/ARCHITECTURE.md): skipped for BT.709 SDR; otherwise the
+/// picture's light is moved into BT.709, tone-mapped first when it is HDR.
+struct ColorStep {
+    /// 0 skips the step, 1 is SDR with other primaries, 2 is PQ and 3 HLG.
+    kind: i32,
+    srgb: bool,
+    peak_nits: f32,
+    peak_pq: f32,
+    knee: f32,
+    max_lum: f32,
+    gamut: [[f64; 3]; 3],
+}
+
+impl ColorStep {
+    fn of(picture: &Picture) -> ColorStep {
+        let kind = match picture.transfer {
+            Transfer::Pq => 2,
+            Transfer::Hlg => 3,
+            _ if picture.primaries != Primaries::Bt709 => 1,
+            _ => 0,
+        };
+        // HLG is shown at its 1000-nit reference; PQ peaks where its metadata says.
+        let peak = match picture.transfer {
+            Transfer::Pq if picture.peak_nits > 0 => f64::from(picture.peak_nits),
+            _ => color::DEFAULT_HDR_PEAK,
+        };
+        let peak_pq = color::nits_to_pq(peak);
+        let max_lum = color::nits_to_pq(color::SDR_PEAK) / peak_pq;
+        ColorStep {
+            kind,
+            srgb: picture.transfer == Transfer::Srgb,
+            peak_nits: peak as f32,
+            peak_pq: peak_pq as f32,
+            knee: (1.5 * max_lum - 0.5) as f32,
+            max_lum: max_lum as f32,
+            gamut: color::to_bt709(picture.primaries),
+        }
+    }
+
+    /// The shader's fields, from `color_step` to `gamut_b`, with the padding before the
+    /// rows, which WGSL aligns to 16 bytes.
+    fn bytes(&self) -> Vec<u8> {
+        let integers = [self.kind, i32::from(self.srgb)].map(i32::to_le_bytes);
+        let floats = [self.peak_nits, self.peak_pq, self.knee, self.max_lum].map(f32::to_le_bytes);
+        let rows = self
+            .gamut
+            .iter()
+            .flat_map(|row| [row[0] as f32, row[1] as f32, row[2] as f32, 0.0])
+            .map(f32::to_le_bytes);
+        integers
+            .into_iter()
+            .chain(floats)
+            .chain(rows)
+            .flatten()
+            .collect()
+    }
 }
 
 impl Convert {
@@ -762,16 +823,15 @@ impl Convert {
             chroma.scale(),
         ]
         .map(f32::to_le_bytes);
-        // WGSL rounds the struct up to a multiple of 16 bytes.
-        let padding = [[0; 4]; 2];
-        corners
+        let mut bytes: Vec<u8> = corners
             .into_iter()
             .chain(rows)
             .chain(windows)
             .chain(down)
-            .chain(padding)
             .flatten()
-            .collect()
+            .collect();
+        bytes.extend(self.color.bytes());
+        bytes
     }
 }
 

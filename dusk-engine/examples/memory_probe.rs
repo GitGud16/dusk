@@ -49,6 +49,9 @@ fn main() {
         layout: dusk_core::PictureLayout::Nv12,
         matrix: dusk_core::ColorMatrix::Bt709,
         range: dusk_core::ColorRange::Limited,
+        primaries: dusk_core::color::Primaries::Bt709,
+        transfer: dusk_core::color::Transfer::Bt1886,
+        peak_nits: 0,
         luma: vec![128; 16 * 16],
         chroma: vec![128; 8 * 8 * 2],
     };
