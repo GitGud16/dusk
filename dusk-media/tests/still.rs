@@ -4,7 +4,7 @@
 use std::path::{Path, PathBuf};
 
 use dusk_core::color::{Primaries, Transfer};
-use dusk_core::{ColorMatrix, ColorRange, Orientation, Picture, PictureLayout};
+use dusk_core::{ColorMatrix, ColorRange, Orientation, Picture, PictureLayout, yuv_to_rgb};
 use dusk_media::{decode_still, is_still, probe, still_info};
 
 fn testdata(name: &str) -> PathBuf {
@@ -18,6 +18,62 @@ fn photos_are_stills_and_videos_are_not() {
     assert!(is_still(&probe(&testdata("photo.png")).unwrap()));
     assert!(is_still(&probe(&testdata("photo-turned.jpg")).unwrap()));
     assert!(!is_still(&probe(&testdata("sample-h264-aac.mp4")).unwrap()));
+}
+
+/// The RGB of every pixel of an 8-bit NV12 picture, from 0 to 255.
+fn rgb(picture: &Picture) -> Vec<[f64; 3]> {
+    let rows = yuv_to_rgb(picture.matrix, picture.range, 8);
+    let width = picture.width as usize;
+    let chroma_width = picture.width.div_ceil(2) as usize;
+    (0..picture.height as usize)
+        .flat_map(|y| (0..width).map(move |x| (x, y)))
+        .map(|(x, y)| {
+            let luma = f64::from(picture.luma[y * width + x]);
+            let pair = 2 * ((y / 2) * chroma_width + x / 2);
+            let (u, v) = (
+                f64::from(picture.chroma[pair]),
+                f64::from(picture.chroma[pair + 1]),
+            );
+            rows.map(|[ky, ku, kv, constant]| 255.0 * (ky * luma + ku * u + kv * v + constant))
+        })
+        .collect()
+}
+
+#[test]
+fn an_iphone_style_heic_grid_is_a_still() {
+    assert!(is_still(&probe(&testdata("photo-grid.heic")).unwrap()));
+}
+
+#[test]
+fn a_heic_grid_is_described_by_its_picture_not_its_tiles() {
+    let grid = still_info(&testdata("photo-grid.heic")).unwrap();
+    // Four tiles of 176x128 cropped to 320x240, to be turned a quarter clockwise (irot 3).
+    assert_eq!((grid.width, grid.height), (320, 240));
+    assert_eq!(grid.orientation, Orientation::new(1, false));
+}
+
+#[test]
+fn a_heic_grid_reads_the_color_profile_of_its_grid() {
+    // Like an iPhone photo's, the profile sits on the grid, not on the tiles.
+    let grid = decode_still(&testdata("photo-grid.heic"), (160, 120)).unwrap();
+    assert_eq!(grid.primaries, Primaries::DisplayP3);
+    assert_eq!(grid.transfer, Transfer::Srgb);
+}
+
+#[test]
+fn a_heic_grid_decodes_into_one_picture() {
+    // photo.png, padded, cut into tiles and encoded as HEVC at a high quality: stitched and
+    // cropped, it is that picture again.
+    let grid = decode_still(&testdata("photo-grid.heic"), (320, 240)).unwrap();
+    let png = decode_still(&testdata("photo.png"), (320, 240)).unwrap();
+    let (grid, png) = (rgb(&grid), rgb(&png));
+    let difference: f64 = grid
+        .iter()
+        .zip(&png)
+        .flat_map(|(a, b)| a.iter().zip(b).map(|(a, b)| (a - b).abs()))
+        .sum::<f64>()
+        / (grid.len() * 3) as f64;
+    assert!(difference < 4.0, "{difference} apart on average");
 }
 
 #[test]

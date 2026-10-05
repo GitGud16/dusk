@@ -73,3 +73,16 @@ ffmpeg -hide_banner -y -f lavfi -i "sine=frequency=440:sample_rate=8000:duration
 ffmpeg -hide_banner -y -f lavfi -i "color=c=0x5003C0:s=64x64" -frames:v 1 -map_metadata -1 -fflags +bitexact -flags:v +bitexact $env:TEMP\dusk-cover.png
 ffmpeg -hide_banner -y -f lavfi -i "sine=frequency=440:sample_rate=44100:duration=1" -i $env:TEMP\dusk-cover.png -map 0:a -map 1:v -c:a libmp3lame -b:a 64k -ac 2 -c:v copy -disposition:v:0 attached_pic -id3v2_version 3 -map_metadata -1 -fflags +bitexact -flags:a +bitexact testdata/song.mp3
 ```
+
+## `photo-grid.heic`
+
+`photo.png` as iPhones store photos: a HEIC grid of HEVC tiles, here 2x2 tiles of 176x128
+cropped to 320x240, with an `irot` property that turns it a quarter clockwise for display and
+the Display P3 profile of `photo-p3.jpg` in a `colr` property, as iPhones mark theirs.
+FFmpeg reads such grids but cannot write them, so `scripts/heif-grid.py` assembles the file
+from tiles FFmpeg encodes:
+
+```powershell
+foreach ($r in 0,1) { foreach ($c in 0,1) { ffmpeg -hide_banner -y -i testdata/photo.png -vf "pad=352:256:0:0:black,crop=176:128:$($c*176):$($r*128),format=yuv420p" -frames:v 1 -c:v libkvazaar -kvazaar-params "preset=medium,qp=18" -f hevc $env:TEMP\dusk-tile$r$c.hevc } }
+python scripts/heif-grid.py testdata/photo-grid.heic 2 2 176 128 320 240 3 testdata/photo-p3.jpg $env:TEMP\dusk-tile00.hevc $env:TEMP\dusk-tile01.hevc $env:TEMP\dusk-tile10.hevc $env:TEMP\dusk-tile11.hevc
+```

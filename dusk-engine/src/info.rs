@@ -255,6 +255,7 @@ mod tests {
             format: format.to_owned(),
             duration_us: Some(13_680_000),
             streams,
+            heif: false,
         }
     }
 
@@ -401,6 +402,15 @@ mod tests {
                 "{name}: {duration} us"
             );
         }
+    }
+
+    #[test]
+    fn a_heic_grid_is_a_photo_described_upright() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../testdata/photo-grid.heic");
+        let info = media_info(&path).unwrap();
+        assert_eq!(info.kind, MediaKind::Still);
+        // 320x240 as stored, turned a quarter clockwise.
+        assert_eq!((info.width, info.height), (240, 320));
     }
 
     #[test]

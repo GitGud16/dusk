@@ -34,14 +34,15 @@ pub struct StillInfo {
 /// Whether a probed file is a still image rather than video or sound: one picture, read by
 /// FFmpeg's image demuxers.
 pub fn is_still(probe: &ProbeInfo) -> bool {
-    probe.format == "image2" || probe.format.ends_with("_pipe")
+    probe.heif || probe.format == "image2" || probe.format.ends_with("_pipe")
 }
 
 /// Decodes the still image at `path` once and describes it.
 pub fn still_info(path: &Path) -> Result<StillInfo, MediaError> {
     // The smallest size JPEG decodes at is enough to learn what the file holds.
     let decoded = decode_first(path, None, false)?;
-    let orientation = ffi::frame_display_matrix(&decoded.frame)
+    let orientation = decoded
+        .display_matrix
         .map_or(Orientation::UPRIGHT, |matrix| from_display_matrix(&matrix));
     let frame_bytes = ffi::frame_bytes(decoded.frame.format(), decoded.width, decoded.height);
     // A progressive JPEG decoder holds the picture's coefficients besides the frame: about
@@ -107,6 +108,8 @@ struct Decoded {
     width: u32,
     height: u32,
     progressive: bool,
+    /// How to turn and mirror it for display, when the file says.
+    display_matrix: Option<[i32; 9]>,
 }
 
 /// Decodes the first picture of the image at `path`. JPEG decodes at a half, a quarter or an
@@ -122,6 +125,9 @@ fn decode_first(
         source,
     };
     let mut input = open_input(path)?;
+    if let Some(grid) = ffi::tile_grid(&input) {
+        return decode_grid(path, input, grid);
+    }
     let stream = input
         .streams()
         .find(|stream| stream.parameters().medium() == ffmpeg::media::Type::Video)
@@ -193,12 +199,120 @@ fn decode_first(
     } else {
         (width, height)
     };
+    let display_matrix = ffi::frame_display_matrix(&frame);
     Ok(Decoded {
         frame,
         width,
         height,
         progressive,
+        display_matrix,
     })
+}
+
+/// Decodes a picture stored as a grid of tiles (HEIC, AVIF; docs/ARCHITECTURE.md, "Decoder
+/// pool"): each tile is decoded on its own and copied into place in the picture's window,
+/// so only the picture and one tile are held at a time.
+fn decode_grid(
+    path: &Path,
+    mut input: ffmpeg::format::context::Input,
+    grid: ffi::TileGrid,
+) -> Result<Decoded, MediaError> {
+    let open_error = |source| MediaError::Open {
+        path: path.to_path_buf(),
+        source,
+    };
+    let (left, top, width, height) = grid.window;
+    // The grid's profile, for FFmpeg's ICC support to read its colors from, as for JPEGs:
+    // only an RGB one, which is what that support takes.
+    let profile = grid
+        .icc_profile
+        .as_deref()
+        .filter(|profile| ffi::is_rgb_profile(profile));
+    let mut picture: Option<frame::Video> = None;
+    for (stream, mut packet) in input.packets() {
+        let Some(&(_, x, y)) = grid.tiles.iter().find(|tile| tile.0 == stream.index()) else {
+            continue;
+        };
+        let context =
+            ffmpeg::codec::Context::from_parameters(stream.parameters()).map_err(open_error)?;
+        let codec = ffmpeg::decoder::find(context.id())
+            .ok_or_else(|| open_error(ffmpeg::Error::DecoderNotFound))?;
+        let mut options = ffmpeg::Dictionary::new();
+        if let Some(profile) = profile {
+            options.set("flags2", "+icc_profiles");
+            ffi::attach_icc_profile(&mut packet, profile);
+        }
+        let mut decoder = context
+            .decoder()
+            .open_as_with(codec, options)
+            .and_then(|opened| opened.video())
+            .map_err(open_error)?;
+        let mut tile = frame::Video::empty();
+        decoder
+            .send_packet(&packet)
+            .and_then(|()| decoder.send_eof())
+            .and_then(|()| decoder.receive_frame(&mut tile))
+            .map_err(|source| decode_error(path, source))?;
+        let picture = picture.get_or_insert_with(|| canvas(&tile, width, height));
+        place(picture, &tile, x - left, y - top);
+    }
+    let frame = picture.ok_or_else(|| MediaError::NoVideo {
+        path: path.to_path_buf(),
+    })?;
+    Ok(Decoded {
+        frame,
+        width,
+        height,
+        progressive: false,
+        display_matrix: grid.display_matrix,
+    })
+}
+
+/// A `width` by `height` frame in the format and colors of `tile`, for the tiles to go in.
+fn canvas(tile: &frame::Video, width: u32, height: u32) -> frame::Video {
+    let mut canvas = frame::Video::new(tile.format(), width, height);
+    canvas.set_color_range(tile.color_range());
+    canvas.set_color_space(tile.color_space());
+    canvas.set_color_primaries(tile.color_primaries());
+    canvas.set_color_transfer_characteristic(tile.color_transfer_characteristic());
+    ffi::copy_chroma_location(tile, &mut canvas);
+    canvas
+}
+
+/// Copies `tile` into `canvas` with its top-left corner at `x`, `y`, plane by plane, as much
+/// of it as falls inside.
+fn place(canvas: &mut frame::Video, tile: &frame::Video, x: i32, y: i32) {
+    let bytes = ffi::sample_bytes(tile.format());
+    let (shift_x, shift_y) = tile
+        .format()
+        .descriptor()
+        .map_or((0, 0), |desc| (desc.log2_chroma_w(), desc.log2_chroma_h()));
+    for plane in 0..tile.planes().min(canvas.planes()) {
+        // The chroma planes are 1 and 2; luma and alpha are full size.
+        let (sx, sy) = if plane == 1 || plane == 2 {
+            (shift_x, shift_y)
+        } else {
+            (0, 0)
+        };
+        let (to_x, to_y) = (i64::from(x >> sx), i64::from(y >> sy));
+        let tile_size = (tile.plane_width(plane), tile.plane_height(plane));
+        let canvas_size = (canvas.plane_width(plane), canvas.plane_height(plane));
+        // The tile's columns and rows that land on the canvas.
+        let columns = (-to_x).max(0)..i64::from(tile_size.0).min(i64::from(canvas_size.0) - to_x);
+        let rows = (-to_y).max(0)..i64::from(tile_size.1).min(i64::from(canvas_size.1) - to_y);
+        if columns.is_empty() {
+            continue;
+        }
+        let length = (columns.end - columns.start) as usize * bytes;
+        let (tile_stride, canvas_stride) = (tile.stride(plane), canvas.stride(plane));
+        for row in rows {
+            let from = row as usize * tile_stride + columns.start as usize * bytes;
+            let to =
+                (to_y + row) as usize * canvas_stride + (to_x + columns.start) as usize * bytes;
+            canvas.data_mut(plane)[to..to + length]
+                .copy_from_slice(&tile.data(plane)[from..from + length]);
+        }
+    }
 }
 
 /// How swscale reads `frame`'s colors, and how the picture made from it is tagged: an RGB

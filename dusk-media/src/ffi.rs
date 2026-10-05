@@ -56,6 +56,148 @@ pub(crate) fn display_matrix(parameters: &Parameters) -> Option<[i32; 9]> {
     }
 }
 
+/// A picture stored as a grid of tiles (HEIC, AVIF), as FFmpeg's demuxer describes it.
+pub(crate) struct TileGrid {
+    /// Each tile: its stream's index in the file, and where its top-left corner goes on the
+    /// canvas the tiles make up.
+    pub tiles: Vec<(usize, i32, i32)>,
+    /// The picture's window on that canvas: left, top, width and height.
+    pub window: (i32, i32, u32, u32),
+    /// How the picture is turned and mirrored for display, when the file says (`irot`,
+    /// `imir`).
+    pub display_matrix: Option<[i32; 9]>,
+    /// The picture's color profile, when the grid has one (`colr`), as iPhones' do.
+    pub icc_profile: Option<Vec<u8>>,
+}
+
+/// The first tile grid of the file `input` holds, if it holds one.
+pub(crate) fn tile_grid(input: &ffmpeg_next::format::context::Input) -> Option<TileGrid> {
+    use ffmpeg_next::ffi::{
+        AVPacketSideDataType, AVStreamGroupParamsType, av_packet_side_data_get,
+    };
+    // SAFETY: the format context is alive for the borrow, and everything below is only read.
+    // FFmpeg keeps `nb_stream_groups` groups behind `stream_groups`, each with `nb_streams`
+    // streams. A group's type is read as the integer it is stored as, so no enum value is
+    // made from memory unchecked; a tile grid group's params point to its grid, whose
+    // `offsets` hold `nb_tiles` entries indexing the group's streams (each index checked
+    // against `nb_streams`), and whose coded side data av_packet_side_data_get reads as for
+    // streams in `display_matrix`.
+    unsafe {
+        let context = &*input.as_ptr();
+        let groups = slice(context.stream_groups, context.nb_stream_groups as usize);
+        for &group in groups {
+            let Some(group) = group.as_ref() else {
+                continue;
+            };
+            let kind = std::ptr::addr_of!(group.type_).cast::<i32>().read();
+            if kind != AVStreamGroupParamsType::AV_STREAM_GROUP_PARAMS_TILE_GRID as i32 {
+                continue;
+            }
+            let Some(grid) = group.params.tile_grid.as_ref() else {
+                continue;
+            };
+            let streams = slice(group.streams, group.nb_streams as usize);
+            let mut tiles = Vec::new();
+            for offset in slice(grid.offsets, grid.nb_tiles as usize) {
+                let stream = streams.get(offset.idx as usize)?.as_ref()?;
+                let index = usize::try_from(stream.index).ok()?;
+                tiles.push((index, offset.horizontal, offset.vertical));
+            }
+            let entry = av_packet_side_data_get(
+                grid.coded_side_data,
+                grid.nb_coded_side_data,
+                AVPacketSideDataType::AV_PKT_DATA_DISPLAYMATRIX,
+            );
+            let display_matrix = entry
+                .as_ref()
+                .filter(|entry| {
+                    !entry.data.is_null() && entry.size >= std::mem::size_of::<[i32; 9]>()
+                })
+                .map(|entry| std::ptr::read_unaligned(entry.data.cast::<[i32; 9]>()));
+            let profile = av_packet_side_data_get(
+                grid.coded_side_data,
+                grid.nb_coded_side_data,
+                AVPacketSideDataType::AV_PKT_DATA_ICC_PROFILE,
+            );
+            let icc_profile = profile
+                .as_ref()
+                .filter(|entry| !entry.data.is_null() && entry.size > 0)
+                .map(|entry| std::slice::from_raw_parts(entry.data, entry.size).to_vec());
+            let width = u32::try_from(grid.width).ok()?;
+            let height = u32::try_from(grid.height).ok()?;
+            return Some(TileGrid {
+                tiles,
+                window: (grid.horizontal_offset, grid.vertical_offset, width, height),
+                display_matrix,
+                icc_profile,
+            });
+        }
+        None
+    }
+}
+
+/// The `count` items at `items`, or none when it is null.
+///
+/// # Safety
+///
+/// When not null, `items` must point to `count` initialized items that outlive `'a`.
+unsafe fn slice<'a, T>(items: *const T, count: usize) -> &'a [T] {
+    if items.is_null() || count == 0 {
+        &[]
+    } else {
+        // SAFETY: the caller's promise.
+        unsafe { std::slice::from_raw_parts(items, count) }
+    }
+}
+
+/// Whether an ICC profile describes RGB, the only kind FFmpeg's ICC support takes (it refuses
+/// gray and CMYK profiles): its header's color space field, bytes 16 to 20.
+pub(crate) fn is_rgb_profile(profile: &[u8]) -> bool {
+    profile.get(16..20) == Some(b"RGB ".as_slice())
+}
+
+/// Hands `profile` to the decoder with `packet`, as FFmpeg's demuxers hand a picture's ICC
+/// profile on, so that a decoder with ICC support on tags the frame with its colors.
+pub(crate) fn attach_icc_profile(packet: &mut ffmpeg_next::Packet, profile: &[u8]) {
+    use ffmpeg_next::ffi::{AVPacketSideDataType, av_packet_new_side_data};
+    use ffmpeg_next::packet::Mut;
+    // SAFETY: the packet is alive and ours for the borrow. av_packet_new_side_data allocates
+    // `profile.len()` bytes owned by the packet, or returns null; exactly that many bytes are
+    // copied into them.
+    unsafe {
+        let data = av_packet_new_side_data(
+            packet.as_mut_ptr(),
+            AVPacketSideDataType::AV_PKT_DATA_ICC_PROFILE,
+            profile.len(),
+        );
+        if !data.is_null() {
+            std::ptr::copy_nonoverlapping(profile.as_ptr(), data, profile.len());
+        }
+    }
+}
+
+/// Bytes per sample of frames of `format`: 1 up to 8 bits, 2 above.
+pub(crate) fn sample_bytes(format: ffmpeg_next::format::Pixel) -> usize {
+    // SAFETY: av_pix_fmt_desc_get returns a static descriptor, or null for an unknown format.
+    unsafe {
+        ffmpeg_next::ffi::av_pix_fmt_desc_get(format.into())
+            .as_ref()
+            .map_or(1, |desc| if desc.comp[0].depth > 8 { 2 } else { 1 })
+    }
+}
+
+/// Gives `to` the chroma siting of `from`, which ffmpeg-next has no setter for.
+pub(crate) fn copy_chroma_location(
+    from: &ffmpeg_next::frame::Video,
+    to: &mut ffmpeg_next::frame::Video,
+) {
+    // SAFETY: both AVFrames are alive for the borrows; one field is copied from a frame
+    // FFmpeg filled in to another, the same enum type with a value FFmpeg wrote.
+    unsafe {
+        (*to.as_mut_ptr()).chroma_location = (*from.as_ptr()).chroma_location;
+    }
+}
+
 /// A decoded frame's display matrix: how to turn and mirror it for display, as decoders of
 /// still images report a photo's EXIF orientation.
 pub(crate) fn frame_display_matrix(frame: &ffmpeg_next::frame::Video) -> Option<[i32; 9]> {
@@ -157,17 +299,17 @@ pub(crate) fn light_levels(frame: &ffmpeg_next::frame::Video) -> (Option<f64>, O
 /// support takes (it refuses gray and CMYK profiles).
 pub(crate) fn has_rgb_icc_profile(frame: &ffmpeg_next::frame::Video) -> bool {
     use ffmpeg_next::ffi::{AVFrameSideDataType, av_frame_get_side_data};
-    // SAFETY: as in `frame_display_matrix`; only the profile header's color space field,
-    // bytes 16 to 20, is read, after checking the profile is that long.
+    // SAFETY: as in `frame_display_matrix`; the entry's data holds `size` bytes, borrowed
+    // as a slice for the frame's lifetime and only read.
     unsafe {
         let entry = av_frame_get_side_data(
             frame.as_ptr(),
             AVFrameSideDataType::AV_FRAME_DATA_ICC_PROFILE,
         );
-        if entry.is_null() || (*entry).data.is_null() || (*entry).size < 20 {
+        if entry.is_null() || (*entry).data.is_null() {
             return false;
         }
-        std::slice::from_raw_parts((*entry).data.add(16), 4) == b"RGB "
+        is_rgb_profile(std::slice::from_raw_parts((*entry).data, (*entry).size))
     }
 }
 

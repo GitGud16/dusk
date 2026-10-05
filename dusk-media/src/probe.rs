@@ -20,6 +20,9 @@ pub struct ProbeInfo {
     pub duration_us: Option<i64>,
     /// The streams, in file order.
     pub streams: Vec<StreamSummary>,
+    /// The file is a HEIF image, such as an iPhone photo (HEIC) or an AVIF: one picture,
+    /// which may be stored as a grid of tiles, each a stream of its own.
+    pub heif: bool,
 }
 
 /// One stream of a probed file.
@@ -96,7 +99,17 @@ pub fn probe(path: &Path) -> Result<ProbeInfo, MediaError> {
         // duration is AV_NOPTS_VALUE, a negative number.
         duration_us: Some(input.duration()).filter(|us| *us >= 0),
         streams: input.streams().map(summarize).collect(),
+        heif: is_heif(&input),
     })
+}
+
+/// Whether `input` is a HEIF still image: one stored as a tile grid, or one whose brand
+/// says so (image sequences, `msf1` and `avis`, are not stills).
+fn is_heif(input: &ffmpeg::format::context::Input) -> bool {
+    const STILL_BRANDS: [&str; 6] = ["heic", "heix", "heim", "heis", "mif1", "avif"];
+    let brand = input.metadata().get("major_brand").map(str::to_owned);
+    ffi::tile_grid(input).is_some()
+        || brand.is_some_and(|brand| STILL_BRANDS.contains(&brand.trim()))
 }
 
 fn summarize(stream: ffmpeg::format::stream::Stream<'_>) -> StreamSummary {
