@@ -5,7 +5,7 @@ import { ClipView, Timeline, TickView, TrackView } from "timeline.slint";
 import { MediaBin, MediaView } from "media-bin.slint";
 import { ClipProperties, ClipProps } from "properties.slint";
 import { Prompt, SequenceSettings } from "dialogs.slint";
-import { ShortcutPanel, ShortcutView } from "shortcut-list.slint";
+import { ShortcutDialog, ShortcutView } from "shortcut-list.slint";
 import { ClipEditorWindow, EditorProps, EditorSides } from "clip-editor.slint";
 import { ExportDialog, ExportView } from "export-dialog.slint";
 import { CompressDialog, CompressView } from "compress-dialog.slint";
@@ -130,8 +130,20 @@ export component MainWindow inherits Window {
     callback action(name: string);
     // Every key press goes to the shortcut table; true when it was a shortcut.
     callback key(text: string, ctrl: bool, shift: bool, alt: bool) -> bool;
-    // The shortcut table, for the shortcut list.
-    in property <[ShortcutView]> shortcuts;
+    // The shortcut list's dialog (see shortcut-list.slint).
+    in property <bool> shortcuts-open;
+    in property <[ShortcutView]> shortcut-rows;
+    in property <int> shortcut-picked: -1;
+    in property <int> shortcut-headings-above;
+    in property <string> shortcut-note;
+    in property <bool> shortcut-capturing;
+    callback shortcut-search(text: string);
+    callback shortcut-pick(row: int);
+    callback shortcut-change();
+    callback shortcut-remove();
+    callback shortcut-restore();
+    callback shortcut-restore-all();
+    callback shortcut-close();
     // What in the user's shortcuts file Dusk could not read, if anything.
     in property <string> shortcut-problem;
 
@@ -139,10 +151,6 @@ export component MainWindow inherits Window {
     property <int> dragged-media: -1;
     property <length> drag-x;
     property <length> drag-y;
-
-    public function show-shortcut-list() {
-        shortcut-list.show();
-    }
 
     // Gives the keyboard back to the shortcuts after a field or a button had it.
     public function take-keys() {
@@ -309,7 +317,7 @@ export component MainWindow inherits Window {
             MenuItem {
                 title: "Keyboard shortcuts";
                 activated => {
-                    shortcut-list.show();
+                    root.action("shortcut-list");
                 }
             }
             MenuItem {
@@ -323,10 +331,14 @@ export component MainWindow inherits Window {
 
     // Whether a dialog is open over the window: only its controls take the keyboard then (see
     // `Modal`), and the keys go back to the shortcuts whenever one opens or closes.
-    property <bool> modal-open: root.export-open || root.compress-open || root.prompt-open || root.sequence-settings-open;
+    property <bool> modal-open: root.export-open || root.compress-open || root.prompt-open || root.sequence-settings-open || root.shortcuts-open;
     changed modal-open => {
         Modal.open = root.modal-open;
-        keys.focus();
+        if root.shortcuts-open {
+            shortcuts-dialog.focus-search();
+        } else {
+            keys.focus();
+        }
     }
 
     keys := FocusScope {
@@ -359,6 +371,15 @@ export component MainWindow inherits Window {
 
                     Rectangle {
                         horizontal-stretch: 1;
+                    }
+
+                    ToolButton {
+                        y: (parent.height - self.height) / 2;
+                        text: "Shortcuts";
+                        clicked => {
+                            root.action("shortcut-list");
+                            keys.focus();
+                        }
                     }
 
                     ToolButton {
@@ -692,6 +713,38 @@ export component MainWindow inherits Window {
             }
         }
 
+        // Always there, so the window can give its search field the keys; shown when open.
+        shortcuts-dialog := ShortcutDialog {
+            visible: root.shortcuts-open;
+            rows: root.shortcut-rows;
+            picked: root.shortcut-picked;
+            headings-above: root.shortcut-headings-above;
+            note: root.shortcut-note;
+            capturing: root.shortcut-capturing;
+            problem: root.shortcut-problem;
+            search(text) => {
+                root.shortcut-search(text);
+            }
+            pick(row) => {
+                root.shortcut-pick(row);
+            }
+            change => {
+                root.shortcut-change();
+            }
+            remove => {
+                root.shortcut-remove();
+            }
+            restore => {
+                root.shortcut-restore();
+            }
+            restore-all => {
+                root.shortcut-restore-all();
+            }
+            close => {
+                root.shortcut-close();
+            }
+        }
+
         if root.export-open: ExportDialog {
             view: root.export-view;
             changed(what, value) => {
@@ -735,18 +788,6 @@ export component MainWindow inherits Window {
         return root.media-item(id).name;
     }
     pure callback media-item(id: int) -> MediaView;
-
-    shortcut-list := PopupWindow {
-        width: 360px;
-        x: (root.width - self.width) / 2;
-        y: Theme.space-6;
-
-        ShortcutPanel {
-            shortcuts: root.shortcuts;
-            problem: root.shortcut-problem;
-            available-height: root.height - 2 * Theme.space-6;
-        }
-    }
 
     // The AboutSlint widget is the attribution the Slint Royalty-free License 2.0 requires; it
     // must stay reachable from the top-level menu.

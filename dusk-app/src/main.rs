@@ -20,6 +20,7 @@ mod navigation;
 mod platform;
 mod recovery;
 mod settings;
+mod shortcut_dialog;
 mod shortcuts;
 mod speed;
 mod stats;
@@ -61,6 +62,7 @@ fn main() -> anyhow::Result<()> {
     editor.keymap = keymap;
     editor.keymap_problem = settings::problems_message(&keymap_problems).unwrap_or_default();
     window.set_shortcut_problem(editor.keymap_problem.clone().into());
+    editor.settings_dir.clone_from(&settings_dir);
     app::install(editor);
     // The first time, a shortcuts file that names every action with its default keys, ready
     // to change.
@@ -202,9 +204,27 @@ fn connect(window: &MainWindow) {
             with_app(|app| app.act(action));
         }
     });
-    if let Some(list) = with_app(|app| app.keymap.shortcut_list()) {
-        window.set_shortcuts(list);
-    }
+    window.on_shortcut_search(|text| {
+        with_app(|app| app.shortcut_search(&text));
+    });
+    window.on_shortcut_pick(|row| {
+        with_app(|app| app.shortcut_pick(row));
+    });
+    window.on_shortcut_change(|| {
+        with_app(App::shortcut_change);
+    });
+    window.on_shortcut_remove(|| {
+        with_app(App::shortcut_remove);
+    });
+    window.on_shortcut_restore(|| {
+        with_app(App::shortcut_restore);
+    });
+    window.on_shortcut_restore_all(|| {
+        with_app(App::shortcut_restore_all);
+    });
+    window.on_shortcut_close(|| {
+        with_app(App::shortcut_close);
+    });
     window.on_key(|text, ctrl, shift, alt| {
         with_app(|app| app.key(&text, ctrl, shift, alt)).unwrap_or(false)
     });

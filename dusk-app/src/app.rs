@@ -129,6 +129,10 @@ pub struct App {
     pub(crate) keymap: crate::keymap::Keymap,
     /// What in the user's shortcuts file could not be read, for the shortcut list.
     pub(crate) keymap_problem: String,
+    /// The shortcut list's dialog, while it is open.
+    pub(crate) shortcut_dialog: Option<crate::shortcut_dialog::ShortcutDialog>,
+    /// Where the user's settings and shortcuts are kept; `None` when there is nowhere.
+    pub(crate) settings_dir: Option<std::path::PathBuf>,
     /// The GPL encoders of the user's own `ffmpeg`, picked in the export dialog for this
     /// session (docs/ARCHITECTURE.md, "Optional GPL encoders").
     pub(crate) external: Vec<dusk_engine::ExternalEncoder>,
@@ -189,6 +193,8 @@ impl App {
             last_export: None,
             keymap: crate::keymap::Keymap::default(),
             keymap_problem: String::new(),
+            shortcut_dialog: None,
+            settings_dir: None,
             external: Vec::new(),
             use_external: false,
             external_note: String::new(),
@@ -294,9 +300,14 @@ impl App {
                 .as_ref()
                 .is_some_and(|dialog| !dialog.in_editor())
             || self.question.is_some()
-            || self.sequence_settings_open;
+            || self.sequence_settings_open
+            || self.shortcut_dialog.is_some();
         if dialog && crate::keymap::moves_focus(text) {
             return false;
+        }
+        if self.shortcut_dialog.is_some() {
+            let key = crate::platform::pressed_key();
+            return self.shortcut_dialog_key(text, key, ctrl, shift, alt);
         }
         if self.compress_dialog_key(text) || self.export_dialog_key(text, false) {
             return true;
@@ -372,11 +383,7 @@ impl App {
             Action::CompressVideo => self.compress_video(),
             Action::CancelExport => self.cancel_export(),
             Action::Quit => self.quit(),
-            Action::ShortcutList => {
-                if let Some(window) = self.window() {
-                    window.invoke_show_shortcut_list();
-                }
-            }
+            Action::ShortcutList => self.open_shortcut_list(),
             Action::ToggleFill => self.toggle_fill(),
             Action::OpenClipEditor => self.open_selected_clip(),
             // The clip editor's own keys mean nothing in the main window.

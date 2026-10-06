@@ -435,6 +435,59 @@ export component NumberField inherits Rectangle {
     }
 }
 
+// A line of text typed in, such as a search: `edited` reports every change and `accepted` the
+// Enter key; the placeholder shows while it is empty.
+export component SearchField inherits Rectangle {
+    in property <string> placeholder;
+    // Part of a dialog (see `Modal`).
+    in property <bool> in-dialog;
+    callback edited(text: string);
+    callback accepted();
+
+    public function focus-input() {
+        input.focus();
+    }
+
+    height: Theme.control-height;
+    border-radius: Theme.radius-control;
+    border-width: input.has-focus ? Theme.focus-width : Theme.border-width;
+    border-color: input.has-focus ? Theme.primary-bright : Theme.border;
+    background: Theme.bg-2;
+
+    TouchArea {
+        mouse-cursor: text;
+        clicked => {
+            input.focus();
+        }
+    }
+
+    if input.text == "": Text {
+        x: Theme.space-2;
+        height: parent.height;
+        text: root.placeholder;
+        color: Theme.text-3;
+        vertical-alignment: center;
+    }
+
+    HorizontalLayout {
+        padding-left: Theme.space-2;
+        padding-right: Theme.space-2;
+
+        input := TextInput {
+            enabled: root.in-dialog || !Modal.open;
+            color: Theme.text-1;
+            selection-background-color: Theme.primary;
+            vertical-alignment: center;
+            edited => {
+                root.edited(self.text);
+            }
+            accepted => {
+                root.accepted();
+            }
+        }
+    }
+}
+
 // A panel's title row.
 export component PanelTitle inherits Text {
     color: Theme.text-1;

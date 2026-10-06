@@ -251,6 +251,17 @@ pub fn moves_focus(text: &str) -> bool {
         .any(|key| text.starts_with(char::from(key)))
 }
 
+/// A row of the shortcut list.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Row {
+    /// The group's heading, on the group's first row.
+    pub heading: Option<&'static str>,
+    pub action: Action,
+    /// Its keys as the list writes them, such as `Ctrl+Shift+Z, Ctrl+Y`.
+    pub keys: String,
+    pub description: &'static str,
+}
+
 /// The keys of every action: the defaults, with the user's changes over them.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Keymap {
@@ -375,6 +386,77 @@ impl Keymap {
             }
         }
         file
+    }
+
+    /// The actions whose description, keys or name holds `query`, in any case, in the table's
+    /// order; every action when it is blank.
+    pub fn matching(&self, query: &str) -> Vec<Action> {
+        let query = query.trim().to_lowercase();
+        ACTIONS
+            .iter()
+            .filter(|info| {
+                query.is_empty()
+                    || info.description.to_lowercase().contains(&query)
+                    || info.name.contains(&query)
+                    || self.keys_text(info.action).to_lowercase().contains(&query)
+            })
+            .map(|info| info.action)
+            .collect()
+    }
+
+    /// The keys of `action` as the list writes them.
+    fn keys_text(&self, action: Action) -> String {
+        self.keys_of(action)
+            .iter()
+            .map(Keys::to_string)
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+
+    /// The shortcut list narrowed to `query` (see [`matching`](Self::matching)): each group's
+    /// heading on its first row.
+    pub fn rows(&self, query: &str) -> Vec<Row> {
+        let mut group = None;
+        self.matching(query)
+            .into_iter()
+            .filter_map(Action::info)
+            .map(|info| {
+                let heading = (group != Some(info.group)).then(|| info.group.title());
+                group = Some(info.group);
+                Row {
+                    heading,
+                    action: info.action,
+                    keys: self.keys_text(info.action),
+                    description: info.description,
+                }
+            })
+            .collect()
+    }
+
+    /// Gives `action` `keys` in place of its own, taking them from any action that had them;
+    /// the actions that lost keys.
+    pub fn set_keys(&mut self, action: Action, keys: Vec<Keys>) -> Vec<Action> {
+        let mut losers = Vec::new();
+        for (other, others) in &mut self.keys {
+            if *other == action {
+                *others = keys.clone();
+                continue;
+            }
+            let had = others.len();
+            others.retain(|key| !keys.contains(key));
+            if others.len() != had {
+                losers.push(*other);
+            }
+        }
+        losers
+    }
+
+    /// Gives `action` its default keys back (see [`set_keys`](Self::set_keys)).
+    pub fn restore(&mut self, action: Action) -> Vec<Action> {
+        let defaults = action
+            .info()
+            .map_or_else(Vec::new, |info| info.keys.to_vec());
+        self.set_keys(action, defaults)
     }
 
     /// The keys `action` has.
@@ -656,6 +738,72 @@ mod tests {
         // I and O start and end a clip in either window.
         assert_eq!(press(&map, "i", Some('i'), PLAIN), Some(Action::MarkIn));
         assert_eq!(press(&map, "o", Some('o'), PLAIN), Some(Action::MarkOut));
+    }
+
+    #[test]
+    fn the_list_narrows_to_what_is_typed() {
+        let map = Keymap::default();
+        // By what an action does...
+        let split = map.matching("split");
+        assert!(split.contains(&Action::Split), "{split:?}");
+        assert!(!split.contains(&Action::PlayPause), "{split:?}");
+        // ...by its keys...
+        assert_eq!(map.matching("ctrl+shift+z"), [Action::Redo]);
+        // ...or by its name in the file, in any case.
+        assert_eq!(map.matching("MUTE-A1"), [Action::ToggleMute(2)]);
+        // Nothing typed, every action.
+        assert_eq!(map.matching("").len(), ACTIONS.len());
+        assert_eq!(map.matching("  ").len(), ACTIONS.len());
+        assert!(map.matching("no such thing").is_empty());
+    }
+
+    #[test]
+    fn a_narrowed_list_keeps_the_headings_of_its_groups() {
+        let map = Keymap::default();
+        let rows = map.rows("delete");
+        let shown: Vec<(Option<&str>, Action)> =
+            rows.iter().map(|row| (row.heading, row.action)).collect();
+        assert_eq!(
+            shown,
+            [
+                (Some("Editing"), Action::Delete),
+                (None, Action::RippleDelete),
+                (None, Action::DeleteOne),
+            ]
+        );
+        assert_eq!(rows[1].keys, "Shift+Delete");
+        assert_eq!(map.rows("").len(), ACTIONS.len());
+        assert_eq!(map.rows("")[0].heading, Some("Playback"));
+    }
+
+    #[test]
+    fn keys_given_to_an_action_are_taken_from_any_other() {
+        let mut map = Keymap::default();
+        // Keys no one has.
+        assert_eq!(map.set_keys(Action::Split, vec![keys("X")]), []);
+        assert_eq!(map.keys_of(Action::Split), [keys("X")]);
+        assert_eq!(map.action_for(&keys("S")), None);
+        // Keys another action has: it loses them.
+        assert_eq!(
+            map.set_keys(Action::Split, vec![keys("Ctrl+L")]),
+            [Action::Unlink]
+        );
+        assert!(map.keys_of(Action::Unlink).is_empty());
+        assert_eq!(map.action_for(&keys("Ctrl+L")), Some(Action::Split));
+        // No keys at all.
+        assert_eq!(map.set_keys(Action::Split, Vec::new()), []);
+        assert_eq!(map.action_for(&keys("Ctrl+L")), None);
+    }
+
+    #[test]
+    fn an_action_goes_back_to_its_default_keys() {
+        let (mut map, problems) = Keymap::read("undo = S\n");
+        assert!(problems.is_empty(), "{problems:?}");
+        assert!(map.keys_of(Action::Split).is_empty());
+        // Split's default comes back, and takes S from undo.
+        assert_eq!(map.restore(Action::Split), [Action::Undo]);
+        assert_eq!(map.keys_of(Action::Split), [keys("S")]);
+        assert!(map.keys_of(Action::Undo).is_empty());
     }
 
     #[test]
