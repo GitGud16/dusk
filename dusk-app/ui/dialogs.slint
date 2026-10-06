@@ -105,31 +105,62 @@ export component SequenceSettings inherits Rectangle {
             text: "Frame rate (fps)";
         }
 
-        GridLayout {
-            spacing: Theme.space-1;
+        // Tab reaches the rates as one control; the arrow keys choose among them, Left and
+        // Right along a row and Up and Down between the rows.
+        Rectangle {
+            border-radius: Theme.radius-control + 2px;
+            border-width: rates-focus.has-focus ? Theme.focus-width : 0px;
+            border-color: Theme.primary-bright;
 
-            for name[index] in root.rates: Rectangle {
-                row: index / 4;
-                col: Math.mod(index, 4);
-                height: Theme.control-height;
-                border-radius: Theme.radius-control;
-                border-width: Theme.border-width;
-                border-color: index == root.chosen-rate ? Theme.primary : Theme.border;
-                background: index == root.chosen-rate ? Theme.primary
-                    : touch.has-hover ? Theme.bg-3 : Theme.bg-2;
-
-                Text {
-                    text: name;
-                    color: index == root.chosen-rate ? Theme.on-brand : Theme.text-1;
-                    font-family: Theme.font-numeric;
-                    horizontal-alignment: center;
-                    vertical-alignment: center;
+            rates-focus := FocusScope {
+                focus-on-click: false;
+                key-pressed(event) => {
+                    if event.text == Key.LeftArrow {
+                        root.chosen-rate = Math.max(0, root.chosen-rate - 1);
+                    } else if event.text == Key.RightArrow {
+                        root.chosen-rate = Math.min(root.rates.length - 1, root.chosen-rate + 1);
+                    } else if event.text == Key.UpArrow {
+                        if root.chosen-rate >= 4 {
+                            root.chosen-rate -= 4;
+                        }
+                    } else if event.text == Key.DownArrow {
+                        if root.chosen-rate + 4 < root.rates.length {
+                            root.chosen-rate += 4;
+                        }
+                    } else {
+                        return reject;
+                    }
+                    return accept;
                 }
+            }
 
-                touch := TouchArea {
-                    mouse-cursor: pointer;
-                    clicked => {
-                        root.chosen-rate = index;
+            GridLayout {
+                padding: 2px;
+                spacing: Theme.space-1;
+
+                for name[index] in root.rates: Rectangle {
+                    row: index / 4;
+                    col: Math.mod(index, 4);
+                    height: Theme.control-height;
+                    border-radius: Theme.radius-control;
+                    border-width: Theme.border-width;
+                    border-color: index == root.chosen-rate ? Theme.primary : Theme.border;
+                    background: index == root.chosen-rate ? Theme.primary
+                        : touch.has-hover ? Theme.bg-3 : Theme.bg-2;
+
+                    Text {
+                        text: name;
+                        color: index == root.chosen-rate ? Theme.on-brand : Theme.text-1;
+                        font-family: Theme.font-numeric;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+
+                    touch := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => {
+                            root.chosen-rate = index;
+                        }
                     }
                 }
             }
