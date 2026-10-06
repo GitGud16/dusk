@@ -249,6 +249,8 @@ export component ClipEditorWindow inherits Window {
     // Every key press goes to the shortcut table; true when it was a shortcut.
     callback key(text: string, ctrl: bool, shift: bool, alt: bool) -> bool;
     in property <[ShortcutView]> shortcuts;
+    // What in the user's shortcuts file Dusk could not read, if anything.
+    in property <string> shortcut-problem;
 
     public function show-shortcut-list() {
         shortcut-list.show();
@@ -846,6 +848,7 @@ export component ClipEditorWindow inherits Window {
 
         ShortcutPanel {
             shortcuts: root.shortcuts;
+            problem: root.shortcut-problem;
             available-height: root.height - 2 * Theme.space-6;
         }
     }

@@ -18,7 +18,7 @@ use crate::document::Next;
 use crate::draft::{self, EditorView, Sides, Source};
 use crate::export_dialog::ExportTarget;
 use crate::platform;
-use crate::shortcuts::{self, Action};
+use crate::shortcuts::Action;
 use crate::speed::{SpeedKey, next_factor};
 use crate::timeline::timecode;
 use crate::{ClipEditorWindow, EditorProps, EditorSides};
@@ -701,7 +701,7 @@ impl App {
             return true;
         }
         let key = platform::pressed_key();
-        match shortcuts::action_for_key(text, key, ctrl, shift, alt) {
+        match self.keymap.action_for_press(text, key, ctrl, shift, alt) {
             Some(action) => self.editor_act(action),
             None => false,
         }
@@ -952,14 +952,19 @@ fn connect(window: &ClipEditorWindow) {
         with_app(|app| app.export_done(export));
     });
     window.on_action(|name| {
-        if let Some(action) = shortcuts::action_named(&name) {
+        if let Some(action) = Action::named(&name) {
             with_app(|app| app.editor_act(action));
         }
     });
     window.on_key(|text, ctrl, shift, alt| {
         with_app(|app| app.editor_key(&text, ctrl, shift, alt)).unwrap_or(false)
     });
-    window.set_shortcuts(shortcuts::shortcut_list());
+    if let Some((list, problem)) =
+        with_app(|app| (app.keymap.shortcut_list(), app.keymap_problem.clone()))
+    {
+        window.set_shortcuts(list);
+        window.set_shortcut_problem(problem.into());
+    }
     window.window().on_close_requested(|| {
         if with_app(App::may_close_editor).unwrap_or(true) {
             CloseRequestResponse::HideWindow

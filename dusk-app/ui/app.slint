@@ -130,6 +130,8 @@ export component MainWindow inherits Window {
     callback key(text: string, ctrl: bool, shift: bool, alt: bool) -> bool;
     // The shortcut table, for the shortcut list.
     in property <[ShortcutView]> shortcuts;
+    // What in the user's shortcuts file Dusk could not read, if anything.
+    in property <string> shortcut-problem;
 
     // Media being dragged from the bin: which, and where the pointer is.
     property <int> dragged-media: -1;
@@ -151,13 +153,13 @@ export component MainWindow inherits Window {
             MenuItem {
                 title: "New project";
                 activated => {
-                    root.action("new");
+                    root.action("new-project");
                 }
             }
             MenuItem {
                 title: "Open project…";
                 activated => {
-                    root.action("open");
+                    root.action("open-project");
                 }
             }
             MenuItem {
@@ -190,7 +192,7 @@ export component MainWindow inherits Window {
                 title: "Compress a video…";
                 enabled: !root.exporting;
                 activated => {
-                    root.action("compress");
+                    root.action("compress-video");
                 }
             }
             MenuSeparator { }
@@ -726,6 +728,7 @@ export component MainWindow inherits Window {
 
         ShortcutPanel {
             shortcuts: root.shortcuts;
+            problem: root.shortcut-problem;
             available-height: root.height - 2 * Theme.space-6;
         }
     }

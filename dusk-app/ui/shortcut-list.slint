@@ -4,6 +4,8 @@ import { Theme } from "theme.slint";
 
 // A line of the shortcut list.
 export struct ShortcutView {
+    // The group's heading on the group's first line, empty on the others.
+    heading: string,
     keys: string,
     description: string,
 }
@@ -12,6 +14,8 @@ export struct ShortcutView {
 export component ShortcutPanel inherits Rectangle {
     in property <[ShortcutView]> shortcuts;
     in property <length> available-height;
+    // What in the user's shortcuts file Dusk could not read, if anything.
+    in property <string> problem;
 
     height: Math.min(content.preferred-height, root.available-height);
     background: Theme.bg-2;
@@ -35,20 +39,37 @@ export component ShortcutPanel inherits Rectangle {
                 font-weight: Theme.weight-semibold;
             }
 
-            for shortcut in root.shortcuts: HorizontalLayout {
-                spacing: Theme.space-3;
+            if root.problem != "": Text {
+                text: root.problem;
+                color: Theme.alert;
+                wrap: word-wrap;
+            }
 
-                Text {
-                    width: 120px;
-                    text: shortcut.keys;
-                    color: Theme.primary-bright;
-                    font-family: Theme.font-numeric;
+            for shortcut in root.shortcuts: VerticalLayout {
+                spacing: Theme.space-1;
+
+                if shortcut.heading != "": Text {
+                    text: shortcut.heading;
+                    color: Theme.text-1;
+                    font-weight: Theme.weight-semibold;
                 }
 
-                Text {
-                    text: shortcut.description;
-                    color: Theme.text-2;
-                    wrap: word-wrap;
+                HorizontalLayout {
+                    spacing: Theme.space-3;
+
+                    Text {
+                        width: 120px;
+                        text: shortcut.keys;
+                        color: Theme.primary-bright;
+                        font-family: Theme.font-numeric;
+                        wrap: word-wrap;
+                    }
+
+                    Text {
+                        text: shortcut.description;
+                        color: Theme.text-2;
+                        wrap: word-wrap;
+                    }
                 }
             }
         }

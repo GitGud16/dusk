@@ -124,6 +124,10 @@ pub struct App {
     pub(crate) compressing: bool,
     /// How the last export was written, where the dialog starts next time.
     pub(crate) last_export: Option<dusk_engine::ExportSettings>,
+    /// The keys in use: the shortcut table's, with the user's changes over them.
+    pub(crate) keymap: crate::keymap::Keymap,
+    /// What in the user's shortcuts file could not be read, for the shortcut list.
+    pub(crate) keymap_problem: String,
     /// The GPL encoders of the user's own `ffmpeg`, picked in the export dialog for this
     /// session (docs/ARCHITECTURE.md, "Optional GPL encoders").
     pub(crate) external: Vec<dusk_engine::ExternalEncoder>,
@@ -182,6 +186,8 @@ impl App {
             compress_dialog: None,
             compressing: false,
             last_export: None,
+            keymap: crate::keymap::Keymap::default(),
+            keymap_problem: String::new(),
             external: Vec::new(),
             use_external: false,
             external_note: String::new(),
@@ -294,7 +300,7 @@ impl App {
             return true;
         }
         let key = crate::platform::pressed_key();
-        let Some(action) = crate::shortcuts::action_for_key(text, key, ctrl, shift, alt) else {
+        let Some(action) = self.keymap.action_for_press(text, key, ctrl, shift, alt) else {
             return false;
         };
         self.act(action);

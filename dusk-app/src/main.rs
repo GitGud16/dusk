@@ -15,8 +15,10 @@ mod export_choices;
 mod export_dialog;
 mod files;
 mod history;
+mod keymap;
 mod platform;
 mod recovery;
+mod settings;
 mod shortcuts;
 mod speed;
 mod stats;
@@ -50,7 +52,26 @@ fn main() -> anyhow::Result<()> {
     let window = MainWindow::new()?;
     let engine = Engine::new(gpu, EngineOptions::default(), app::engine_events())?;
     let files = Worker::start().map_err(|e| anyhow!("Dusk could not start a thread: {e}."))?;
-    app::install(App::new(&window, engine, files));
+    // The user's keys, before the windows show them (docs/ARCHITECTURE.md, "Keyboard and
+    // settings"); the file is small, so reading it here keeps no window waiting.
+    let settings_dir = platform::settings_dir();
+    let (keymap, keymap_problems) = settings::read_keymap(settings_dir.as_deref());
+    let mut editor = App::new(&window, engine, files);
+    editor.keymap = keymap;
+    editor.keymap_problem = settings::problems_message(&keymap_problems).unwrap_or_default();
+    window.set_shortcut_problem(editor.keymap_problem.clone().into());
+    app::install(editor);
+    // The first time, a shortcuts file that names every action with its default keys, ready
+    // to change.
+    if let Some(dir) = settings_dir.filter(|dir| !dir.join(settings::SHORTCUTS_FILE).exists()) {
+        with_app(|app| {
+            app.files.run(move || {
+                if let Err(error) = settings::write_keymap(&dir, &keymap::Keymap::default()) {
+                    eprintln!("Dusk could not write its shortcuts file: {error}");
+                }
+            });
+        });
+    }
     connect(&window);
     window.show()?;
     // The preview and the timeline have their sizes now that the window is shown.
@@ -64,6 +85,12 @@ fn main() -> anyhow::Result<()> {
     // Files named on the command line: a project to open, or media to import and place.
     let named: Vec<PathBuf> = std::env::args_os().skip(1).map(PathBuf::from).collect();
     with_app(|app| app.start(named));
+    if let Some(message) = settings::problems_message(&keymap_problems) {
+        for problem in &keymap_problems {
+            eprintln!("{problem}");
+        }
+        with_app(|app| app.fail(&message));
+    }
     let autosave = slint::Timer::default();
     autosave.start(slint::TimerMode::Repeated, AUTOSAVE_EVERY, || {
         with_app(App::autosave);
@@ -170,11 +197,13 @@ fn connect(window: &MainWindow) {
         with_app(|app| app.sequence_settings_done(apply, rate, width, height));
     });
     window.on_action(|name| {
-        if let Some(action) = shortcuts::action_named(&name) {
+        if let Some(action) = shortcuts::Action::named(&name) {
             with_app(|app| app.act(action));
         }
     });
-    window.set_shortcuts(shortcuts::shortcut_list());
+    if let Some(list) = with_app(|app| app.keymap.shortcut_list()) {
+        window.set_shortcuts(list);
+    }
     window.on_key(|text, ctrl, shift, alt| {
         with_app(|app| app.key(&text, ctrl, shift, alt)).unwrap_or(false)
     });
