@@ -595,11 +595,22 @@ impl App {
         self.seek(cut.unwrap_or(from));
     }
 
-    /// Moves the playhead to `frame` and shows exactly that frame.
+    /// Moves the playhead to `frame` and shows exactly that frame; the timeline scrolls to
+    /// keep the playhead in view, as the keys that move it need.
     pub(crate) fn seek(&mut self, frame: Frame) {
         self.playhead = self.clamp(frame);
         self.engine.show(Preview::Main, self.playhead);
+        self.follow_playhead();
         self.refresh_transport();
+    }
+
+    /// Scrolls the timeline so the playhead is in view.
+    fn follow_playhead(&mut self) {
+        let before = self.view;
+        self.view.follow(self.playhead);
+        if self.view != before {
+            self.refresh_timeline();
+        }
     }
 
     /// The playhead is being dragged to `frame`.
@@ -845,11 +856,7 @@ impl App {
         let rate = self.project.sequence().frame_rate();
         let playing = self.playing(Preview::Main);
         if playing.is_some() {
-            let before = self.view;
-            self.view.follow(self.playhead);
-            if self.view != before {
-                self.refresh_timeline();
-            }
+            self.follow_playhead();
         }
         window.set_playhead(frame_int(self.playhead));
         window.set_position_timecode(timeline::timecode(self.playhead, rate).into());
