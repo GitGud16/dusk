@@ -4,7 +4,7 @@
 use std::path::{Path, PathBuf};
 
 use dusk_core::color::{Primaries, Transfer};
-use dusk_core::{ColorMatrix, ColorRange, MediaTime, PictureLayout};
+use dusk_core::{ChromaSiting, ColorMatrix, ColorRange, MediaTime, PictureLayout};
 use dusk_media::{Acceleration, Following, MediaError, Step, VideoDecoder};
 
 fn sample() -> PathBuf {
@@ -346,4 +346,10 @@ fn a_decoder_can_be_given_its_thread_count() {
     let mut decoder = VideoDecoder::open_with_threads(&sample(), 1).unwrap();
     let frames = std::iter::from_fn(|| decoder.next_normalized((32, 24)).unwrap()).count();
     assert_eq!(frames, 30);
+}
+
+#[test]
+fn untagged_video_has_its_chroma_sited_left() {
+    let picture = decoder().frame_at(MediaTime(0)).unwrap().unwrap().picture;
+    assert_eq!(picture.siting, ChromaSiting::LEFT);
 }

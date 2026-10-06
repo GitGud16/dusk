@@ -426,7 +426,7 @@ fn decode(
 
 /// `picture` through color steps 2 to 4 and `orientation`, in bands of rows on up to
 /// `workers` threads.
-fn upright(
+pub(crate) fn upright(
     picture: &YuvPicture,
     converter: Option<&SdrConverter>,
     orientation: Orientation,

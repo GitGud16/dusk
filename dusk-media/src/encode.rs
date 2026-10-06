@@ -7,7 +7,10 @@
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
-use dusk_core::{MediaTime, Picture, PictureLayout, SdrPicture};
+use dusk_core::color::{Primaries, Transfer};
+use dusk_core::{
+    ChromaSiting, ColorMatrix, ColorRange, MediaTime, Picture, PictureLayout, SdrPicture,
+};
 use ffmpeg_next as ffmpeg;
 use ffmpeg_next::codec::capabilities::Capabilities;
 use ffmpeg_next::format::sample::Type as SampleType;
@@ -350,20 +353,7 @@ impl Writer {
         let scaler = match video.scaler.take() {
             Some(scaler) => scaler,
             None => {
-                let source = ScaleSide {
-                    format: Pixel::GBRP,
-                    size: video.size,
-                    matrix: ffmpeg::ffi::SWS_CS_ITU709,
-                    full_range: true,
-                    chroma: None,
-                };
-                let destination = ScaleSide {
-                    format: video.pixel,
-                    size: video.size,
-                    matrix: ffmpeg::ffi::SWS_CS_ITU709,
-                    full_range: false,
-                    chroma: Some(ffi::LEFT),
-                };
+                let (source, destination) = sdr_sides(video.size, video.pixel);
                 Scaler::new(source, destination)
                     .map_err(|source| encode_error(&self.path, source))?
             }
@@ -470,6 +460,68 @@ impl Writer {
             None => Ok(()),
         }
     }
+}
+
+/// How an upright SDR picture of `size` turns into an encoder's `pixel` format: from planar
+/// RGB to limited-range BT.709 YUV, chroma sited left (docs/ARCHITECTURE.md, "Compress tool
+/// paths").
+fn sdr_sides(size: (u32, u32), pixel: Pixel) -> (ScaleSide, ScaleSide) {
+    let source = ScaleSide {
+        format: Pixel::GBRP,
+        size,
+        matrix: ffmpeg::ffi::SWS_CS_ITU709,
+        full_range: true,
+        chroma: None,
+    };
+    let destination = ScaleSide {
+        format: pixel,
+        size,
+        matrix: ffmpeg::ffi::SWS_CS_ITU709,
+        full_range: false,
+        chroma: Some(ffi::LEFT),
+    };
+    (source, destination)
+}
+
+/// `picture` as an encoder is handed it by [`Writer::write_sdr`], in NV12: what dusq's CPU
+/// path writes, to hold against the GPU path's frames.
+pub fn sdr_to_nv12(picture: &SdrPicture) -> Result<Picture, MediaError> {
+    init();
+    let size = (picture.width, picture.height);
+    let failed = |source| MediaError::Encode {
+        path: PathBuf::new(),
+        source,
+    };
+    let (source, destination) = sdr_sides(size, Pixel::NV12);
+    let mut scaler = Scaler::new(source, destination).map_err(failed)?;
+    let mut frame = frame::Video::new(Pixel::NV12, size.0, size.1);
+    let [red, green, blue] = &picture.planes;
+    scaler
+        .planes_to_frame(&[green, blue, red], &mut frame)
+        .map_err(failed)?;
+    let (width, height) = (size.0 as usize, size.1 as usize);
+    let chroma_width = 2 * size.0.div_ceil(2) as usize;
+    let rows = |plane: usize, row_bytes: usize, count: usize| -> Vec<u8> {
+        frame
+            .data(plane)
+            .chunks(frame.stride(plane))
+            .take(count)
+            .flat_map(|row| row[..row_bytes].iter().copied())
+            .collect()
+    };
+    Ok(Picture {
+        width: size.0,
+        height: size.1,
+        layout: PictureLayout::Nv12,
+        matrix: ColorMatrix::Bt709,
+        range: ColorRange::Limited,
+        primaries: Primaries::Bt709,
+        transfer: Transfer::Bt1886,
+        peak_nits: 0,
+        siting: ChromaSiting::LEFT,
+        luma: rows(0, width, height),
+        chroma: rows(1, chroma_width, size.1.div_ceil(2) as usize),
+    })
 }
 
 /// Opens the output file at `path` with `muxer`, only ever as a local file.

@@ -32,6 +32,7 @@ fn gradient(width: u32, height: u32, n: u32) -> Picture {
         primaries: dusk_core::color::Primaries::Bt709,
         transfer: dusk_core::color::Transfer::Bt1886,
         peak_nits: 0,
+        siting: dusk_core::ChromaSiting::LEFT,
         luma: (0..height)
             .flat_map(|y| (0..width).map(move |x| (32 + (x + y + 2 * n) % 192) as u8))
             .collect(),

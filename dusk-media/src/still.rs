@@ -5,14 +5,14 @@
 
 use std::path::Path;
 
-use dusk_core::{ColorMatrix, ColorRange, Orientation, Picture, PictureLayout};
+use dusk_core::{ColorMatrix, ColorRange, Orientation, Picture, PictureLayout, YuvPicture};
 
 use crate::decode::{primaries_of, transfer_of};
 use ffmpeg_next as ffmpeg;
 use ffmpeg_next::format::Pixel;
 use ffmpeg_next::frame;
 
-use crate::ffi::{self, ScaleColors};
+use crate::ffi::{self, ScaleColors, ScaleSide, Scaler};
 use crate::input::open_input;
 use crate::orientation::from_display_matrix;
 use crate::{MediaError, ProbeInfo};
@@ -63,14 +63,7 @@ pub fn still_info(path: &Path) -> Result<StillInfo, MediaError> {
 /// Decodes the still image at `path` and scales it to `size` (width, height, as stored) as
 /// an NV12 picture tagged with its own matrix and range.
 pub fn decode_still(path: &Path, size: (u32, u32)) -> Result<Picture, MediaError> {
-    let mut decoded = decode_first(path, Some(size), false)?;
-    if ffi::has_rgb_icc_profile(&decoded.frame) {
-        // FFmpeg reads a profile's primaries only with its ICC support on, which refuses
-        // gray and CMYK profiles; this one is RGB. If it fails anyway, the picture is sRGB.
-        if let Ok(tagged) = decode_first(path, Some(size), true) {
-            decoded = tagged;
-        }
-    }
+    let decoded = decode_profiled(path, size)?;
     let (primaries, transfer) = (
         primaries_of(&decoded.frame),
         transfer_of(&decoded.frame, true),
@@ -97,9 +90,86 @@ pub fn decode_still(path: &Path, size: (u32, u32)) -> Result<Picture, MediaError
         primaries,
         transfer,
         peak_nits: 0,
+        siting: crate::decode::siting_of(colors.siting),
         luma,
         chroma,
     })
+}
+
+/// Decodes the still image at `path` for dusq's CPU path, color profile and all, and
+/// resamples it to 16-bit YUV 4:4:4 of `size` (width, height, as stored), as
+/// [`VideoDecoder::next_normalized`](crate::VideoDecoder::next_normalized) does a video frame:
+/// a YUV picture keeps its own matrix and range, an RGB one becomes full-range BT.709 YUV.
+pub fn decode_still_normalized(path: &Path, size: (u32, u32)) -> Result<YuvPicture, MediaError> {
+    let decoded = decode_profiled(path, size)?;
+    let frame = &decoded.frame;
+    let colors = colors_of(frame);
+    let format = frame.format();
+    let source = ScaleSide {
+        format,
+        size: (frame.width(), frame.height()),
+        matrix: colors.source_matrix,
+        full_range: colors.source_full_range,
+        chroma: colors.source_chroma,
+    };
+    let destination = ScaleSide {
+        format: ffi::YUV444P16,
+        size,
+        matrix: colors.matrix,
+        full_range: colors.full_range,
+        chroma: None,
+    };
+    let failed = |source| decode_error(path, source);
+    let mut scaler = Scaler::new(source, destination).map_err(failed)?;
+    let count = size.0 as usize * size.1 as usize;
+    let mut planes = [0; 3].map(|_| vec![0u16; count]);
+    {
+        let [y, u, v] = &mut planes;
+        scaler
+            .frame_to_planes(
+                frame,
+                &mut [
+                    ffi::samples_as_bytes(y),
+                    ffi::samples_as_bytes(u),
+                    ffi::samples_as_bytes(v),
+                ],
+            )
+            .map_err(failed)?;
+    }
+    Ok(YuvPicture {
+        width: size.0,
+        height: size.1,
+        planes,
+        matrix: match colors.matrix {
+            ffmpeg::ffi::SWS_CS_ITU709 => ColorMatrix::Bt709,
+            ffmpeg::ffi::SWS_CS_BT2020 => ColorMatrix::Bt2020,
+            _ => ColorMatrix::Bt601,
+        },
+        range: if colors.full_range {
+            ColorRange::Full
+        } else {
+            ColorRange::Limited
+        },
+        // RGB becomes YUV of its own depth; swscale shifts it up like any other.
+        bits: u32::from(ffi::depth(format)),
+        primaries: primaries_of(frame),
+        transfer: transfer_of(frame, true),
+        peak_nits: 0,
+    })
+}
+
+/// The first picture of the image at `path`, decoded for a target of `size`, its primaries
+/// read from its color profile when it has an RGB one.
+fn decode_profiled(path: &Path, size: (u32, u32)) -> Result<Decoded, MediaError> {
+    let decoded = decode_first(path, Some(size), false)?;
+    // FFmpeg reads a profile's primaries only with its ICC support on, which refuses gray
+    // and CMYK profiles; this one is RGB. If it fails anyway, the picture is sRGB.
+    if ffi::has_rgb_icc_profile(&decoded.frame)
+        && let Ok(tagged) = decode_first(path, Some(size), true)
+    {
+        return Ok(tagged);
+    }
+    Ok(decoded)
 }
 
 /// The first picture of an image file, with the stream's full size.
@@ -328,6 +398,7 @@ fn colors_of(frame: &frame::Video) -> ScaleColors {
             source_chroma: None,
             matrix: SWS_CS_ITU709,
             full_range: true,
+            siting: ffi::LEFT,
         };
     }
     // JPEG's own formats are full range; so is anything tagged so.
@@ -346,12 +417,14 @@ fn colors_of(frame: &frame::Video) -> ScaleColors {
     let unspecified = if jpeg_format { (128, 128) } else { ffi::LEFT };
     let source_chroma =
         ffi::is_subsampled(format).then(|| crate::decode::chroma_siting(frame, unspecified));
+    // Subsampled chroma stays where the source has it, so it is resampled only once.
     ScaleColors {
         source_matrix: matrix,
         source_full_range: full_range,
         source_chroma,
         matrix,
         full_range,
+        siting: source_chroma.unwrap_or(ffi::LEFT),
     }
 }
 

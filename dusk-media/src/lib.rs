@@ -20,7 +20,7 @@ pub use audio::AudioDecoder;
 pub use decode::{
     Acceleration, DecodedFrame, Following, HUGE_FRAME, NormalizedFrame, Step, VideoDecoder,
 };
-pub use encode::{AudioSettings, Timing, VideoSettings, Writer, available_encoders};
+pub use encode::{AudioSettings, Timing, VideoSettings, Writer, available_encoders, sdr_to_nv12};
 pub use error::MediaError;
 pub use formats::{
     AudioCodec, AudioFormat, Container, ENCODERS, Encoder, Quality, VideoCodec, encoder_named,
@@ -28,4 +28,4 @@ pub use formats::{
 };
 pub use input::quiet_logs;
 pub use probe::{ProbeInfo, StreamDetail, StreamKind, StreamSummary, probe};
-pub use still::{StillInfo, decode_still, is_still, still_info};
+pub use still::{StillInfo, decode_still, decode_still_normalized, is_still, still_info};

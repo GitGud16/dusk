@@ -5,7 +5,9 @@
 use std::path::{Path, PathBuf};
 
 use dusk_core::color::{Primaries, Transfer, source_peak};
-use dusk_core::{ColorMatrix, ColorRange, MediaTime, Picture, PictureLayout, YuvPicture};
+use dusk_core::{
+    ChromaSiting, ColorMatrix, ColorRange, MediaTime, Picture, PictureLayout, YuvPicture,
+};
 use ffmpeg_next as ffmpeg;
 use ffmpeg_next::format::Pixel;
 use ffmpeg_next::frame;
@@ -526,6 +528,7 @@ fn picture_of(frame: &frame::Video, path: &Path) -> Result<(Picture, bool), Medi
         primaries: primaries_of(frame),
         transfer,
         peak_nits: peak_of(frame, transfer),
+        siting: siting_of(chroma_siting(frame, ffi::LEFT)),
         luma,
         chroma,
     };
@@ -583,6 +586,11 @@ fn scale_side(frame: &frame::Video, format: Pixel, size: (u32, u32)) -> ScaleSid
         // Untagged video sites its chroma left, as MPEG-2 and H.264 do by default.
         chroma: ffi::is_subsampled(format).then(|| chroma_siting(frame, ffi::LEFT)),
     }
+}
+
+/// A chroma position in 256ths of a luma pixel, as the picture keeps it.
+pub(crate) fn siting_of((across, down): (i32, i32)) -> ChromaSiting {
+    ChromaSiting { across, down }
 }
 
 /// Where `frame`'s subsampled chroma sits, in 256ths of a luma pixel: (across, down);

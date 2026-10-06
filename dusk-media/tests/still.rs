@@ -4,7 +4,9 @@
 use std::path::{Path, PathBuf};
 
 use dusk_core::color::{Primaries, Transfer};
-use dusk_core::{ColorMatrix, ColorRange, Orientation, Picture, PictureLayout, yuv_to_rgb};
+use dusk_core::{
+    ChromaSiting, ColorMatrix, ColorRange, Orientation, Picture, PictureLayout, yuv_to_rgb,
+};
 use dusk_media::{decode_still, is_still, probe, still_info};
 
 fn testdata(name: &str) -> PathBuf {
@@ -167,4 +169,11 @@ fn a_photo_says_which_colors_it_holds() {
         (Primaries::Bt709, Transfer::Srgb)
     );
     assert_eq!(plain.peak_nits, 0);
+}
+
+#[test]
+fn a_jpeg_keeps_its_chroma_where_jpeg_sites_it() {
+    // JPEG centers its chroma; re-siting it would resample it once more for nothing.
+    let picture = decode_still(&testdata("photo-p3.jpg"), (320, 240)).unwrap();
+    assert_eq!(picture.siting, ChromaSiting::CENTER);
 }

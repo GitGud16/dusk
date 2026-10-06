@@ -387,11 +387,12 @@ pub(crate) struct ScaleColors {
     /// The picture's YUV matrix and range.
     pub matrix: i32,
     pub full_range: bool,
+    /// Where the picture's chroma sits, in 256ths of a luma pixel: (across, down).
+    pub siting: (i32, i32),
 }
 
 /// Scales `frame` to an NV12 picture of `size`, returned as its luma plane and its plane of
-/// interleaved U and V, rows packed, with the given matrices and ranges, the source's chroma
-/// siting, and the picture's chroma sited left as the compositor reads it.
+/// interleaved U and V, rows packed, with the given matrices, ranges and chroma sitings.
 pub(crate) fn scale_to_nv12(
     frame: &ffmpeg_next::frame::Video,
     size: (u32, u32),
@@ -409,7 +410,7 @@ pub(crate) fn scale_to_nv12(
         size,
         matrix: colors.matrix,
         full_range: colors.full_range,
-        chroma: Some(LEFT),
+        chroma: Some(colors.siting),
     };
     let mut scaler = Scaler::new(source, destination)?;
     let mut luma = vec![0u8; size.0 as usize * size.1 as usize];

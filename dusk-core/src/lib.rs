@@ -26,7 +26,7 @@ pub use model::{
     MediaRef, Project, Rect, Rotation, Sequence, Track, TrackId, TrackKind, VideoEdits,
 };
 pub use orientation::Orientation;
-pub use picture::{ColorMatrix, ColorRange, Picture, PictureLayout, yuv_to_rgb};
+pub use picture::{ChromaSiting, ColorMatrix, ColorRange, Picture, PictureLayout, yuv_to_rgb};
 pub use planar::{SdrPicture, YuvPicture};
 pub use session::{ClipDraft, ClipEditSession, SessionStatus};
 pub use time::{Frame, MediaTime, Rational};

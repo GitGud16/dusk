@@ -20,6 +20,27 @@ Half a second of `testsrc2` (320x240, 30 fps) as 10-bit VP9 (profile 2, `yuv420p
 ffmpeg -hide_banner -y -f lavfi -i "testsrc2=size=320x240:rate=30:duration=0.5" -c:v libvpx-vp9 -pix_fmt yuv420p10le -profile:v 2 -b:v 200k -g 15 -row-mt 0 -threads 1 -map_metadata -1 -fflags +bitexact -flags:v +bitexact testdata/sample-vp9-10bit.webm
 ```
 
+## `sample-hd-untagged.mp4`
+
+Half a second of `testsrc2` at 1280x720 and 30 fps, H.264 via `libopenh264`, carrying no color
+tags at all, so it is read as untagged HD video is: BT.709 in video range.
+
+```powershell
+ffmpeg -hide_banner -y -f lavfi -i "testsrc2=size=1280x720:rate=30:duration=0.5" -c:v libopenh264 -b:v 1M -g 15 -pix_fmt yuv420p -map_metadata -1 -fflags +bitexact -flags:v +bitexact testdata/sample-hd-untagged.mp4
+```
+
+## `sample-hlg.mp4`
+
+Half a second of `testsrc2` at 320x240 and 30 fps as 10-bit AV1 (`libsvtav1`) tagged as HLG
+HDR (BT.2020 primaries and matrix, the ARIB STD-B67 transfer), for tone mapping. FFmpeg 8 takes
+a stream's color tags from its frames, so `setparams` sets them; `SVT_LOG` keeps SVT-AV1 to
+errors:
+
+```powershell
+$env:SVT_LOG = "1"
+ffmpeg -hide_banner -y -f lavfi -i "testsrc2=size=320x240:rate=30:duration=0.5" -vf "format=yuv420p10le,setparams=color_primaries=bt2020:color_trc=arib-std-b67:colorspace=bt2020nc:range=tv" -c:v libsvtav1 -crf 30 -g 15 -map_metadata -1 -fflags +bitexact -flags:v +bitexact testdata/sample-hlg.mp4
+```
+
 ## `sample-rotated.mp4`
 
 `sample-h264-aac.mp4` copied with a display matrix that turns it a quarter clockwise, as a

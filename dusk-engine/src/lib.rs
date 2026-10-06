@@ -7,6 +7,8 @@ mod cache;
 mod compress;
 #[cfg(feature = "gpu")]
 mod engine;
+#[cfg(all(test, feature = "gpu"))]
+mod equivalence;
 mod error;
 #[cfg(feature = "gpu")]
 mod export;

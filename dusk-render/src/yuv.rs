@@ -159,6 +159,7 @@ impl ToYuv {
                 .map_err(|e| RenderError::Readback(e.to_string()))?;
         }
         let picture = Picture {
+            siting: dusk_core::ChromaSiting::LEFT,
             width,
             height,
             layout: PictureLayout::Nv12,
