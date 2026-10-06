@@ -26,6 +26,9 @@ pub struct Compress {
     pub container: Container,
     pub codec: VideoCodec,
     pub quality: Quality,
+    /// A target file size in bytes, instead of a quality: the bitrates and the picture size
+    /// follow from it.
+    pub size: Option<u64>,
     /// The picture's short side; `None` keeps the source's.
     pub short_side: Option<u32>,
     /// A constant frame rate, as numerator and denominator.
@@ -58,6 +61,8 @@ Usage:
 Options for compress:
   -o, --output <file>    where to write; by default \"<name> compressed.mp4\" beside the video
       --quality <q>      high, medium, small, or 0 to 100 (default: medium)
+      --size <size>      a file size to aim at instead, such as 25MB, 800KB or 1.5GB; the
+                         picture size and bitrate follow from it
       --short-side <px>  the picture's short side, such as 1080, 720 or 480; never enlarges
                          (default: the video's own size)
       --format <f>       mp4, mov, mkv or webm (default: mp4, or the output's extension)
@@ -111,6 +116,7 @@ pub fn parse(args: &[String]) -> Result<Command, String> {
             "--format" => options.format = Some(value("mp4")?),
             "--overwrite" => options.overwrite = true,
             "--quality" if compressing => options.quality = Some(value("medium")?),
+            "--size" if compressing => options.size = Some(value("25MB")?),
             "--short-side" if compressing => options.short_side = Some(value("720")?),
             "--codec" if compressing => options.codec = Some(value("h264")?),
             "--fps" if compressing => options.fps = Some(value("30")?),
@@ -147,6 +153,7 @@ struct Options {
     output: Option<PathBuf>,
     format: Option<String>,
     quality: Option<String>,
+    size: Option<String>,
     short_side: Option<String>,
     codec: Option<String>,
     fps: Option<String>,
@@ -195,11 +202,20 @@ impl Options {
             }
             None => container.video_codecs()[0],
         };
+        if self.quality.is_some() && self.size.is_some() {
+            return Err("--quality and --size do not go together; choose one".to_owned());
+        }
         let quality = match self.quality.as_deref() {
             Some(quality) => quality_named(quality).ok_or_else(|| {
                 format!("--quality takes high, medium, small or 0 to 100, not {quality}")
             })?,
             None => Quality::Level(60),
+        };
+        let size = match self.size.as_deref() {
+            Some(size) => Some(bytes_of(size).ok_or_else(|| {
+                format!("--size takes a file size, such as 25MB, 800KB or 1.5GB, not {size}")
+            })?),
+            None => None,
         };
         let short_side = match self.short_side.as_deref() {
             Some(side) => Some(
@@ -232,6 +248,7 @@ impl Options {
             container,
             codec,
             quality,
+            size,
             short_side,
             fps,
             threads,
@@ -323,6 +340,27 @@ fn quality_named(name: &str) -> Option<Quality> {
     }
 }
 
+/// A file size written with KB, MB or GB (decimal, as sizes on disks are counted), or as a
+/// bare number of megabytes.
+fn bytes_of(size: &str) -> Option<u64> {
+    let size = size.to_lowercase();
+    let units = [
+        ("kb", 1e3),
+        ("k", 1e3),
+        ("mb", 1e6),
+        ("m", 1e6),
+        ("gb", 1e9),
+        ("g", 1e9),
+    ];
+    let (number, unit) = units
+        .iter()
+        .find_map(|(suffix, unit)| Some((size.strip_suffix(suffix)?, *unit)))
+        .unwrap_or((size.as_str(), 1e6));
+    let number: f64 = number.trim().parse().ok()?;
+    let bytes = (number * unit).round();
+    (number.is_finite() && bytes >= 1.0).then_some(bytes as u64)
+}
+
 /// A frame rate written as frames a second, whole or as a fraction.
 fn rate_of(rate: &str) -> Option<(u32, u32)> {
     let (num, den) = match rate.split_once('/') {
@@ -366,6 +404,7 @@ mod tests {
                 container: Container::Mp4,
                 codec: VideoCodec::H264,
                 quality: Quality::Level(60),
+                size: None,
                 short_side: None,
                 fps: None,
                 threads: None,
@@ -387,6 +426,36 @@ mod tests {
         assert_eq!(compress.fps, Some((30_000, 1001)));
         assert_eq!(compress.threads, Some(2));
         assert!(compress.overwrite);
+    }
+
+    #[test]
+    fn a_size_is_read_in_bytes_and_excludes_a_quality() {
+        assert_eq!(compress("compress a.mp4").size, None);
+        assert_eq!(
+            compress("compress a.mp4 --size 25MB").size,
+            Some(25_000_000)
+        );
+        assert_eq!(
+            compress("compress a.mp4 --size=25mb").size,
+            Some(25_000_000)
+        );
+        assert_eq!(
+            compress("compress a.mp4 --size 1.5GB").size,
+            Some(1_500_000_000)
+        );
+        assert_eq!(compress("compress a.mp4 --size 800KB").size, Some(800_000));
+        assert_eq!(compress("compress a.mp4 --size 8M").size, Some(8_000_000));
+        // A bare number is megabytes.
+        assert_eq!(compress("compress a.mp4 --size 10").size, Some(10_000_000));
+        for wrong in ["big", "0MB", "-5MB", "5TB"] {
+            let error = parse_line(&format!("compress a.mp4 --size {wrong}")).unwrap_err();
+            assert!(error.contains("--size"), "{wrong}: {error}");
+        }
+        let error = parse_line("compress a.mp4 --size 25MB --quality high").unwrap_err();
+        assert!(
+            error.contains("--quality") && error.contains("--size"),
+            "{error}"
+        );
     }
 
     #[test]

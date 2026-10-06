@@ -14,12 +14,13 @@ use std::time::{Duration, Instant};
 use dusk_core::color::SdrConverter;
 use dusk_core::{MediaTime, Orientation, SdrPicture, YuvPicture};
 use dusk_media::{
-    AudioDecoder, AudioFormat, AudioSettings, Container, HUGE_FRAME, MediaError, StreamDetail,
-    StreamKind, Timing, VideoDecoder, VideoSettings, Writer, probe,
+    AudioDecoder, AudioFormat, AudioSettings, Container, HUGE_FRAME, MediaError, Quality,
+    StreamDetail, StreamKind, Timing, VideoDecoder, VideoSettings, Writer, probe,
 };
 
 use crate::EngineError;
 use crate::settings::{AUDIO_RATE, ExportFormat, ExportSettings, LARGE_FRAME, export_size};
+use crate::size::{corrected, plan_for_size, refused};
 
 /// What dusq's transcode path makes of a file.
 #[derive(Clone, Copy, Debug, Default)]
@@ -44,6 +45,9 @@ pub struct Progress {
     pub done: MediaTime,
     /// The source's length.
     pub total: MediaTime,
+    /// Which pass: 1, or 2 when a file made to a size came out too far over it and is made
+    /// again ([`transcode_to_size`]).
+    pub pass: u32,
 }
 
 /// A file a transcode wrote.
@@ -93,7 +97,59 @@ pub fn transcode(
     progress: &mut dyn FnMut(Progress),
 ) -> Result<Option<Transcoded>, EngineError> {
     let part = part_path(output);
-    let written = match settings.export.format {
+    let written = write(input, &part, settings, cancel, progress);
+    finish(&part, output, written)
+}
+
+/// Transcodes `input` into a video file at `output` of about `target` bytes
+/// (docs/ARCHITECTURE.md, "Target file size"): [`plan_for_size`] sets the bitrates, and the
+/// ladder the short side, never above the one `settings` asks for. A file that comes out more
+/// than 3% over is made again once, smaller, its progress saying pass 2; after that it is kept
+/// as it came out. A target below the smallest the video can become is refused with that
+/// size. As [`transcode`] otherwise; sound alone is not made to a size.
+pub fn transcode_to_size(
+    input: &Path,
+    output: &Path,
+    target: u64,
+    settings: &TranscodeSettings,
+    cancel: &AtomicBool,
+    progress: &mut dyn FnMut(Progress),
+) -> Result<Option<Transcoded>, EngineError> {
+    if matches!(settings.export.format, ExportFormat::Sound(_)) {
+        return transcode(input, output, settings, cancel, progress);
+    }
+    let source = Source::of(input)?;
+    let plan = plan_for_size(target, source.length, source.has_sound)
+        .map_err(|refusal| refused(refusal, input))?;
+    let mut planned = *settings;
+    planned.export.quality = Quality::Bitrate(plan.video_bit_rate);
+    planned.export.audio_bit_rate = (plan.audio_bit_rate > 0).then_some(plan.audio_bit_rate);
+    planned.export.short_side = Some(match settings.export.short_side {
+        Some(side) => side.min(plan.short_side),
+        None => plan.short_side,
+    });
+    let part = part_path(output);
+    let mut written = write(input, &part, &planned, cancel, progress);
+    if written.as_ref().is_ok_and(Option::is_some) {
+        let bytes = std::fs::metadata(&part).map_or(0, |file| file.len());
+        if let Some(bit_rate) = corrected(plan.video_bit_rate, target, bytes) {
+            planned.export.quality = Quality::Bitrate(bit_rate);
+            let mut second = |report: Progress| progress(Progress { pass: 2, ..report });
+            written = write(input, &part, &planned, cancel, &mut second);
+        }
+    }
+    finish(&part, output, written)
+}
+
+/// Writes `input` to `part` as `settings` say; `None` when cancelled.
+fn write(
+    input: &Path,
+    part: &Path,
+    settings: &TranscodeSettings,
+    cancel: &AtomicBool,
+    progress: &mut dyn FnMut(Progress),
+) -> Result<Option<Encoded>, EngineError> {
+    match settings.export.format {
         ExportFormat::Video {
             container,
             codec,
@@ -107,17 +163,25 @@ pub fn transcode(
             };
             let audio = settings.export.audio(audio);
             write_video(
-                input, &part, container, video, audio, settings, cancel, progress,
+                input, part, container, video, audio, settings, cancel, progress,
             )
         }
         ExportFormat::Sound(format) => {
-            write_sound(input, &part, format, &settings.export, cancel, progress)
+            write_sound(input, part, format, &settings.export, cancel, progress)
         }
-    };
+    }
+}
+
+/// Renames the finished `part` to `output`, or removes what was written.
+fn finish(
+    part: &Path,
+    output: &Path,
+    written: Result<Option<Encoded>, EngineError>,
+) -> Result<Option<Transcoded>, EngineError> {
     match written {
         Ok(Some(Encoded { encoder, size })) => {
-            if let Err(source) = std::fs::rename(&part, output) {
-                let _ = std::fs::remove_file(&part);
+            if let Err(source) = std::fs::rename(part, output) {
+                let _ = std::fs::remove_file(part);
                 return Err(EngineError::Io {
                     path: output.to_path_buf(),
                     source,
@@ -133,7 +197,7 @@ pub fn transcode(
         }
         other => {
             // The file may not even have been created.
-            let _ = std::fs::remove_file(&part);
+            let _ = std::fs::remove_file(part);
             other.map(|_| None)
         }
     }
@@ -307,6 +371,7 @@ fn write_video(
     progress(Progress {
         done: source.length,
         total: source.length,
+        pass: 1,
     });
     Ok(Some(Encoded { encoder, size }))
 }
@@ -471,6 +536,7 @@ impl Encode<'_> {
             (self.progress)(Progress {
                 done: time.min(self.total),
                 total: self.total,
+                pass: 1,
             });
         }
         Ok(())
@@ -536,12 +602,17 @@ fn write_sound(
             progress(Progress {
                 done: done.min(total),
                 total,
+                pass: 1,
             });
         }
     }
     let encoder = writer.encoder().to_owned();
     writer.finish()?;
-    progress(Progress { done: total, total });
+    progress(Progress {
+        done: total,
+        total,
+        pass: 1,
+    });
     Ok(Some(Encoded {
         encoder,
         size: (0, 0),

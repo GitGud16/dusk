@@ -8,9 +8,10 @@ import { Prompt, SequenceSettings } from "dialogs.slint";
 import { ShortcutPanel, ShortcutView } from "shortcut-list.slint";
 import { ClipEditorWindow, EditorProps, EditorSides } from "clip-editor.slint";
 import { ExportDialog, ExportView } from "export-dialog.slint";
+import { CompressDialog, CompressView } from "compress-dialog.slint";
 
 export { ClipView, TickView, TrackView, MediaView, ClipProps, ShortcutView }
-export { ClipEditorWindow, EditorProps, EditorSides, ExportView }
+export { ClipEditorWindow, EditorProps, EditorSides, ExportView, CompressView }
 
 export component MainWindow inherits Window {
     title: root.window-title;
@@ -94,6 +95,11 @@ export component MainWindow inherits Window {
     in property <float> export-progress;
     // The export dialog.
     in property <bool> export-open;
+    // The compress tool's dialog.
+    in property <bool> compress-open;
+    in property <CompressView> compress-view;
+    callback compress-changed(what: string, value: int);
+    callback compress-done(go: bool);
     in property <ExportView> export-view;
     callback export-changed(what: string, value: int);
     callback export-done(export: bool);
@@ -178,6 +184,13 @@ export component MainWindow inherits Window {
                 enabled: root.has-clips && !root.exporting;
                 activated => {
                     root.action("export");
+                }
+            }
+            MenuItem {
+                title: "Compress a video…";
+                enabled: !root.exporting;
+                activated => {
+                    root.action("compress");
                 }
             }
             MenuSeparator { }
@@ -645,6 +658,20 @@ export component MainWindow inherits Window {
             destructive: root.prompt-destructive;
             answered(index) => {
                 root.prompt-answered(index);
+            }
+        }
+
+        if root.compress-open: CompressDialog {
+            view: root.compress-view;
+            changed(what, value) => {
+                root.compress-changed(what, value);
+            }
+            done(go) => {
+                root.compress-done(go);
+                keys.focus();
+            }
+            finished => {
+                keys.focus();
             }
         }
 

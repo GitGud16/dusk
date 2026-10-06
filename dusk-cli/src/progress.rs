@@ -37,6 +37,13 @@ pub fn clock(seconds: u64) -> String {
     }
 }
 
+/// A file size in megabytes with one decimal, rounded up, for a smallest size: what is said
+/// is never below it.
+pub fn size_up(bytes: u64) -> String {
+    let tenths = bytes.div_ceil(100_000);
+    format!("{}.{} MB", tenths / 10, tenths % 10)
+}
+
 /// A file size in megabytes, or kilobytes for small files.
 pub fn size(bytes: u64) -> String {
     if bytes >= 1_000_000 {
@@ -55,6 +62,7 @@ mod tests {
         Progress {
             done: MediaTime(done * 1_000_000),
             total: MediaTime(total * 1_000_000),
+            pass: 1,
         }
     }
 
@@ -63,6 +71,13 @@ mod tests {
         assert_eq!(clock(0), "0:00");
         assert_eq!(clock(83), "1:23");
         assert_eq!(clock(3_723), "1:02:03");
+    }
+
+    #[test]
+    fn a_smallest_size_is_rounded_up() {
+        assert_eq!(size_up(1_917_526), "2.0 MB");
+        assert_eq!(size_up(1_900_000), "1.9 MB");
+        assert_eq!(size_up(31_959), "0.1 MB");
     }
 
     #[test]

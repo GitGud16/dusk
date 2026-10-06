@@ -40,6 +40,19 @@ const MEDIA: &[COMDLG_FILTERSPEC] = &[
     },
 ];
 
+const VIDEOS: &[COMDLG_FILTERSPEC] = &[
+    COMDLG_FILTERSPEC {
+        pszName: w!("Videos"),
+        pszSpec: w!(
+            "*.mp4;*.m4v;*.mov;*.mkv;*.webm;*.avi;*.mts;*.m2ts;*.ts;*.3gp;*.wmv;*.flv;*.mpg;*.mpeg"
+        ),
+    },
+    COMDLG_FILTERSPEC {
+        pszName: w!("All files"),
+        pszSpec: w!("*.*"),
+    },
+];
+
 const PROJECTS: &[COMDLG_FILTERSPEC] = &[COMDLG_FILTERSPEC {
     pszName: w!("Dusk projects"),
     pszSpec: w!("*.dusk"),
@@ -75,7 +88,7 @@ unsafe fn pick(owner: Option<HWND>, dialog: &Dialog) -> windows::core::Result<Ve
     // SAFETY: plain COM calls on objects made here; COM is set up (the caller's promise).
     unsafe {
         match dialog {
-            Dialog::ImportMedia | Dialog::OpenProject => {
+            Dialog::ImportMedia | Dialog::OpenProject | Dialog::OpenVideo => {
                 let picker: IFileOpenDialog =
                     CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER)?;
                 let import = matches!(dialog, Dialog::ImportMedia);
@@ -87,12 +100,19 @@ unsafe fn pick(owner: Option<HWND>, dialog: &Dialog) -> windows::core::Result<Ve
                 picker.SetOptions(FILEOPENDIALOGOPTIONS(
                     picker.GetOptions()?.0 | options(multiple).0,
                 ))?;
-                if import {
-                    picker.SetFileTypes(MEDIA)?;
-                    picker.SetTitle(w!("Import media"))?;
-                } else {
-                    picker.SetFileTypes(PROJECTS)?;
-                    picker.SetTitle(w!("Open project"))?;
+                match dialog {
+                    Dialog::ImportMedia => {
+                        picker.SetFileTypes(MEDIA)?;
+                        picker.SetTitle(w!("Import media"))?;
+                    }
+                    Dialog::OpenVideo => {
+                        picker.SetFileTypes(VIDEOS)?;
+                        picker.SetTitle(w!("Compress a video"))?;
+                    }
+                    _ => {
+                        picker.SetFileTypes(PROJECTS)?;
+                        picker.SetTitle(w!("Open project"))?;
+                    }
                 }
                 // Cancelling is an error too; either way nothing was picked.
                 if picker.Show(owner).is_err() {

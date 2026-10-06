@@ -12,8 +12,8 @@ use dusk_core::{
     SetTrackMuted, TrimClips, import,
 };
 use dusk_engine::{
-    Engine, EngineError, EngineEvent, EngineOptions, ExportEvent, ExportFormat, ExportSettings,
-    Gpu, media_info,
+    CompressTarget, Engine, EngineError, EngineEvent, EngineOptions, ExportEvent, ExportFormat,
+    ExportSettings, Gpu, media_info,
 };
 use dusk_media::{Acceleration, StreamKind, VideoDecoder, probe};
 use dusk_media::{AudioCodec, AudioFormat, Container, Quality, VideoCodec};
@@ -409,4 +409,115 @@ fn one_export_runs_at_a_time() {
     );
     outcome(&events);
     assert!(!second.exists());
+}
+
+/// The compress tool's outcome, and how many times it said it would make the file again.
+fn compressed(events: &mpsc::Receiver<EngineEvent>) -> (ExportEvent, usize) {
+    let mut again = 0;
+    loop {
+        match events.recv_timeout(PATIENCE).expect("the compression ends") {
+            EngineEvent::Export(ExportEvent::Progress { .. }) => {}
+            EngineEvent::Export(ExportEvent::Again { .. }) => again += 1,
+            EngineEvent::Export(outcome) => return (outcome, again),
+            _ => {}
+        }
+    }
+}
+
+fn video_size(path: &Path) -> (u32, u32) {
+    let mut decoder = VideoDecoder::open(path, Acceleration::Software).unwrap();
+    let picture = decoder.frame_at(MediaTime(0)).unwrap().unwrap().picture;
+    (picture.width, picture.height)
+}
+
+#[test]
+fn the_compress_tool_aims_at_a_size() {
+    let (engine, events) = engine();
+    let path = output("compressed-to-size.mp4");
+    let info = media_info(&sample()).unwrap();
+    let _job = engine
+        .compress(sample(), info, path.clone(), CompressTarget::Size(100_000))
+        .unwrap();
+    match compressed(&events).0 {
+        ExportEvent::Finished { bytes, .. } => {
+            assert_eq!(bytes, std::fs::metadata(&path).unwrap().len());
+            assert!((40_000..=150_000).contains(&bytes), "{bytes} bytes");
+        }
+        other => panic!("expected the compression to finish, got {other:?}"),
+    }
+    assert_eq!(video_size(&path), (320, 240));
+    assert!(!part(&path).exists());
+}
+
+#[test]
+fn the_compress_tool_keeps_a_turned_video_upright() {
+    let rotated = Path::new(env!("CARGO_MANIFEST_DIR")).join("../testdata/sample-rotated.mp4");
+    let (engine, events) = engine();
+    let path = output("compressed-upright.mp4");
+    let info = media_info(&rotated).unwrap();
+    let _job = engine
+        .compress(rotated, info, path.clone(), CompressTarget::Quality(60))
+        .unwrap();
+    assert!(matches!(
+        compressed(&events).0,
+        ExportEvent::Finished { .. }
+    ));
+    assert_eq!(video_size(&path), (240, 320));
+}
+
+#[test]
+fn the_compress_tool_refuses_a_size_too_small() {
+    let (engine, _events) = engine();
+    let path = output("compressed-too-small.mp4");
+    let info = media_info(&sample()).unwrap();
+    let refused = engine.compress(sample(), info, path.clone(), CompressTarget::Size(10_000));
+    assert!(
+        matches!(refused, Err(EngineError::TooSmall { smallest: 31_959 })),
+        "{refused:?}"
+    );
+    assert!(!path.exists() && !part(&path).exists());
+}
+
+#[test]
+fn the_compress_tool_makes_a_file_too_far_over_again() {
+    // Half a second of noise: the container's own share of so small a file is more than the
+    // 3% the plan leaves it, so the first file comes out too far over.
+    let source = output("short-noise.mp4");
+    let video = dusk_media::VideoSettings {
+        encoder: Some("libopenh264"),
+        quality: Quality::Level(95),
+        ..dusk_media::VideoSettings::h264(320, 240, (30, 1))
+    };
+    let mut writer = dusk_media::Writer::create(&source, Container::Mp4, video, None).unwrap();
+    let mut state = 0x9e37_79b9_u32;
+    for n in 0..15 {
+        let planes = [0; 3].map(|_| {
+            (0..320 * 240)
+                .map(|_| {
+                    state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                    (state >> 24) as u8
+                })
+                .collect()
+        });
+        let picture = dusk_core::SdrPicture {
+            width: 320,
+            height: 240,
+            planes,
+        };
+        writer.write_sdr(&picture, MediaTime(n * 33_333)).unwrap();
+    }
+    writer.finish().unwrap();
+    let (engine, events) = engine();
+    let path = output("compressed-again.mp4");
+    let info = media_info(&source).unwrap();
+    let _job = engine
+        .compress(source, info, path.clone(), CompressTarget::Size(15_000))
+        .unwrap();
+    let (outcome, again) = compressed(&events);
+    assert!(
+        matches!(outcome, ExportEvent::Finished { .. }),
+        "{outcome:?}"
+    );
+    assert_eq!(again, 1);
+    assert!(!part(&path).exists());
 }

@@ -755,6 +755,7 @@ impl App {
             | Action::SaveAs
             | Action::Import
             | Action::Export
+            | Action::CompressVideo
             | Action::CancelExport
             | Action::Quit => self.act(action),
             Action::Split

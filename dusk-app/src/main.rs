@@ -6,6 +6,8 @@
 
 mod app;
 mod clip_editor;
+mod compress_choices;
+mod compress_dialog;
 mod document;
 mod draft;
 mod editing;
@@ -154,6 +156,12 @@ fn connect(window: &MainWindow) {
     });
     window.on_export_done(|export| {
         with_app(|app| app.export_done(export));
+    });
+    window.on_compress_changed(|what, value| {
+        with_app(|app| app.compress_changed(&what, value));
+    });
+    window.on_compress_done(|go| {
+        with_app(|app| app.compress_done(go));
     });
     window.on_prompt_answered(|index| {
         with_app(|app| app.answer(usize::try_from(index).unwrap_or(usize::MAX)));

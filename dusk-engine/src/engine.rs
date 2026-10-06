@@ -17,6 +17,7 @@ use dusk_core::{Frame, MediaId, MediaInfo, MediaTime, Project, Rational};
 use dusk_render::{Gpu, wgpu};
 
 use crate::cache::DEFAULT_CAP;
+use crate::compress::{CompressTarget, compress_project, compress_settings};
 use crate::export::{self, ExportJob};
 use crate::settings::{ExportFormat, ExportSettings, has_sound};
 use crate::sound::{self, SoundRequest};
@@ -314,6 +315,34 @@ impl Engine {
         if matches!(settings.format, ExportFormat::Sound(_)) && !has_sound(&project) {
             return Err(EngineError::NoSound);
         }
+        self.start_export(project, path, settings, None)
+    }
+
+    /// Compresses the video at `source`, described by `info` (probed off the UI thread), into
+    /// an MP4 at `path` through the compress tool's one-clip export (docs/ARCHITECTURE.md,
+    /// "Compress tool paths"), at a quality or to a size; a file more than 3% over a size is
+    /// made again once, smaller ([`ExportEvent::Again`]). No project is touched. As
+    /// [`export`](Self::export) otherwise.
+    pub fn compress(
+        &self,
+        source: PathBuf,
+        info: MediaInfo,
+        path: PathBuf,
+        target: CompressTarget,
+    ) -> Result<ExportJob, EngineError> {
+        let (settings, size) = compress_settings(&source, &info, target)?;
+        let project = compress_project(source, info)?;
+        self.start_export(Arc::new(project), path, settings, size)
+    }
+
+    /// Starts the export thread for `project`, aiming at `size` when given.
+    fn start_export(
+        &self,
+        project: Arc<Project>,
+        path: PathBuf,
+        settings: ExportSettings,
+        size: Option<u64>,
+    ) -> Result<ExportJob, EngineError> {
         let mut export = self.export.lock().unwrap_or_else(PoisonError::into_inner);
         if self.is_exporting() {
             return Err(EngineError::ExportRunning);
@@ -328,6 +357,7 @@ impl Engine {
             project,
             path,
             settings,
+            size,
             Arc::clone(&self.exporting),
             Arc::clone(&self.report),
         )?;

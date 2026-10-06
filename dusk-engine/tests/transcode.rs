@@ -7,7 +7,7 @@ use std::sync::atomic::AtomicBool;
 use dusk_core::{ColorMatrix, ColorRange, MediaTime, Orientation, Picture, SdrPicture, yuv_to_rgb};
 use dusk_engine::{
     EngineError, ExportFormat, ExportSettings, Progress, TranscodeSettings, extract_audio,
-    transcode,
+    transcode, transcode_to_size,
 };
 use dusk_media::{
     Acceleration, AudioCodec, AudioFormat, Container, MediaError, Quality, StreamDetail,
@@ -408,4 +408,106 @@ fn the_colors_survive_the_trip() {
         }
     }
     assert!(flat > 500, "only {flat} flat pixels");
+}
+
+/// Writes `frames` frames of `width` by `height` at 30 a second without sound to `path`: a
+/// gradient, with noise on it when `noisy`, which encoders cannot squeeze much.
+fn made_up(path: &Path, (width, height): (u32, u32), frames: u32, noisy: bool) {
+    let video = VideoSettings {
+        encoder: Some("libopenh264"),
+        quality: Quality::Level(95),
+        ..VideoSettings::h264(width, height, (30, 1))
+    };
+    let mut writer = Writer::create(path, Container::Mp4, video, None).unwrap();
+    let mut state = 0x9e37_79b9_u32;
+    for n in 0..frames {
+        let count = (width * height) as usize;
+        let planes = [0u32, 1, 2].map(|plane| {
+            (0..count)
+                .map(|i| {
+                    let x = (i as u32 % width + n * 4 + plane * 40) % 256;
+                    let noise = if noisy {
+                        state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                        state >> 26
+                    } else {
+                        0
+                    };
+                    (x / 2 + 40 + noise) as u8
+                })
+                .collect()
+        });
+        let picture = SdrPicture {
+            width,
+            height,
+            planes,
+        };
+        writer
+            .write_sdr(&picture, MediaTime(i64::from(n) * 33_333))
+            .unwrap();
+    }
+    writer.finish().unwrap();
+}
+
+/// Compresses `input` to about `target` bytes, keeping every progress report.
+fn to_size(
+    input: &Path,
+    output: &Path,
+    target: u64,
+) -> (
+    Result<Option<dusk_engine::Transcoded>, EngineError>,
+    Vec<Progress>,
+) {
+    let mut reports = Vec::new();
+    let done = transcode_to_size(
+        input,
+        output,
+        target,
+        &small(),
+        &AtomicBool::new(false),
+        &mut |progress| reports.push(progress),
+    );
+    (done, reports)
+}
+
+#[test]
+fn a_size_target_picks_the_picture_size_from_the_ladder() {
+    let source = output("hd-source.mp4");
+    made_up(&source, (1280, 720), 60, false);
+    // 300 KB over 2 s leaves 1.16 Mbit/s for the video: 480p.
+    let path = output("to-size.mp4");
+    let (done, _) = to_size(&source, &path, 300_000);
+    let done = done.unwrap().unwrap();
+    assert_eq!(size_of(&path), (854, 480));
+    assert_eq!(done.size, (854, 480));
+    assert!(!part(&path).exists());
+}
+
+#[test]
+fn a_size_below_the_floor_is_refused_with_the_smallest() {
+    let path = output("too-small.mp4");
+    let (done, _) = to_size(&testdata("sample-h264-aac.mp4"), &path, 10_000);
+    // 248 kbit/s for a second, with the container's share: 31,959 bytes.
+    assert!(
+        matches!(done, Err(EngineError::TooSmall { smallest: 31_959 })),
+        "{done:?}"
+    );
+    assert!(!path.exists() && !part(&path).exists());
+}
+
+#[test]
+fn a_file_too_far_over_is_made_again_smaller() {
+    // Half a second: the container's own share of so small a file is more than the 3% the
+    // plan leaves it, so the first pass comes out too far over and a second runs.
+    let source = output("short-source.mp4");
+    made_up(&source, (320, 240), 15, true);
+    let path = output("short-to-size.mp4");
+    let target = 15_000;
+    let (done, reports) = to_size(&source, &path, target);
+    let done = done.unwrap().unwrap();
+    assert!(
+        reports.iter().any(|report| report.pass == 2),
+        "one pass only"
+    );
+    assert!(reports.iter().all(|report| report.pass <= 2));
+    assert!(done.bytes > 0 && !part(&path).exists());
 }

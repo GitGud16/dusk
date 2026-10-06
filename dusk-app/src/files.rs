@@ -111,6 +111,13 @@ fn stem(path: &Path) -> std::borrow::Cow<'_, str> {
         .map_or_else(|| "Dusk".into(), |stem| stem.to_string_lossy())
 }
 
+/// The name the compress tool suggests for `source` compressed: beside it as
+/// "<name> compressed.mp4", numbered so no existing file is replaced.
+pub fn compress_path(source: &Path) -> PathBuf {
+    let folder = source.parent().unwrap_or(Path::new("."));
+    free_file(folder, &format!("{} compressed", stem(source)), "mp4")
+}
+
 /// The name the export dialog suggests for an export of the project made from `source`:
 /// beside it as "<name> export.<extension>", numbered so no existing file is replaced.
 pub fn export_path(source: &Path, extension: &str) -> PathBuf {
@@ -140,6 +147,18 @@ mod tests {
         assert_eq!(
             export_path(&source, "mkv"),
             dir.join("beach day export.mkv")
+        );
+    }
+
+    #[test]
+    fn a_compressed_video_goes_beside_the_source() {
+        let dir = folder("compressed");
+        let source = dir.join("IMG_0042.MOV");
+        assert_eq!(compress_path(&source), dir.join("IMG_0042 compressed.mp4"));
+        std::fs::write(dir.join("IMG_0042 compressed.mp4"), b"earlier").unwrap();
+        assert_eq!(
+            compress_path(&source),
+            dir.join("IMG_0042 compressed 2.mp4")
         );
     }
 

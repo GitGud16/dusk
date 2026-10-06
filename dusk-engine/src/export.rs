@@ -13,8 +13,8 @@ use std::time::{Duration, Instant};
 use dusk_core::time::frame_to_media;
 use dusk_core::{Frame, MediaId, MediaKind, MediaTime, Picture, Project};
 use dusk_media::{
-    Acceleration, AudioCodec, AudioFormat, Container, VideoCodec, VideoDecoder, VideoSettings,
-    Writer,
+    Acceleration, AudioCodec, AudioFormat, Container, Quality, VideoCodec, VideoDecoder,
+    VideoSettings, Writer,
 };
 use dusk_render::{Compositor, Gpu, ToYuv};
 
@@ -24,6 +24,7 @@ use crate::info::still_size;
 use crate::mixer::Mixer;
 use crate::placement::placement_at;
 use crate::settings::{AUDIO_RATE, ExportFormat, ExportSettings, export_size, has_sound};
+use crate::size::corrected;
 use crate::transcode::part_path;
 
 /// What an export reports, as [`EngineEvent::Export`].
@@ -36,12 +37,21 @@ pub enum ExportEvent {
         /// Frames in the sequence.
         total: u64,
     },
+    /// A file made to a size came out at `first` bytes, more than 3% over it; it is made
+    /// again once, smaller, and the progress starts over (docs/ARCHITECTURE.md, "Target file
+    /// size").
+    Again {
+        /// The first file's size, in bytes.
+        first: u64,
+    },
     /// The file is complete.
     Finished {
         /// Where it is.
         path: PathBuf,
         /// The video encoder that wrote it, such as `h264_amf`.
         encoder: String,
+        /// Its size, in bytes.
+        bytes: u64,
     },
     /// The export was cancelled; nothing was left behind.
     Cancelled,
@@ -50,7 +60,7 @@ pub enum ExportEvent {
 }
 
 /// A running export.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct ExportJob {
     cancel: Arc<AtomicBool>,
 }
@@ -66,12 +76,13 @@ impl ExportJob {
 const PROGRESS_INTERVAL: Duration = Duration::from_millis(100);
 
 /// Starts exporting `project` to `path` on a new thread, which ends after reporting the
-/// outcome.
+/// outcome; with a `size`, a file more than 3% over it is made again once, smaller.
 pub(crate) fn spawn(
     gpu: &Gpu,
     project: Arc<Project>,
     path: PathBuf,
     settings: ExportSettings,
+    size: Option<u64>,
     exporting: Arc<AtomicBool>,
     report: Report,
 ) -> Result<(ExportJob, JoinHandle<()>), EngineError> {
@@ -86,7 +97,7 @@ pub(crate) fn spawn(
         .spawn({
             let exporting = Arc::clone(&exporting);
             move || {
-                let outcome = export(&gpu, &project, &path, &settings, &cancel, &report);
+                let outcome = export(&gpu, &project, &path, &settings, size, &cancel, &report);
                 exporting.store(false, Ordering::Relaxed);
                 report(EngineEvent::Export(outcome));
             }
@@ -100,34 +111,39 @@ pub(crate) fn spawn(
     }
 }
 
-/// Exports, then renames the finished file or removes what was written.
+/// Exports, making the file again once when it comes out too far over `size`, then renames
+/// the finished file or removes what was written.
 fn export(
     gpu: &Gpu,
     project: &Arc<Project>,
     path: &Path,
     settings: &ExportSettings,
+    size: Option<u64>,
     cancel: &AtomicBool,
     report: &Report,
 ) -> ExportEvent {
     let part = part_path(path);
-    let outcome = match settings.format {
-        ExportFormat::Video {
-            container,
-            codec,
-            audio,
-        } => write(
-            gpu, project, &part, container, codec, audio, settings, cancel, report,
-        ),
-        ExportFormat::Sound(format) => {
-            write_sound(project, &part, format, settings, cancel, report)
+    let mut outcome = write_file(gpu, project, &part, settings, cancel, report);
+    if let (Ok(Some(_)), Some(target), Quality::Bitrate(bit_rate)) =
+        (&outcome, size, settings.quality)
+    {
+        let first = std::fs::metadata(&part).map_or(0, |file| file.len());
+        if let Some(lower) = corrected(bit_rate, target, first) {
+            report(EngineEvent::Export(ExportEvent::Again { first }));
+            let again = ExportSettings {
+                quality: Quality::Bitrate(lower),
+                ..*settings
+            };
+            outcome = write_file(gpu, project, &part, &again, cancel, report);
         }
-    };
+    }
     let renamed = match outcome {
         Ok(Some(encoder)) => match std::fs::rename(&part, path) {
             Ok(()) => {
                 return ExportEvent::Finished {
                     path: path.to_path_buf(),
                     encoder,
+                    bytes: std::fs::metadata(path).map_or(0, |file| file.len()),
                 };
             }
             Err(source) => Err(EngineError::Io {
@@ -143,6 +159,28 @@ fn export(
     match renamed {
         Ok(()) => ExportEvent::Cancelled,
         Err(error) => ExportEvent::Failed(error),
+    }
+}
+
+/// Writes the sequence to `part` in `settings`' format; the encoder used, or `None` when
+/// cancelled.
+fn write_file(
+    gpu: &Gpu,
+    project: &Arc<Project>,
+    part: &Path,
+    settings: &ExportSettings,
+    cancel: &AtomicBool,
+    report: &Report,
+) -> Result<Option<String>, EngineError> {
+    match settings.format {
+        ExportFormat::Video {
+            container,
+            codec,
+            audio,
+        } => write(
+            gpu, project, part, container, codec, audio, settings, cancel, report,
+        ),
+        ExportFormat::Sound(format) => write_sound(project, part, format, settings, cancel, report),
     }
 }
 

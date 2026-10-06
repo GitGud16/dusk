@@ -123,3 +123,43 @@ fn misuse_shows_how_to_use_it() {
     assert!(help.status.success());
     assert!(String::from_utf8_lossy(&help.stdout).contains("dusq compress"));
 }
+
+#[test]
+fn compress_aims_at_a_size() {
+    let dir = folder("size");
+    let output = dir.join("small.mp4");
+    let input = testdata("sample-h264-aac.mp4");
+    let run = dusq(&[
+        "compress",
+        input.to_str().unwrap(),
+        "-o",
+        output.to_str().unwrap(),
+        "--size",
+        "100KB",
+    ]);
+    assert!(run.status.success(), "{}", stderr(&run));
+    let bytes = std::fs::metadata(&output).unwrap().len();
+    assert!((40_000..=150_000).contains(&bytes), "{bytes} bytes");
+}
+
+#[test]
+fn a_size_too_small_says_the_smallest() {
+    let dir = folder("too-small");
+    let output = dir.join("tiny.mp4");
+    let input = testdata("sample-h264-aac.mp4");
+    let run = dusq(&[
+        "compress",
+        input.to_str().unwrap(),
+        "-o",
+        output.to_str().unwrap(),
+        "--size",
+        "10KB",
+    ]);
+    assert_eq!(run.status.code(), Some(1));
+    let said = stderr(&run);
+    assert!(
+        said.contains("smallest") && said.contains("--size 0.1MB"),
+        "{said}"
+    );
+    assert!(!output.exists());
+}

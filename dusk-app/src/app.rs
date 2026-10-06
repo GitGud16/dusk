@@ -15,6 +15,7 @@ use dusk_engine::{Engine, EngineEvent, ExportEvent, ExportJob, Preview};
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 
 use crate::clip_editor::ClipEditor;
+use crate::compress_dialog::{CompressDialog, megabytes};
 use crate::document::{Document, Question};
 use crate::export_dialog::ExportDialog;
 use crate::files::Worker;
@@ -117,6 +118,10 @@ pub struct App {
     pub(crate) probing_encoders: bool,
     /// The export dialog, while it is open.
     pub(crate) export_dialog: Option<ExportDialog>,
+    /// The compress tool's dialog, while it is open.
+    pub(crate) compress_dialog: Option<CompressDialog>,
+    /// The running export is the compress tool's.
+    pub(crate) compressing: bool,
     /// How the last export was written, where the dialog starts next time.
     pub(crate) last_export: Option<dusk_engine::ExportSettings>,
     pub(crate) view: View,
@@ -167,6 +172,8 @@ impl App {
             encoders: None,
             probing_encoders: false,
             export_dialog: None,
+            compress_dialog: None,
+            compressing: false,
             last_export: None,
             view: View::new(window.get_timeline_width()),
             question: None,
@@ -263,7 +270,7 @@ impl App {
 
     /// A key was pressed; true when it was a shortcut, or a dialog took it.
     pub fn key(&mut self, text: &str, ctrl: bool, shift: bool, alt: bool) -> bool {
-        if self.export_dialog_key(text, false) {
+        if self.compress_dialog_key(text) || self.export_dialog_key(text, false) {
             return true;
         }
         if self.question.is_some() {
@@ -324,6 +331,7 @@ impl App {
             Action::Import => self.import_dialog(),
             Action::SequenceSettings => self.open_sequence_settings(),
             Action::Export => self.export(),
+            Action::CompressVideo => self.compress_video(),
             Action::CancelExport => self.cancel_export(),
             Action::Quit => self.quit(),
             Action::ShortcutList => {
@@ -376,6 +384,14 @@ impl App {
             return;
         };
         let from_editor = self.export_from_editor;
+        if let ExportEvent::Again { first } = event {
+            // A file made to a size came out too far over; it is made once more.
+            window.set_export_progress(0.0);
+            return self.say(&format!(
+                "It came out at {:.1} MB, more than 3% over; compressing again, smaller…",
+                first as f64 / 1e6
+            ));
+        }
         if let ExportEvent::Progress { done, total } = event {
             let progress = done as f32 / total.max(1) as f32;
             window.set_export_progress(progress);
@@ -387,6 +403,7 @@ impl App {
             }
             return;
         }
+        let compressing = std::mem::take(&mut self.compressing);
         self.export = None;
         self.export_from_editor = false;
         window.set_exporting(false);
@@ -394,13 +411,29 @@ impl App {
             window.set_exporting(false);
         }
         let (message, failed) = match event {
-            ExportEvent::Finished { path, encoder } => (
+            ExportEvent::Finished {
+                path,
+                encoder,
+                bytes,
+            } if compressing => (
+                format!(
+                    "Compressed to {}: {} ({encoder}).",
+                    megabytes(bytes),
+                    path.display()
+                ),
+                false,
+            ),
+            ExportEvent::Finished { path, encoder, .. } => (
                 format!("Exported to {} ({encoder}).", path.display()),
+                false,
+            ),
+            ExportEvent::Cancelled if compressing => (
+                "Compressing cancelled; nothing was written.".to_owned(),
                 false,
             ),
             ExportEvent::Cancelled => ("Export cancelled; nothing was written.".to_owned(), false),
             ExportEvent::Failed(error) => (error.to_string(), true),
-            ExportEvent::Progress { .. } => return,
+            ExportEvent::Progress { .. } | ExportEvent::Again { .. } => return,
         };
         if failed {
             self.fail(&message);

@@ -36,6 +36,8 @@ pub enum Dialog {
     ImportMedia,
     /// A project file to open.
     OpenProject,
+    /// A video to compress, one file.
+    OpenVideo,
     /// Where to save the project, starting from the name `suggested`.
     SaveProject { suggested: String },
     /// Where to export a file, starting from `suggested`, a whole path whose extension is
