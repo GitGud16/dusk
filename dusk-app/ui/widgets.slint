@@ -336,11 +336,12 @@ export component Slider inherits Rectangle {
 }
 
 // A whole number typed in. Enter or leaving the field applies it; Escape puts it back; Up and
-// Down count one up or down.
+// Down count up or down by `step`.
 export component NumberField inherits Rectangle {
     in property <int> value;
     in property <int> minimum: 0;
     in property <int> maximum: 1000000;
+    in property <int> step: 1;
     in property <string> suffix;
     in property <bool> enabled: true;
     // Part of a dialog (see `Modal`).
@@ -355,7 +356,9 @@ export component NumberField inherits Rectangle {
     border-color: input.has-focus ? Theme.primary-bright : Theme.border;
     background: root.enabled ? Theme.bg-2 : Theme.bg-1;
 
-    function apply() {
+    // Applies what is typed, as Enter does; a dialog calls it before it closes, since a click
+    // on a button leaves the keyboard in the field.
+    public function apply() {
         if input.text.is-float() {
             let typed = Math.clamp(Math.round(input.text.to-float()), root.minimum, root.maximum);
             if typed != root.value {
@@ -415,7 +418,7 @@ export component NumberField inherits Rectangle {
                 }
                 if event.text == Key.UpArrow || event.text == Key.DownArrow {
                     let typed = self.text.is-float() ? Math.round(self.text.to-float()) : root.value;
-                    let next = Math.clamp(typed + (event.text == Key.UpArrow ? 1 : -1), root.minimum, root.maximum);
+                    let next = Math.clamp(typed + (event.text == Key.UpArrow ? root.step : -root.step), root.minimum, root.maximum);
                     self.text = next;
                     self.select-all();
                     if next != root.value {

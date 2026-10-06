@@ -9,9 +9,10 @@ import { ShortcutDialog, ShortcutView } from "shortcut-list.slint";
 import { ClipEditorWindow, EditorProps, EditorSides } from "clip-editor.slint";
 import { ExportDialog, ExportView } from "export-dialog.slint";
 import { CompressDialog, CompressView } from "compress-dialog.slint";
+import { SettingsDialog, SettingsView } from "settings-dialog.slint";
 
 export { ClipView, TickView, TrackView, MediaView, ClipProps, ShortcutView }
-export { ClipEditorWindow, EditorProps, EditorSides, ExportView, CompressView }
+export { ClipEditorWindow, EditorProps, EditorSides, ExportView, CompressView, SettingsView }
 
 export component MainWindow inherits Window {
     title: root.window-title;
@@ -146,6 +147,11 @@ export component MainWindow inherits Window {
     callback shortcut-close();
     // What in the user's shortcuts file Dusk could not read, if anything.
     in property <string> shortcut-problem;
+    // The Settings dialog (see settings-dialog.slint).
+    in property <bool> settings-open;
+    in property <SettingsView> settings-view;
+    callback settings-changed(what: string, value: int);
+    callback settings-close();
 
     // Media being dragged from the bin: which, and where the pointer is.
     property <int> dragged-media: -1;
@@ -203,6 +209,13 @@ export component MainWindow inherits Window {
                 enabled: !root.exporting;
                 activated => {
                     root.action("compress-video");
+                }
+            }
+            MenuSeparator { }
+            MenuItem {
+                title: "Settings…";
+                activated => {
+                    root.action("settings");
                 }
             }
             MenuSeparator { }
@@ -331,7 +344,7 @@ export component MainWindow inherits Window {
 
     // Whether a dialog is open over the window: only its controls take the keyboard then (see
     // `Modal`), and the keys go back to the shortcuts whenever one opens or closes.
-    property <bool> modal-open: root.export-open || root.compress-open || root.prompt-open || root.sequence-settings-open || root.shortcuts-open;
+    property <bool> modal-open: root.export-open || root.compress-open || root.prompt-open || root.sequence-settings-open || root.shortcuts-open || root.settings-open;
     changed modal-open => {
         Modal.open = root.modal-open;
         if root.shortcuts-open {
@@ -752,6 +765,20 @@ export component MainWindow inherits Window {
             }
             done(export) => {
                 root.export-done(export);
+                keys.focus();
+            }
+            finished => {
+                keys.focus();
+            }
+        }
+
+        if root.settings-open: SettingsDialog {
+            view: root.settings-view;
+            changed(what, value) => {
+                root.settings-changed(what, value);
+            }
+            close => {
+                root.settings-close();
                 keys.focus();
             }
             finished => {

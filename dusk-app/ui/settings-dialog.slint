@@ -1,0 +1,267 @@
+// Dusk's settings (docs/ARCHITECTURE.md, "Keyboard and settings"): the frame cache's size,
+// where the export dialog starts, and the user's own ffmpeg.exe. A change applies at once and
+// is kept in settings.txt; the Rust side works out what each control changes.
+
+import { Theme } from "theme.slint";
+import { FieldLabel, NumberField, PanelTitle, Segmented, Slider, Switch, ToolButton } from "widgets.slint";
+import { DialogPanel, DialogTitle } from "dialogs.slint";
+
+// The settings as the Rust side shows them.
+export struct SettingsView {
+    // The frame cache's size in megabytes, and the sizes it takes.
+    cache: int,
+    cache-minimum: int,
+    cache-maximum: int,
+    // Where the export dialog starts.
+    containers: [string],
+    container: int,
+    codecs: [string],
+    codec: int,
+    sizes: [string],
+    size: int,
+    // The Quality slider, 0 to 100.
+    level: int,
+    // The user's own ffmpeg.exe, empty for none, and whether exports use it.
+    ffmpeg: string,
+    use-ffmpeg: bool,
+    // What is known of it: being checked, what it has, or why it cannot be used.
+    ffmpeg-note: string,
+}
+
+export component SettingsDialog inherits Rectangle {
+    in property <SettingsView> view;
+    // `what` changed to `value`: "cache" in megabytes, "container", "codec" and "size" by
+    // index, "level" from 0 to 100 and "use-ffmpeg" (0 or 1); "program" asks for an
+    // ffmpeg.exe and "forget" forgets it.
+    callback changed(what: string, value: int);
+    callback close();
+    // Typing in a field is over.
+    callback finished();
+
+    DialogPanel {
+        panel-width: 520px;
+        keep-top: true;
+
+        DialogTitle {
+            text: "Settings";
+        }
+
+        VerticalLayout {
+            spacing: Theme.space-1;
+
+            FieldLabel {
+                text: "Frame cache";
+            }
+
+            HorizontalLayout {
+                spacing: Theme.space-2;
+
+                cache := NumberField {
+                    in-dialog: true;
+                    width: 128px;
+                    value: root.view.cache;
+                    minimum: root.view.cache-minimum;
+                    maximum: root.view.cache-maximum;
+                    step: 64;
+                    suffix: "MB";
+                    edited(value) => {
+                        root.changed("cache", value);
+                    }
+                    finished => {
+                        root.finished();
+                    }
+                }
+
+                Text {
+                    text: "How much memory decoded frames may take. More keeps more of the timeline ready to show; less keeps Dusk lighter.";
+                    color: Theme.text-3;
+                    font-size: Theme.font-tiny;
+                    vertical-alignment: center;
+                    wrap: word-wrap;
+                    horizontal-stretch: 1;
+                }
+            }
+        }
+
+        PanelTitle {
+            text: "Export starts with";
+        }
+
+        VerticalLayout {
+            spacing: Theme.space-1;
+
+            FieldLabel {
+                text: "File format";
+            }
+
+            Segmented {
+                in-dialog: true;
+                options: root.view.containers;
+                selected: root.view.container;
+                chosen(index) => {
+                    root.changed("container", index);
+                }
+            }
+        }
+
+        VerticalLayout {
+            spacing: Theme.space-1;
+
+            FieldLabel {
+                text: "Codec";
+            }
+
+            Segmented {
+                in-dialog: true;
+                options: root.view.codecs;
+                selected: root.view.codec;
+                chosen(index) => {
+                    root.changed("codec", index);
+                }
+            }
+        }
+
+        VerticalLayout {
+            spacing: Theme.space-1;
+
+            FieldLabel {
+                text: "Picture size";
+            }
+
+            Segmented {
+                in-dialog: true;
+                options: root.view.sizes;
+                selected: root.view.size;
+                chosen(index) => {
+                    root.changed("size", index);
+                }
+            }
+        }
+
+        VerticalLayout {
+            spacing: Theme.space-1;
+
+            HorizontalLayout {
+                FieldLabel {
+                    text: "Quality";
+                    horizontal-stretch: 1;
+                }
+
+                Text {
+                    text: Math.round(quality.shown);
+                    color: Theme.text-1;
+                    font-family: Theme.font-numeric;
+                    font-size: Theme.font-tiny;
+                }
+            }
+
+            Segmented {
+                in-dialog: true;
+                options: ["High", "Medium", "Small"];
+                selected: root.view.level == 80 ? 0 : root.view.level == 60 ? 1 : root.view.level == 40 ? 2 : -1;
+                chosen(index) => {
+                    root.changed("level", index == 0 ? 80 : index == 1 ? 60 : 40);
+                }
+            }
+
+            quality := Slider {
+                in-dialog: true;
+                minimum: 0;
+                maximum: 100;
+                value: root.view.level;
+                changed(level) => {
+                    root.changed("level", Math.round(level));
+                }
+                reset => {
+                    root.changed("level", 80);
+                }
+            }
+        }
+
+        // A user's own ffmpeg, for x264 and x265 (docs/ARCHITECTURE.md, "Optional GPL
+        // encoders"); the export dialog's Advanced section picks it too.
+        VerticalLayout {
+            spacing: Theme.space-1;
+
+            FieldLabel {
+                text: "Your own ffmpeg.exe, for x264 and x265";
+            }
+
+            HorizontalLayout {
+                spacing: Theme.space-2;
+
+                Text {
+                    text: root.view.ffmpeg == "" ? "None" : root.view.ffmpeg;
+                    color: root.view.ffmpeg == "" ? Theme.text-3 : Theme.text-1;
+                    vertical-alignment: center;
+                    overflow: elide;
+                    horizontal-stretch: 1;
+                }
+
+                ToolButton {
+                    in-dialog: true;
+                    text: "Choose…";
+                    clicked => {
+                        root.changed("program", 0);
+                    }
+                }
+
+                if root.view.ffmpeg != "": ToolButton {
+                    in-dialog: true;
+                    text: "Forget";
+                    clicked => {
+                        root.changed("forget", 0);
+                    }
+                }
+            }
+
+            if root.view.ffmpeg != "": HorizontalLayout {
+                Text {
+                    text: "Use it for exports";
+                    color: Theme.text-2;
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                }
+
+                Switch {
+                    in-dialog: true;
+                    checked: root.view.use-ffmpeg;
+                    toggled => {
+                        root.changed("use-ffmpeg", root.view.use-ffmpeg ? 0 : 1);
+                    }
+                }
+            }
+
+            if root.view.ffmpeg-note != "": Text {
+                text: root.view.ffmpeg-note;
+                color: Theme.text-3;
+                font-size: Theme.font-tiny;
+                wrap: word-wrap;
+            }
+        }
+
+        HorizontalLayout {
+            spacing: Theme.space-2;
+
+            Text {
+                text: "Changes apply at once and are kept for the next time Dusk starts.";
+                color: Theme.text-3;
+                font-size: Theme.font-tiny;
+                vertical-alignment: center;
+                wrap: word-wrap;
+                horizontal-stretch: 1;
+            }
+
+            ToolButton {
+                in-dialog: true;
+                text: "Close";
+                primary: true;
+                clicked => {
+                    // A number typed but not entered yet counts.
+                    cache.apply();
+                    root.close();
+                }
+            }
+        }
+    }
+}

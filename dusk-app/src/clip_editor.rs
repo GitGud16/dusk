@@ -787,6 +787,7 @@ impl App {
             | Action::ZoomOut
             | Action::ZoomFit
             | Action::SequenceSettings
+            | Action::Settings
             | Action::OpenClipEditor
             | Action::PreviousCut
             | Action::NextCut

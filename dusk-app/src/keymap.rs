@@ -738,6 +738,8 @@ mod tests {
         // I and O start and end a clip in either window.
         assert_eq!(press(&map, "i", Some('i'), PLAIN), Some(Action::MarkIn));
         assert_eq!(press(&map, "o", Some('o'), PLAIN), Some(Action::MarkOut));
+        // Settings, as most programs open theirs.
+        assert_eq!(press(&map, ",", Some(','), CTRL), Some(Action::Settings));
     }
 
     #[test]

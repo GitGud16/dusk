@@ -54,6 +54,8 @@ pub enum Action {
     SaveAs,
     Import,
     SequenceSettings,
+    /// Dusk's own settings: the frame cache, the export default, the user's ffmpeg.exe.
+    Settings,
     Export,
     CancelExport,
     /// Compresses a video file into a smaller one, outside the project.
@@ -554,6 +556,13 @@ pub const ACTIONS: &[ActionInfo] = &[
         Group::Project,
         "Sequence settings: frame rate and size",
         &[letter('r').ctrl().shift()],
+    ),
+    entry(
+        Action::Settings,
+        "settings",
+        Group::Project,
+        "Settings: the frame cache, the export default, your own ffmpeg.exe",
+        &[letter(',').ctrl()],
     ),
     entry(
         Action::Export,

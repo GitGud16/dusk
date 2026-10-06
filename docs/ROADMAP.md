@@ -64,9 +64,9 @@ Import one file, see it as a linked video clip and audio clip on one video track
 
 ## M5 — Keyboard and settings
 
-- Every common action has a shortcut; shortcuts are remappable and stored in a plain text file.
-- Shortcut list panel (`?` key and a toolbar button), searchable.
-- Settings: cache size, default export preset, optional external `ffmpeg.exe` path.
+- Every common action has a shortcut; shortcuts are remappable and stored in a plain text file. Done: every action has a name and keys in one table, and `shortcuts.txt` in Dusk's settings folder keeps the keys the user changed.
+- Shortcut list panel (`?` key and a toolbar button), searchable. Done, grouped, and it changes keys too.
+- Settings: cache size, default export preset, optional external `ffmpeg.exe` path. Done: File → Settings… (Ctrl+,), applied at once and kept in `settings.txt`.
 
 **Done when**: a full edit can be done without touching the mouse except for dragging clips.
 

@@ -133,6 +133,10 @@ pub struct App {
     pub(crate) shortcut_dialog: Option<crate::shortcut_dialog::ShortcutDialog>,
     /// Where the user's settings and shortcuts are kept; `None` when there is nowhere.
     pub(crate) settings_dir: Option<std::path::PathBuf>,
+    /// The user's settings, as `settings.txt` keeps them.
+    pub(crate) settings: crate::settings::Settings,
+    /// The Settings dialog is open.
+    pub(crate) settings_open: bool,
     /// The GPL encoders of the user's own `ffmpeg`, picked in the export dialog for this
     /// session (docs/ARCHITECTURE.md, "Optional GPL encoders").
     pub(crate) external: Vec<dusk_engine::ExternalEncoder>,
@@ -140,6 +144,9 @@ pub struct App {
     pub(crate) use_external: bool,
     /// What the export dialog says of that program.
     pub(crate) external_note: String,
+    /// Counts the checks of that program, so a check that a later one or Forget overtook
+    /// changes nothing.
+    pub(crate) external_check: u64,
     pub(crate) view: View,
     /// The question on screen, if one is.
     pub(crate) question: Option<Question>,
@@ -195,9 +202,12 @@ impl App {
             keymap_problem: String::new(),
             shortcut_dialog: None,
             settings_dir: None,
+            settings: crate::settings::Settings::default(),
+            settings_open: false,
             external: Vec::new(),
             use_external: false,
             external_note: String::new(),
+            external_check: 0,
             view: View::new(window.get_timeline_width()),
             question: None,
             dialog_open: false,
@@ -294,15 +304,7 @@ impl App {
     /// A key was pressed; true when it was a shortcut, or a dialog took it.
     pub fn key(&mut self, text: &str, ctrl: bool, shift: bool, alt: bool) -> bool {
         // Slint moves the keyboard through a dialog's controls with the keys no one takes.
-        let dialog = self.compress_dialog.is_some()
-            || self
-                .export_dialog
-                .as_ref()
-                .is_some_and(|dialog| !dialog.in_editor())
-            || self.question.is_some()
-            || self.sequence_settings_open
-            || self.shortcut_dialog.is_some();
-        if dialog && crate::keymap::moves_focus(text) {
+        if self.main_dialog_open() && crate::keymap::moves_focus(text) {
             return false;
         }
         if self.shortcut_dialog.is_some() {
@@ -322,12 +324,31 @@ impl App {
             }
             return true;
         }
+        if self.settings_open {
+            if text == SharedString::from(slint::platform::Key::Escape).as_str() {
+                self.settings_close();
+            }
+            return true;
+        }
         let key = crate::platform::pressed_key();
         let Some(action) = self.keymap.action_for_press(text, key, ctrl, shift, alt) else {
             return false;
         };
         self.act(action);
         true
+    }
+
+    /// Whether a dialog is open over the main window.
+    pub(crate) fn main_dialog_open(&self) -> bool {
+        self.compress_dialog.is_some()
+            || self
+                .export_dialog
+                .as_ref()
+                .is_some_and(|dialog| !dialog.in_editor())
+            || self.question.is_some()
+            || self.sequence_settings_open
+            || self.shortcut_dialog.is_some()
+            || self.settings_open
     }
 
     /// Does what a shortcut, a menu item or a button stands for.
@@ -379,6 +400,7 @@ impl App {
             Action::SaveAs => self.save_as(None),
             Action::Import => self.import_dialog(),
             Action::SequenceSettings => self.open_sequence_settings(),
+            Action::Settings => self.open_settings(),
             Action::Export => self.export(),
             Action::CompressVideo => self.compress_video(),
             Action::CancelExport => self.cancel_export(),

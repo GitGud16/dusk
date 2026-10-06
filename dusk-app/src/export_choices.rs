@@ -281,6 +281,13 @@ mod tests {
     }
 
     #[test]
+    fn the_default_settings_start_where_the_dialog_always_did() {
+        let start = crate::settings::Settings::default().export_settings();
+        let from_settings = ExportChoices::new(here(), (1920, 1080), true, true, Some(start));
+        assert_eq!(from_settings.settings(), choices(here()).settings());
+    }
+
+    #[test]
     fn an_export_is_ready_only_when_what_is_chosen_can_be_made() {
         assert!(choices(here()).ready());
         let nothing = ExportChoices::new(Vec::new(), (1920, 1080), true, false, None);
