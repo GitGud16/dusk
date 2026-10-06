@@ -16,6 +16,8 @@ export struct MediaView {
     audio: bool,
     // A small picture of a video or photo, once the engine has made it; empty until then.
     thumbnail: image,
+    // The file is not where the project says; `detail` says how to find it.
+    missing: bool,
 }
 
 export component MediaBin inherits Rectangle {
@@ -157,7 +159,7 @@ export component MediaBin inherits Rectangle {
 
                                 Text {
                                     text: item.detail;
-                                    color: Theme.text-2;
+                                    color: item.missing ? Theme.alert : Theme.text-2;
                                     font-size: Theme.font-tiny;
                                     overflow: elide;
                                 }

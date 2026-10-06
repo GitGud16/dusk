@@ -70,6 +70,12 @@ impl<I: Clone> Thumbnails<I> {
         }
     }
 
+    /// Lets the thumbnail of `media` go, so it is asked for again.
+    pub fn forget(&mut self, media: MediaId) {
+        self.remove(media);
+        self.asked.remove(&media);
+    }
+
     fn remove(&mut self, media: MediaId) {
         if let Some((_, bytes)) = self.images.remove(&media) {
             self.bytes -= bytes;
@@ -152,6 +158,20 @@ mod tests {
         assert_eq!(thumbnails.wanted(&empty), []);
         assert_eq!(thumbnails.get(video), None);
         // Brought back, by undo for example, they are asked for again.
+        assert_eq!(thumbnails.wanted(&project), [video, photo]);
+    }
+
+    #[test]
+    fn a_forgotten_thumbnail_is_asked_for_again() {
+        // A media file found somewhere else: the thumbnail of what was there, or the lack of
+        // one, no longer counts.
+        let (project, [video, _, photo]) = project();
+        let mut thumbnails = Thumbnails::new(100);
+        thumbnails.wanted(&project);
+        thumbnails.insert(video, 'v', 10);
+        thumbnails.forget(video);
+        thumbnails.forget(photo);
+        assert_eq!(thumbnails.get(video), None);
         assert_eq!(thumbnails.wanted(&project), [video, photo]);
     }
 }

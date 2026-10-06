@@ -405,7 +405,7 @@ impl Keymap {
     }
 
     /// The keys of `action` as the list writes them.
-    fn keys_text(&self, action: Action) -> String {
+    pub(crate) fn keys_text(&self, action: Action) -> String {
         self.keys_of(action)
             .iter()
             .map(Keys::to_string)

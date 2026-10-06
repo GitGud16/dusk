@@ -32,7 +32,7 @@ Constraints that shape the architecture. Targets are measured at every milestone
 ## 5. Robust
 - Autosave every ~30 seconds; crash recovery on next start.
 - A failed or cancelled export never corrupts the project or leaves half-written files in place of the user's output (`.part` file, renamed on success).
-- Missing media is reported and relinkable, not silently dropped.
+- Missing media is reported and relinkable, not silently dropped. Done at M6: a project opens with its missing files listed to be found, one find relinks the others beside it, and relinking undoes like any edit (ARCHITECTURE.md, "Release (0.1)").
 
 ## 6. Keyboard-first
 - Every common action has a shortcut; shortcuts are discoverable (shortcut list) and remappable. Done at M5: every action has a key in one table, changed in the shortcut list or in `shortcuts.txt`, and every control is reached with Tab; ARCHITECTURE.md, "Keyboard and settings".

@@ -72,6 +72,11 @@ pub enum Dialog {
     OpenVideo,
     /// The user's own `ffmpeg` program, for the GPL encoders Dusk does not ship.
     OpenProgram,
+    /// A media file the project cannot find, named `name`, which was in `folder`.
+    FindMedia {
+        name: String,
+        folder: Option<PathBuf>,
+    },
     /// Where to save the project, starting from the name `suggested`.
     SaveProject { suggested: String },
     /// Where to export a file, starting from `suggested`, a whole path whose extension is

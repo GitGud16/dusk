@@ -141,6 +141,15 @@ pub struct App {
     pub(crate) settings_open: bool,
     /// The About dialog is open.
     pub(crate) about_open: bool,
+    /// The project's media files that are not where it says, as the last check found.
+    pub(crate) missing: std::collections::HashSet<MediaId>,
+    /// The list of missing media files, while it is open.
+    pub(crate) missing_dialog: Option<crate::missing::MissingDialog>,
+    /// Counts the checks for missing media, so that a check overtaken by a newer one changes
+    /// nothing.
+    pub(crate) media_check: u64,
+    /// What the next check does with what it finds: a project just opened says so.
+    pub(crate) media_check_ask: crate::missing::Ask,
     /// The GPL encoders of the user's own `ffmpeg`, picked in the export dialog for this
     /// session (docs/ARCHITECTURE.md, "Optional GPL encoders").
     pub(crate) external: Vec<dusk_engine::ExternalEncoder>,
@@ -159,7 +168,7 @@ pub struct App {
     pub(crate) sequence_settings_open: bool,
     models: Models,
     /// The media bin's thumbnails.
-    thumbnails: Thumbnails<slint::Image>,
+    pub(crate) thumbnails: Thumbnails<slint::Image>,
     /// Preview statistics, when `DUSK_STATS` is set.
     stats: Option<Stats>,
     /// The clip editor's work, while it is open.
@@ -209,6 +218,10 @@ impl App {
             settings: crate::settings::Settings::default(),
             settings_open: false,
             about_open: false,
+            missing: std::collections::HashSet::new(),
+            missing_dialog: None,
+            media_check: 0,
+            media_check_ask: crate::missing::Ask::No,
             external: Vec::new(),
             use_external: false,
             external_note: String::new(),
@@ -235,7 +248,14 @@ impl App {
     pub(crate) fn set_project(&mut self, project: Project) {
         let project = Arc::new(project);
         self.engine.set_project(Preview::Main, Arc::clone(&project));
+        // Media added, gone or relinked: which files are missing is checked again.
+        let moved =
+            crate::missing::media_paths(&self.project) != crate::missing::media_paths(&project);
         self.project = project;
+        let ask = std::mem::take(&mut self.media_check_ask);
+        if moved || ask != crate::missing::Ask::No {
+            self.check_media(ask);
+        }
         if self
             .selected_clip
             .is_some_and(|clip| self.project.find_clip(clip).is_none())
@@ -320,6 +340,9 @@ impl App {
             let key = crate::platform::pressed_key();
             return self.shortcut_dialog_key(text, key, ctrl, shift, alt);
         }
+        if self.missing_dialog_key(text) {
+            return true;
+        }
         if self.compress_dialog_key(text) || self.export_dialog_key(text, false) {
             return true;
         }
@@ -369,6 +392,7 @@ impl App {
             || self.shortcut_dialog.is_some()
             || self.settings_open
             || self.about_open
+            || self.missing_dialog.is_some()
     }
 
     /// Does what a shortcut, a menu item or a button stands for.
@@ -423,6 +447,7 @@ impl App {
             Action::Settings => self.open_settings(),
             Action::Export => self.export(),
             Action::CompressVideo => self.compress_video(),
+            Action::FindMissingMedia => self.find_missing_media(),
             Action::CancelExport => self.cancel_export(),
             Action::Quit => self.quit(),
             Action::ShortcutList => self.open_shortcut_list(),
@@ -830,7 +855,12 @@ impl App {
             .map(|row| MediaView {
                 id: id_int(row.id.0),
                 name: row.name.into(),
-                detail: row.detail.into(),
+                missing: self.missing.contains(&row.id),
+                detail: if self.missing.contains(&row.id) {
+                    self.missing_detail().into()
+                } else {
+                    row.detail.into()
+                },
                 length: frame_int(row.length),
                 video: row.video,
                 audio: row.audio,

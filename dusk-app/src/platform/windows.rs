@@ -93,7 +93,11 @@ unsafe fn pick(owner: Option<HWND>, dialog: &Dialog) -> windows::core::Result<Ve
     // SAFETY: plain COM calls on objects made here; COM is set up (the caller's promise).
     unsafe {
         match dialog {
-            Dialog::ImportMedia | Dialog::OpenProject | Dialog::OpenVideo | Dialog::OpenProgram => {
+            Dialog::ImportMedia
+            | Dialog::OpenProject
+            | Dialog::OpenVideo
+            | Dialog::OpenProgram
+            | Dialog::FindMedia { .. } => {
                 let picker: IFileOpenDialog =
                     CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER)?;
                 let import = matches!(dialog, Dialog::ImportMedia);
@@ -117,6 +121,31 @@ unsafe fn pick(owner: Option<HWND>, dialog: &Dialog) -> windows::core::Result<Ve
                     Dialog::OpenProgram => {
                         picker.SetFileTypes(PROGRAMS)?;
                         picker.SetTitle(w!("Your own ffmpeg.exe"))?;
+                    }
+                    Dialog::FindMedia { name, folder } => {
+                        // The file's own name first, so its folder shows it alone; the
+                        // strings live until the dialog has taken them.
+                        let name = HSTRING::from(name.as_str());
+                        let title = HSTRING::from(format!("Find {name}"));
+                        picker.SetFileTypes(&[
+                            COMDLG_FILTERSPEC {
+                                pszName: PCWSTR(name.as_ptr()),
+                                pszSpec: PCWSTR(name.as_ptr()),
+                            },
+                            MEDIA[0],
+                            MEDIA[1],
+                        ])?;
+                        picker.SetFileName(&name)?;
+                        picker.SetTitle(&title)?;
+                        // Its old folder, when it is still there; otherwise the dialog's own.
+                        if let Some(folder) = folder
+                            && let Ok(folder) = SHCreateItemFromParsingName::<_, _, IShellItem>(
+                                &HSTRING::from(folder.as_path()),
+                                None::<&IBindCtx>,
+                            )
+                        {
+                            picker.SetFolder(&folder)?;
+                        }
                     }
                     _ => {
                         picker.SetFileTypes(PROJECTS)?;

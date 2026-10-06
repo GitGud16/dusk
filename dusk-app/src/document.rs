@@ -357,40 +357,19 @@ impl App {
             let read = std::fs::read_to_string(&path)
                 .map_err(|error| error.to_string())
                 .and_then(|text| from_json(&text, &path).map_err(|error| error.to_string()));
-            // Missing media is reported, never dropped (docs/REQUIREMENTS.md, "Robust").
-            let missing: Vec<String> = match &read {
-                Ok(project) => project
-                    .media()
-                    .iter()
-                    .filter(|media| !media.path.exists())
-                    .map(|media| file_name(&media.path))
-                    .collect(),
-                Err(_) => Vec::new(),
-            };
             let _ = slint::invoke_from_event_loop(move || {
-                with_app(|app| app.project_read(path, read, missing));
+                with_app(|app| app.project_read(path, read));
             });
         });
     }
 
-    fn project_read(&mut self, path: PathBuf, read: Result<Project, String>, missing: Vec<String>) {
+    /// The project file at `path` was read. Missing media is reported, never dropped
+    /// (docs/REQUIREMENTS.md, "Robust"): the check that follows lists it to be found.
+    fn project_read(&mut self, path: PathBuf, read: Result<Project, String>) {
         match read {
             Ok(project) => {
                 self.replace_project(project, Some(path.clone()));
-                if missing.is_empty() {
-                    self.say(&format!("Opened {}.", file_name(&path)));
-                } else {
-                    self.fail(&format!(
-                        "Opened {}, but {} cannot be found: {}. Their clips stay black and silent.",
-                        file_name(&path),
-                        if missing.len() == 1 {
-                            "a media file"
-                        } else {
-                            "some media files"
-                        },
-                        missing.join(", ")
-                    ));
-                }
+                self.say(&format!("Opened {}.", file_name(&path)));
             }
             Err(error) => self.fail(&format!(
                 "Could not open {}: {}",
@@ -411,6 +390,9 @@ impl App {
         self.view.fit();
         self.close_editor_now();
         self.engine.pause();
+        self.missing.clear();
+        self.missing_close();
+        self.media_check_ask = crate::missing::Ask::Opened;
         self.set_project(project);
     }
 

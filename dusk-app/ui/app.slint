@@ -4,7 +4,7 @@ import { Modal, StatusKind, Timecode, ToolButton } from "widgets.slint";
 import { ClipView, Timeline, TickView, TrackView } from "timeline.slint";
 import { MediaBin, MediaView } from "media-bin.slint";
 import { ClipProperties, ClipProps } from "properties.slint";
-import { AboutDialog, Prompt, SequenceSettings } from "dialogs.slint";
+import { AboutDialog, MissingDialog, MissingView, Prompt, SequenceSettings } from "dialogs.slint";
 import { ShortcutDialog, ShortcutView } from "shortcut-list.slint";
 import { ClipEditorWindow, EditorProps, EditorSides } from "clip-editor.slint";
 import { ExportDialog, ExportView } from "export-dialog.slint";
@@ -13,7 +13,7 @@ import { SettingsDialog, SettingsView } from "settings-dialog.slint";
 
 export { ClipView, TickView, TrackView, MediaView, ClipProps, ShortcutView }
 export { ClipEditorWindow, EditorProps, EditorSides, ExportView, CompressView, SettingsView }
-export { StatusKind }
+export { StatusKind, MissingView }
 
 export component MainWindow inherits Window {
     title: root.window-title;
@@ -149,6 +149,15 @@ export component MainWindow inherits Window {
     callback shortcut-close();
     // What in the user's shortcuts file Dusk could not read, if anything.
     in property <string> shortcut-problem;
+    // The list of media files the project cannot find (see dialogs.slint).
+    in property <bool> missing-open;
+    in property <[MissingView]> missing-rows;
+    in property <int> missing-picked;
+    in property <string> missing-note;
+    in property <StatusKind> missing-note-kind;
+    callback missing-pick(row: int);
+    callback missing-find();
+    callback missing-close();
     // The About dialog (see dialogs.slint).
     in property <bool> about-open;
     in property <string> about-version;
@@ -225,6 +234,12 @@ export component MainWindow inherits Window {
                 enabled: !root.exporting;
                 activated => {
                     root.action("compress-video");
+                }
+            }
+            MenuItem {
+                title: "Find missing media…";
+                activated => {
+                    root.action("find-missing-media");
                 }
             }
             MenuSeparator { }
@@ -360,7 +375,7 @@ export component MainWindow inherits Window {
 
     // Whether a dialog is open over the window: only its controls take the keyboard then (see
     // `Modal`), and the keys go back to the shortcuts whenever one opens or closes.
-    property <bool> modal-open: root.export-open || root.compress-open || root.prompt-open || root.sequence-settings-open || root.shortcuts-open || root.settings-open || root.about-open;
+    property <bool> modal-open: root.export-open || root.compress-open || root.prompt-open || root.sequence-settings-open || root.shortcuts-open || root.settings-open || root.about-open || root.missing-open;
     changed modal-open => {
         Modal.open = root.modal-open;
         if root.shortcuts-open {
@@ -800,6 +815,23 @@ export component MainWindow inherits Window {
                 keys.focus();
             }
             finished => {
+                keys.focus();
+            }
+        }
+
+        if root.missing-open: MissingDialog {
+            rows: root.missing-rows;
+            picked: root.missing-picked;
+            note: root.missing-note;
+            note-kind: root.missing-note-kind;
+            pick(row) => {
+                root.missing-pick(row);
+            }
+            find => {
+                root.missing-find();
+            }
+            close => {
+                root.missing-close();
                 keys.focus();
             }
         }

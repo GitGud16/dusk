@@ -2,7 +2,7 @@
 
 import { AboutSlint } from "std-widgets.slint";
 import { Theme } from "theme.slint";
-import { FieldLabel, NumberField, ToolButton } from "widgets.slint";
+import { FieldLabel, NumberField, StatusKind, ToolButton } from "widgets.slint";
 
 // The panel a dialog sits on.
 export component DialogPanel inherits Rectangle {
@@ -357,6 +357,140 @@ export component AboutDialog inherits Rectangle {
                 primary: true;
                 clicked => {
                     root.close();
+                }
+            }
+        }
+    }
+}
+
+// A media file the project cannot find: its name and the folder it was in.
+export struct MissingView {
+    name: string,
+    folder: string,
+}
+
+// The media files the project cannot find (docs/ARCHITECTURE.md, "Release (0.1)"): one is
+// picked, with Up and Down or a click, and Find… asks where it is now; the others in the same
+// folder are found with it.
+export component MissingDialog inherits Rectangle {
+    in property <[MissingView]> rows;
+    in property <int> picked;
+    // What the last find came to, and how to color it.
+    in property <string> note;
+    in property <StatusKind> note-kind;
+    callback pick(row: int);
+    callback find();
+    callback close();
+
+    property <length> row-height: 40px;
+    property <length> list-height: Math.min(5, root.rows.length) * root.row-height;
+    property <length> scrolled: 0;
+
+    // The picked file stays in view as the keys move through a long list.
+    changed picked => {
+        if root.picked * root.row-height < root.scrolled {
+            root.scrolled = root.picked * root.row-height;
+        } else if (root.picked + 1) * root.row-height > root.scrolled + root.list-height {
+            root.scrolled = (root.picked + 1) * root.row-height - root.list-height;
+        }
+    }
+
+    DialogPanel {
+        panel-width: 480px;
+
+        DialogTitle {
+            text: "Find missing media";
+        }
+
+        Text {
+            text: "These files are not where the project says, so their clips stay black and silent. Pick one and find it: the others in the same folder are found with it.";
+            color: Theme.text-2;
+            wrap: word-wrap;
+        }
+
+        Rectangle {
+            height: root.list-height;
+            border-radius: Theme.radius-control;
+            border-width: Theme.border-width;
+            border-color: Theme.border;
+            clip: true;
+
+            TouchArea {
+                scroll-event(event) => {
+                    root.scrolled = Math.clamp(root.scrolled - event.delta-y, 0px, Math.max(0px, list.preferred-height - root.list-height));
+                    return accept;
+                }
+            }
+
+            list := VerticalLayout {
+                y: -root.scrolled;
+                height: self.preferred-height;
+                alignment: start;
+
+                for row[index] in root.rows: Rectangle {
+                    height: root.row-height;
+                    background: index == root.picked ? Theme.primary-dim
+                        : touch.has-hover ? Theme.bg-3 : transparent;
+
+                    VerticalLayout {
+                        padding-left: Theme.space-2;
+                        padding-right: Theme.space-2;
+                        alignment: center;
+                        spacing: 2px;
+
+                        Text {
+                            text: row.name;
+                            color: Theme.text-1;
+                            overflow: elide;
+                        }
+
+                        Text {
+                            text: row.folder;
+                            color: Theme.text-2;
+                            font-size: Theme.font-tiny;
+                            overflow: elide;
+                        }
+                    }
+
+                    touch := TouchArea {
+                        clicked => {
+                            root.pick(index);
+                        }
+                        double-clicked => {
+                            root.pick(index);
+                            root.find();
+                        }
+                    }
+                }
+            }
+        }
+
+        if root.note != "": Text {
+            text: root.note;
+            color: root.note-kind == StatusKind.error ? Theme.alert
+                : root.note-kind == StatusKind.warning ? Theme.signal : Theme.text-2;
+            font-size: Theme.font-tiny;
+            wrap: word-wrap;
+        }
+
+        HorizontalLayout {
+            alignment: end;
+            spacing: Theme.space-2;
+
+            ToolButton {
+                in-dialog: true;
+                text: "Close";
+                clicked => {
+                    root.close();
+                }
+            }
+
+            ToolButton {
+                in-dialog: true;
+                text: "Find…";
+                primary: true;
+                clicked => {
+                    root.find();
                 }
             }
         }

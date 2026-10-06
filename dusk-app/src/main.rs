@@ -17,6 +17,7 @@ mod export_dialog;
 mod files;
 mod history;
 mod keymap;
+mod missing;
 mod navigation;
 mod platform;
 mod recovery;
@@ -254,6 +255,15 @@ fn connect(window: &MainWindow) {
     });
     window.on_shortcut_close(|| {
         with_app(App::shortcut_close);
+    });
+    window.on_missing_pick(|row| {
+        with_app(|app| app.missing_pick(row));
+    });
+    window.on_missing_find(|| {
+        with_app(App::missing_find);
+    });
+    window.on_missing_close(|| {
+        with_app(App::missing_close);
     });
     window.on_about_close(|| {
         with_app(App::about_close);

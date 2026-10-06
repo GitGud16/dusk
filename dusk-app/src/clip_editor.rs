@@ -795,6 +795,7 @@ impl App {
             | Action::SequenceSettings
             | Action::Settings
             | Action::About
+            | Action::FindMissingMedia
             | Action::OpenClipEditor
             | Action::PreviousCut
             | Action::NextCut
