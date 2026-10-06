@@ -10,7 +10,7 @@ mod import;
 mod model;
 mod orientation;
 mod picture;
-mod rgb;
+mod planar;
 mod session;
 pub mod time;
 
@@ -27,6 +27,6 @@ pub use model::{
 };
 pub use orientation::Orientation;
 pub use picture::{ColorMatrix, ColorRange, Picture, PictureLayout, yuv_to_rgb};
-pub use rgb::{RgbPicture, SdrPicture};
+pub use planar::{SdrPicture, YuvPicture};
 pub use session::{ClipDraft, ClipEditSession, SessionStatus};
 pub use time::{Frame, MediaTime, Rational};

@@ -3,6 +3,7 @@
 
 use std::path::{Path, PathBuf};
 
+use dusk_core::color::{Primaries, Transfer};
 use dusk_core::{ColorMatrix, ColorRange, MediaTime, PictureLayout};
 use dusk_media::{Acceleration, Following, MediaError, Step, VideoDecoder};
 
@@ -250,4 +251,99 @@ fn an_untagged_video_is_sdr_bt709() {
     assert_eq!(picture.primaries, dusk_core::color::Primaries::Bt709);
     assert_eq!(picture.transfer, dusk_core::color::Transfer::Bt1886);
     assert_eq!(picture.peak_nits, 0);
+}
+
+#[test]
+fn frames_normalize_to_16_bit_yuv_at_the_size_asked_for() {
+    let mut decoder = decoder();
+    let mut times = Vec::new();
+    while let Some(frame) = decoder.next_normalized((160, 120)).unwrap() {
+        let picture = &frame.picture;
+        assert_eq!((picture.width, picture.height), (160, 120));
+        assert!(picture.planes.iter().all(|plane| plane.len() == 160 * 120));
+        times.push(frame.time);
+    }
+    assert_eq!(times, (0..30).map(frame_time).collect::<Vec<_>>());
+}
+
+#[test]
+fn normalizing_keeps_the_values_shifted_up_to_16_bits() {
+    // At the picture's own size luma is only shifted; chroma is resampled to every pixel,
+    // which keeps it where the picture is flat around a chroma sample, but for the rounding
+    // of swscale's fixed-point filter. Converting the range or matrix would move it by
+    // thousands.
+    let picture = decoder().frame_at(MediaTime(0)).unwrap().unwrap().picture;
+    let normalized = decoder()
+        .next_normalized((320, 240))
+        .unwrap()
+        .unwrap()
+        .picture;
+    let shifted: Vec<u16> = picture.luma.iter().map(|y| u16::from(*y) << 8).collect();
+    assert!(normalized.planes[0] == shifted, "luma changed");
+    let chroma = |x: usize, y: usize| {
+        let pair = y * 320 + x * 2;
+        (picture.chroma[pair], picture.chroma[pair + 1])
+    };
+    let mut flat = 0;
+    // The filter reaches two samples away on each side.
+    for cy in 2..118usize {
+        for cx in 2..158usize {
+            let here = chroma(cx, cy);
+            if !(cy - 2..=cy + 2).all(|ny| (cx - 2..=cx + 2).all(|nx| chroma(nx, ny) == here)) {
+                continue;
+            }
+            flat += 1;
+            // The luma pixel on the chroma sample's column, in its upper row.
+            let index = 2 * cy * 320 + 2 * cx;
+            for (plane, value) in [(1, here.0), (2, here.1)] {
+                let normalized = normalized.planes[plane][index];
+                let shifted = u16::from(value) << 8;
+                assert!(
+                    normalized.abs_diff(shifted) <= 16,
+                    "plane {plane} at {cx},{cy}: {normalized} for {shifted}"
+                );
+            }
+        }
+    }
+    assert!(flat > 160 * 120 / 4, "only {flat} flat chroma samples");
+}
+
+#[test]
+fn normalized_frames_carry_the_color_tags() {
+    let picture = decoder()
+        .next_normalized((320, 240))
+        .unwrap()
+        .unwrap()
+        .picture;
+    assert_eq!(
+        (picture.matrix, picture.range, picture.bits),
+        (ColorMatrix::Bt601, ColorRange::Limited, 8)
+    );
+    assert_eq!(
+        (picture.primaries, picture.transfer, picture.peak_nits),
+        (Primaries::Bt709, Transfer::Bt1886, 0)
+    );
+}
+
+#[test]
+fn a_10_bit_video_normalizes_with_its_10_bits() {
+    let mut decoder = VideoDecoder::open(&sample_10_bit(), Acceleration::Software).unwrap();
+    let picture = decoder
+        .next_normalized((320, 240))
+        .unwrap()
+        .unwrap()
+        .picture;
+    assert_eq!(
+        (picture.width, picture.height, picture.bits),
+        (320, 240, 10)
+    );
+    assert!(picture.planes[0].iter().all(|y| y % 64 == 0));
+    assert!(picture.planes[0].iter().any(|y| (y >> 6) % 4 != 0));
+}
+
+#[test]
+fn a_decoder_can_be_given_its_thread_count() {
+    let mut decoder = VideoDecoder::open_with_threads(&sample(), 1).unwrap();
+    let frames = std::iter::from_fn(|| decoder.next_normalized((32, 24)).unwrap()).count();
+    assert_eq!(frames, 30);
 }

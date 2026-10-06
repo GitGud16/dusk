@@ -390,135 +390,328 @@ pub(crate) struct ScaleColors {
 }
 
 /// Scales `frame` to an NV12 picture of `size`, returned as its luma plane and its plane of
-/// interleaved U and V, rows packed. swscale is set up the legacy way, the only one where
-/// every override takes effect in FFmpeg 8.1 (docs/ARCHITECTURE.md, "FFmpeg (Windows)"):
-/// Catmull-Rom (bicubic with B = 0 and C = 0.5) and full chroma interpolation, the given
-/// matrices and ranges, the source's chroma siting, and the picture's chroma sited left as
-/// the compositor reads it.
+/// interleaved U and V, rows packed, with the given matrices and ranges, the source's chroma
+/// siting, and the picture's chroma sited left as the compositor reads it.
 pub(crate) fn scale_to_nv12(
     frame: &ffmpeg_next::frame::Video,
     size: (u32, u32),
     colors: &ScaleColors,
 ) -> Result<(Vec<u8>, Vec<u8>), ffmpeg_next::Error> {
-    use ffmpeg_next::ffi::{
-        AVPixelFormat, SwsFlags, av_opt_set_double, av_opt_set_int, sws_alloc_context,
-        sws_freeContext, sws_getCoefficients, sws_init_context, sws_scale,
-        sws_setColorspaceDetails,
+    let source = ScaleSide {
+        format: frame.format(),
+        size: (frame.width(), frame.height()),
+        matrix: colors.source_matrix,
+        full_range: colors.source_full_range,
+        chroma: colors.source_chroma,
     };
-    use std::ffi::{CStr, c_void};
-
-    /// Frees the context however scaling ends.
-    struct Context(*mut ffmpeg_next::ffi::SwsContext);
-    impl Drop for Context {
-        fn drop(&mut self) {
-            // SAFETY: the context was allocated by sws_alloc_context and is freed once.
-            unsafe { sws_freeContext(self.0) };
-        }
-    }
-
-    let failed = |code: i32| ffmpeg_next::Error::from(code);
-    let side = |value: u32| i32::try_from(value).map_err(|_| failed(-22));
-    let (width, height) = (side(size.0)?, side(size.1)?);
-    let (source_width, source_height) = (side(frame.width())?, side(frame.height())?);
-    if width == 0 || height == 0 || source_width == 0 || source_height == 0 {
-        return Err(failed(-22));
-    }
-    let chroma_width = size.0.div_ceil(2) as usize;
-    let chroma_height = size.1.div_ceil(2) as usize;
+    let destination = ScaleSide {
+        format: ffmpeg_next::format::Pixel::NV12,
+        size,
+        matrix: colors.matrix,
+        full_range: colors.full_range,
+        chroma: Some(LEFT),
+    };
+    let mut scaler = Scaler::new(source, destination)?;
     let mut luma = vec![0u8; size.0 as usize * size.1 as usize];
-    let mut chroma = vec![0u8; 2 * chroma_width * chroma_height];
-    let flags = SwsFlags::SWS_BICUBIC as i64
-        | SwsFlags::SWS_FULL_CHR_H_INT as i64
-        | SwsFlags::SWS_FULL_CHR_H_INP as i64
-        | SwsFlags::SWS_ACCURATE_RND as i64;
-    let source_format: AVPixelFormat = frame.format().into();
-    let mut integers: Vec<(&CStr, i64)> = vec![
-        (c"srcw", i64::from(source_width)),
-        (c"srch", i64::from(source_height)),
-        (c"src_format", source_format as i64),
-        (c"dstw", i64::from(width)),
-        (c"dsth", i64::from(height)),
-        (c"dst_format", AVPixelFormat::AV_PIX_FMT_NV12 as i64),
-        (c"sws_flags", flags),
-        (c"src_range", i64::from(colors.source_full_range)),
-        (c"dst_range", i64::from(colors.full_range)),
-        // Left-sited 4:2:0: on the even columns, between two rows.
-        (c"dst_h_chr_pos", 0),
-        (c"dst_v_chr_pos", 128),
-    ];
-    if let Some((across, down)) = colors.source_chroma {
-        integers.push((c"src_h_chr_pos", i64::from(across)));
-        integers.push((c"src_v_chr_pos", i64::from(down)));
-    }
-    // SAFETY: the context is allocated here, checked, and freed by `Context` on every path.
-    // Options are set by name before sws_init_context, as the legacy sequence requires. The
-    // source pointers and strides are the frame's own planes, alive for the borrow and as
-    // tall as `source_height`; the destination planes are the vectors above, sized for
-    // NV12 at `size` with the strides passed.
-    unsafe {
-        let context = Context(sws_alloc_context());
-        if context.0.is_null() {
-            return Err(failed(-12));
-        }
-        let object = context.0.cast::<c_void>();
-        for (name, value) in integers {
-            let result = av_opt_set_int(object, name.as_ptr(), value, 0);
-            if result < 0 {
-                return Err(failed(result));
-            }
-        }
-        for (name, value) in [(c"param0", 0.0), (c"param1", 0.5)] {
-            let result = av_opt_set_double(object, name.as_ptr(), value, 0);
-            if result < 0 {
-                return Err(failed(result));
-            }
-        }
-        let result = sws_init_context(context.0, std::ptr::null_mut(), std::ptr::null_mut());
-        if result < 0 {
-            return Err(failed(result));
-        }
-        let result = sws_setColorspaceDetails(
-            context.0,
-            sws_getCoefficients(colors.source_matrix),
-            i32::from(colors.source_full_range),
-            sws_getCoefficients(colors.matrix),
-            i32::from(colors.full_range),
-            0,
-            1 << 16,
-            1 << 16,
-        );
-        if result < 0 {
-            return Err(failed(result));
-        }
-        let raw = &*frame.as_ptr();
-        let source: [*const u8; 4] = raw.data[..4]
-            .iter()
-            .map(|plane| plane.cast_const())
-            .collect::<Vec<_>>()
-            .try_into()
-            .unwrap_or([std::ptr::null(); 4]);
-        let source_strides: [i32; 4] = raw.linesize[..4].try_into().unwrap_or([0; 4]);
-        let destination = [
-            luma.as_mut_ptr(),
-            chroma.as_mut_ptr(),
-            std::ptr::null_mut(),
-            std::ptr::null_mut(),
-        ];
-        let destination_strides = [width, side(2 * chroma_width as u32)?, 0, 0];
-        let rows = sws_scale(
-            context.0,
-            source.as_ptr(),
-            source_strides.as_ptr(),
-            0,
-            source_height,
-            destination.as_ptr(),
-            destination_strides.as_ptr(),
-        );
-        if rows < 0 {
-            return Err(failed(rows));
-        }
-    }
+    let mut chroma = vec![0u8; 2 * size.0.div_ceil(2) as usize * size.1.div_ceil(2) as usize];
+    scaler.frame_to_planes(frame, &mut [&mut luma, &mut chroma])?;
     Ok((luma, chroma))
+}
+
+/// Left-sited 4:2:0 chroma, as video and the compositor have it: on the even columns, between
+/// two rows, in 256ths of a luma pixel.
+pub(crate) const LEFT: (i32, i32) = (0, 128);
+
+/// Planar 16-bit YUV 4:4:4 in the machine's own byte order, so its samples are plain `u16`s.
+#[cfg(target_endian = "little")]
+pub(crate) const YUV444P16: ffmpeg_next::format::Pixel = ffmpeg_next::format::Pixel::YUV444P16LE;
+#[cfg(target_endian = "big")]
+pub(crate) const YUV444P16: ffmpeg_next::format::Pixel = ffmpeg_next::format::Pixel::YUV444P16BE;
+
+/// Bits a sample of `format`, from its first component; 8 when FFmpeg does not know it.
+pub(crate) fn depth(format: ffmpeg_next::format::Pixel) -> u8 {
+    // SAFETY: av_pix_fmt_desc_get returns a static descriptor, or null for an unknown format.
+    unsafe {
+        ffmpeg_next::ffi::av_pix_fmt_desc_get(format.into())
+            .as_ref()
+            .and_then(|desc| u8::try_from(desc.comp[0].depth).ok())
+            .filter(|depth| *depth > 0)
+            .unwrap_or(8)
+    }
+}
+
+/// The bytes of `samples`, for swscale to write 16-bit samples into.
+pub(crate) fn samples_as_bytes(samples: &mut [u16]) -> &mut [u8] {
+    let length = std::mem::size_of_val(samples);
+    // SAFETY: the same memory, borrowed mutably for as long: every byte pattern is a valid
+    // u8 and a valid u16, and u8 needs no alignment.
+    unsafe { std::slice::from_raw_parts_mut(samples.as_mut_ptr().cast::<u8>(), length) }
+}
+
+/// One side of a swscale conversion: a pixel format at a size, and how its colors are coded.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ScaleSide {
+    pub format: ffmpeg_next::format::Pixel,
+    pub size: (u32, u32),
+    /// The YUV matrix, an `SWS_CS_` value; ignored for RGB.
+    pub matrix: i32,
+    /// Full range rather than video range; RGB is full range whatever this says.
+    pub full_range: bool,
+    /// Where subsampled chroma sits, in 256ths of a luma pixel: (across, down). `None` for
+    /// formats without subsampled chroma.
+    pub chroma: Option<(i32, i32)>,
+}
+
+/// A swscale context set up once and used for frame after frame. It is set up the legacy way,
+/// the only one where every override takes effect in FFmpeg 8.1 (docs/ARCHITECTURE.md,
+/// "FFmpeg (Windows)"): Catmull-Rom (bicubic with B = 0 and C = 0.5), whose support widens
+/// with the downscale, full chroma interpolation on both sides, and the matrices, ranges and
+/// chroma sitings of its two sides.
+pub(crate) struct Scaler {
+    context: *mut ffmpeg_next::ffi::SwsContext,
+    source: ScaleSide,
+    destination: ScaleSide,
+}
+
+// SAFETY: a swscale context holds no state tied to the thread that made it; the scaler uses it
+// only through `&mut self`, so one thread at a time, and it is not `Sync`.
+unsafe impl Send for Scaler {}
+
+impl Drop for Scaler {
+    fn drop(&mut self) {
+        // SAFETY: the context was allocated by sws_alloc_context and is freed once, here.
+        unsafe { ffmpeg_next::ffi::sws_freeContext(self.context) };
+    }
+}
+
+impl Scaler {
+    /// A scaler from `source` to `destination`.
+    pub(crate) fn new(
+        source: ScaleSide,
+        destination: ScaleSide,
+    ) -> Result<Scaler, ffmpeg_next::Error> {
+        use ffmpeg_next::ffi::{
+            AVPixelFormat, SwsFlags, av_opt_set_double, av_opt_set_int, sws_alloc_context,
+            sws_getCoefficients, sws_init_context, sws_setColorspaceDetails,
+        };
+        use std::ffi::{CStr, c_void};
+
+        let failed = |code: i32| ffmpeg_next::Error::from(code);
+        let side = |value: u32| i32::try_from(value).map_err(|_| failed(-22));
+        let (width, height) = (side(destination.size.0)?, side(destination.size.1)?);
+        let (source_width, source_height) = (side(source.size.0)?, side(source.size.1)?);
+        if width == 0 || height == 0 || source_width == 0 || source_height == 0 {
+            return Err(failed(-22));
+        }
+        let flags = SwsFlags::SWS_BICUBIC as i64
+            | SwsFlags::SWS_FULL_CHR_H_INT as i64
+            | SwsFlags::SWS_FULL_CHR_H_INP as i64
+            | SwsFlags::SWS_ACCURATE_RND as i64;
+        let source_format: AVPixelFormat = source.format.into();
+        let destination_format: AVPixelFormat = destination.format.into();
+        let mut integers: Vec<(&CStr, i64)> = vec![
+            (c"srcw", i64::from(source_width)),
+            (c"srch", i64::from(source_height)),
+            (c"src_format", source_format as i64),
+            (c"dstw", i64::from(width)),
+            (c"dsth", i64::from(height)),
+            (c"dst_format", destination_format as i64),
+            (c"sws_flags", flags),
+            (c"src_range", i64::from(source.full_range)),
+            (c"dst_range", i64::from(destination.full_range)),
+        ];
+        if let Some((across, down)) = source.chroma {
+            integers.push((c"src_h_chr_pos", i64::from(across)));
+            integers.push((c"src_v_chr_pos", i64::from(down)));
+        }
+        if let Some((across, down)) = destination.chroma {
+            integers.push((c"dst_h_chr_pos", i64::from(across)));
+            integers.push((c"dst_v_chr_pos", i64::from(down)));
+        }
+        // SAFETY: the context is allocated here, checked, and owned by the scaler built right
+        // after, whose drop frees it on every later return. Options are set by name before
+        // sws_init_context, as the legacy sequence requires.
+        unsafe {
+            let context = sws_alloc_context();
+            if context.is_null() {
+                return Err(failed(-12));
+            }
+            let scaler = Scaler {
+                context,
+                source,
+                destination,
+            };
+            let object = context.cast::<c_void>();
+            for (name, value) in integers {
+                let result = av_opt_set_int(object, name.as_ptr(), value, 0);
+                if result < 0 {
+                    return Err(failed(result));
+                }
+            }
+            for (name, value) in [(c"param0", 0.0), (c"param1", 0.5)] {
+                let result = av_opt_set_double(object, name.as_ptr(), value, 0);
+                if result < 0 {
+                    return Err(failed(result));
+                }
+            }
+            let result = sws_init_context(context, std::ptr::null_mut(), std::ptr::null_mut());
+            if result < 0 {
+                return Err(failed(result));
+            }
+            let result = sws_setColorspaceDetails(
+                context,
+                sws_getCoefficients(source.matrix),
+                i32::from(source.full_range),
+                sws_getCoefficients(destination.matrix),
+                i32::from(destination.full_range),
+                0,
+                1 << 16,
+                1 << 16,
+            );
+            if result < 0 {
+                return Err(failed(result));
+            }
+            Ok(scaler)
+        }
+    }
+
+    /// What it scales from.
+    pub(crate) fn source(&self) -> ScaleSide {
+        self.source
+    }
+
+    /// What it scales to.
+    pub(crate) fn destination(&self) -> ScaleSide {
+        self.destination
+    }
+
+    /// Scales `frame`, which has the source's format and size, into `planes`: the
+    /// destination format's planes in FFmpeg's order, rows packed.
+    pub(crate) fn frame_to_planes(
+        &mut self,
+        frame: &ffmpeg_next::frame::Video,
+        planes: &mut [&mut [u8]],
+    ) -> Result<(), ffmpeg_next::Error> {
+        if (frame.format(), (frame.width(), frame.height()))
+            != (self.source.format, self.source.size)
+        {
+            return Err(ffmpeg_next::Error::from(-22));
+        }
+        let (strides, sizes) = packed_planes(self.destination.format, self.destination.size)?;
+        let mut destination = [std::ptr::null_mut::<u8>(); 4];
+        for (index, size) in sizes.iter().enumerate().filter(|(_, size)| **size > 0) {
+            let plane = planes
+                .get_mut(index)
+                .filter(|plane| plane.len() >= *size)
+                .ok_or(ffmpeg_next::Error::from(-22))?;
+            destination[index] = plane.as_mut_ptr();
+        }
+        // SAFETY: the frame is the source's format and size, so its planes, alive for the
+        // borrow, hold the rows sws_scale reads; each destination plane was checked to hold
+        // the packed rows of its plane at the strides given.
+        unsafe {
+            let raw = &*frame.as_ptr();
+            let source: [*const u8; 4] = std::array::from_fn(|plane| raw.data[plane].cast_const());
+            let source_strides: [i32; 4] = std::array::from_fn(|plane| raw.linesize[plane]);
+            self.run(source, source_strides, destination, strides)
+        }
+    }
+
+    /// Scales `planes`, the source format's planes in FFmpeg's order with their rows packed,
+    /// into `frame`, which has the destination's format and size.
+    pub(crate) fn planes_to_frame(
+        &mut self,
+        planes: &[&[u8]],
+        frame: &mut ffmpeg_next::frame::Video,
+    ) -> Result<(), ffmpeg_next::Error> {
+        if (frame.format(), (frame.width(), frame.height()))
+            != (self.destination.format, self.destination.size)
+        {
+            return Err(ffmpeg_next::Error::from(-22));
+        }
+        let (strides, sizes) = packed_planes(self.source.format, self.source.size)?;
+        let mut source = [std::ptr::null::<u8>(); 4];
+        for (index, size) in sizes.iter().enumerate().filter(|(_, size)| **size > 0) {
+            let plane = planes
+                .get(index)
+                .filter(|plane| plane.len() >= *size)
+                .ok_or(ffmpeg_next::Error::from(-22))?;
+            source[index] = plane.as_ptr();
+        }
+        // SAFETY: each source plane was checked to hold the packed rows of its plane at the
+        // strides given; the frame is the destination's format and size, so its planes, alive
+        // for the borrow, take the rows sws_scale writes.
+        unsafe {
+            let raw = &mut *frame.as_mut_ptr();
+            let destination: [*mut u8; 4] = std::array::from_fn(|plane| raw.data[plane]);
+            let destination_strides: [i32; 4] = std::array::from_fn(|plane| raw.linesize[plane]);
+            self.run(source, strides, destination, destination_strides)
+        }
+    }
+
+    /// # Safety
+    /// The source planes hold the source's rows at `source_strides`, and the destination
+    /// planes room for the destination's rows at `destination_strides`.
+    unsafe fn run(
+        &mut self,
+        source: [*const u8; 4],
+        source_strides: [i32; 4],
+        destination: [*mut u8; 4],
+        destination_strides: [i32; 4],
+    ) -> Result<(), ffmpeg_next::Error> {
+        let height =
+            i32::try_from(self.source.size.1).map_err(|_| ffmpeg_next::Error::from(-22))?;
+        // SAFETY: the context is valid while the scaler lives; the planes are the caller's
+        // promise.
+        let rows = unsafe {
+            ffmpeg_next::ffi::sws_scale(
+                self.context,
+                source.as_ptr(),
+                source_strides.as_ptr(),
+                0,
+                height,
+                destination.as_ptr(),
+                destination_strides.as_ptr(),
+            )
+        };
+        if rows < 0 {
+            return Err(ffmpeg_next::Error::from(rows));
+        }
+        Ok(())
+    }
+}
+
+/// The strides and byte sizes of a `format` picture of `size` with its rows packed, plane by
+/// plane in FFmpeg's order; 0 for planes the format does not have.
+fn packed_planes(
+    format: ffmpeg_next::format::Pixel,
+    size: (u32, u32),
+) -> Result<([i32; 4], [usize; 4]), ffmpeg_next::Error> {
+    let invalid = || ffmpeg_next::Error::from(-22);
+    let width = i32::try_from(size.0).map_err(|_| invalid())?;
+    let height = i32::try_from(size.1).map_err(|_| invalid())?;
+    let mut strides = [0i32; 4];
+    let mut sizes = [0usize; 4];
+    // SAFETY: both functions write four entries into the arrays they are given and read
+    // nothing else.
+    unsafe {
+        let result =
+            ffmpeg_next::ffi::av_image_fill_linesizes(strides.as_mut_ptr(), format.into(), width);
+        if result < 0 {
+            return Err(ffmpeg_next::Error::from(result));
+        }
+        let wide: [isize; 4] = strides.map(|stride| stride as isize);
+        let result = ffmpeg_next::ffi::av_image_fill_plane_sizes(
+            sizes.as_mut_ptr(),
+            format.into(),
+            height,
+            wide.as_ptr(),
+        );
+        if result < 0 {
+            return Err(ffmpeg_next::Error::from(result));
+        }
+    }
+    Ok((strides, sizes))
 }
 
 /// A D3D11VA hardware device. The decoder that uses it holds its own reference, so this one

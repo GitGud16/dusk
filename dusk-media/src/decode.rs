@@ -5,11 +5,12 @@
 use std::path::{Path, PathBuf};
 
 use dusk_core::color::{Primaries, Transfer, source_peak};
-use dusk_core::{ColorMatrix, ColorRange, MediaTime, Picture, PictureLayout};
+use dusk_core::{ColorMatrix, ColorRange, MediaTime, Picture, PictureLayout, YuvPicture};
 use ffmpeg_next as ffmpeg;
 use ffmpeg_next::format::Pixel;
 use ffmpeg_next::frame;
 
+use crate::ffi::{ScaleSide, Scaler};
 use crate::input::open_input;
 use crate::{MediaError, ffi};
 
@@ -54,6 +55,16 @@ pub struct DecodedFrame {
     pub picture: Picture,
 }
 
+/// A decoded frame normalized for dusq's CPU path: when it starts in the source, and its
+/// picture as 16-bit YUV 4:4:4.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NormalizedFrame {
+    /// The frame's timestamp, from the start of the file.
+    pub time: MediaTime,
+    /// The picture, resampled out of the decoder.
+    pub picture: YuvPicture,
+}
+
 /// Decodes the first video stream of a file, frame by frame or at any time.
 pub struct VideoDecoder {
     path: PathBuf,
@@ -72,6 +83,9 @@ pub struct VideoDecoder {
     /// The decoder has given out every frame.
     ended: bool,
     hardware: bool,
+    /// What normalizes frames, kept from one frame to the next; boxed, since most decoders
+    /// never normalize and the engine moves decoders around.
+    scaler: Option<Box<Scaler>>,
 }
 
 /// Jumping further ahead than this, in microseconds, seeks instead of decoding every frame
@@ -82,6 +96,20 @@ impl VideoDecoder {
     /// Opens the first video stream of the local file at `path`. Cover art does not count as
     /// video.
     pub fn open(path: &Path, acceleration: Acceleration) -> Result<VideoDecoder, MediaError> {
+        VideoDecoder::open_as(path, acceleration, None)
+    }
+
+    /// Opens the first video stream of `path` to decode in software on `threads` threads,
+    /// as dusq does, whose thread rules differ from the app's (docs/REQUIREMENTS.md, "dusq").
+    pub fn open_with_threads(path: &Path, threads: usize) -> Result<VideoDecoder, MediaError> {
+        VideoDecoder::open_as(path, Acceleration::Software, Some(threads.max(1)))
+    }
+
+    fn open_as(
+        path: &Path,
+        acceleration: Acceleration,
+        threads: Option<usize>,
+    ) -> Result<VideoDecoder, MediaError> {
         let input = open_input(path)?;
         let open_error = |source| MediaError::Open {
             path: path.to_path_buf(),
@@ -102,11 +130,11 @@ impl VideoDecoder {
         let parameters = stream.parameters();
         let decoder = match acceleration {
             // A hardware decoder that fails to open falls back to software for this file.
-            Acceleration::Hardware => open_decoder(&parameters, time_base, true)
-                .or_else(|_| open_decoder(&parameters, time_base, false))
+            Acceleration::Hardware => open_decoder(&parameters, time_base, true, threads)
+                .or_else(|_| open_decoder(&parameters, time_base, false, threads))
                 .map_err(open_error)?,
             Acceleration::Software => {
-                open_decoder(&parameters, time_base, false).map_err(open_error)?
+                open_decoder(&parameters, time_base, false, threads).map_err(open_error)?
             }
         };
         let start = ffi::start_time(&input);
@@ -122,6 +150,7 @@ impl VideoDecoder {
             drained: false,
             ended: false,
             hardware: false,
+            scaler: None,
         })
     }
 
@@ -188,6 +217,109 @@ impl VideoDecoder {
         }
         self.shown = next;
         self.copy_shown()
+    }
+
+    /// The frame after the one last returned, as [`next_frame`](Self::next_frame) gives it,
+    /// normalized at once for dusq's CPU path (docs/ARCHITECTURE.md, "Compress tool paths"):
+    /// swscale resamples each plane to 16-bit YUV 4:4:4 of `size` with Catmull-Rom, reading
+    /// the frame's chroma siting from its tags, and keeps its matrix and range, which the
+    /// picture carries with its other tags (the defaults when untagged). The decoder's frame
+    /// is let go before this returns.
+    pub fn next_normalized(
+        &mut self,
+        size: (u32, u32),
+    ) -> Result<Option<NormalizedFrame>, MediaError> {
+        let next = match self.ahead.take() {
+            Some(frame) => Some(frame),
+            None if self.ended => None,
+            None => self.decode_next()?,
+        };
+        self.shown = None;
+        let Some((time, frame)) = next else {
+            return Ok(None);
+        };
+        let picture = self.normalize(&frame, size)?;
+        Ok(Some(NormalizedFrame { time, picture }))
+    }
+
+    /// `frame` as 16-bit YUV 4:4:4 of `size`, through the scaler kept for frames like it.
+    fn normalize(
+        &mut self,
+        frame: &frame::Video,
+        size: (u32, u32),
+    ) -> Result<YuvPicture, MediaError> {
+        let hardware = frame.format() == Pixel::D3D11;
+        let system;
+        let source = if hardware {
+            system = ffi::transfer_to_system(frame)
+                .map_err(|source| decode_error(&self.path, source))?;
+            &system
+        } else {
+            frame
+        };
+        self.hardware = hardware;
+        // The color tags come from the decoded frame; a transferred copy does not carry them.
+        let format = source.format();
+        let side = scale_side(frame, format, (source.width(), source.height()));
+        let rgb = ffi::is_rgb(format);
+        // swscale only resamples and shifts YUV up; RGB, which it turns into YUV inside
+        // anyway, comes out as full-range BT.709 YUV.
+        let (matrix, range) = if rgb {
+            (ColorMatrix::Bt709, ColorRange::Full)
+        } else {
+            (
+                matrix_of(frame, source.width(), source.height()),
+                range_of(frame),
+            )
+        };
+        let destination = ScaleSide {
+            format: ffi::YUV444P16,
+            size,
+            matrix: if rgb {
+                ffmpeg::ffi::SWS_CS_ITU709
+            } else {
+                side.matrix
+            },
+            full_range: range == ColorRange::Full,
+            chroma: None,
+        };
+        let scaler = match self.scaler.take() {
+            Some(scaler) if scaler.source() == side && scaler.destination() == destination => {
+                scaler
+            }
+            _ => Box::new(
+                Scaler::new(side, destination)
+                    .map_err(|source| decode_error(&self.path, source))?,
+            ),
+        };
+        let scaler = self.scaler.insert(scaler);
+        let count = size.0 as usize * size.1 as usize;
+        let mut planes = [0; 3].map(|_| vec![0u16; count]);
+        {
+            let [y, u, v] = &mut planes;
+            scaler
+                .frame_to_planes(
+                    source,
+                    &mut [
+                        ffi::samples_as_bytes(y),
+                        ffi::samples_as_bytes(u),
+                        ffi::samples_as_bytes(v),
+                    ],
+                )
+                .map_err(|source| decode_error(&self.path, source))?;
+        }
+        let transfer = transfer_of(frame, false);
+        Ok(YuvPicture {
+            width: size.0,
+            height: size.1,
+            planes,
+            matrix,
+            range,
+            bits: u32::from(ffi::depth(format)),
+            primaries: primaries_of(frame),
+            transfer,
+            peak_nits: peak_of(frame, transfer),
+        })
     }
 
     /// The current frame, copied out of the decoder.
@@ -287,20 +419,23 @@ fn software_threads(width: i32, height: i32) -> usize {
 }
 
 /// Opens a decoder for `parameters`, whose packets come in `time_base`, on the GPU when
-/// `hardware` is set and possible.
+/// `hardware` is set and possible, and in software on `threads` threads when they are given.
 fn open_decoder(
     parameters: &ffmpeg::codec::Parameters,
     time_base: ffmpeg::Rational,
     hardware: bool,
+    threads: Option<usize>,
 ) -> Result<ffmpeg::decoder::Video, ffmpeg::Error> {
     let mut context = ffmpeg::codec::Context::from_parameters(parameters.clone())?;
     let on_gpu = hardware && attach_hardware(&mut context);
     // Thread counts are set explicitly (docs/ARCHITECTURE.md, "Decoder pool").
-    let count = if on_gpu {
-        1
-    } else {
-        let fields = ffi::codec_fields(parameters);
-        software_threads(fields.width, fields.height)
+    let count = match (on_gpu, threads) {
+        (true, _) => 1,
+        (false, Some(threads)) => threads,
+        (false, None) => {
+            let fields = ffi::codec_fields(parameters);
+            software_threads(fields.width, fields.height)
+        }
     };
     context.set_threading(ffmpeg::codec::threading::Config {
         kind: ffmpeg::codec::threading::Type::Frame,
@@ -428,6 +563,40 @@ fn to_top_bits(samples: &mut [u8]) {
     let (samples, _) = samples.as_chunks_mut::<2>();
     for sample in samples {
         *sample = (u16::from_le_bytes(*sample) << 6).to_le_bytes();
+    }
+}
+
+/// How swscale reads a decoded video frame of `format` and `size` (the frame itself, or its
+/// copy out of the GPU) whose tags `frame` carries.
+fn scale_side(frame: &frame::Video, format: Pixel, size: (u32, u32)) -> ScaleSide {
+    use ffmpeg::ffi::{SWS_CS_BT2020, SWS_CS_ITU601, SWS_CS_ITU709};
+    let matrix = match matrix_of(frame, size.0, size.1) {
+        ColorMatrix::Bt601 => SWS_CS_ITU601,
+        ColorMatrix::Bt709 => SWS_CS_ITU709,
+        ColorMatrix::Bt2020 => SWS_CS_BT2020,
+    };
+    ScaleSide {
+        format,
+        size,
+        matrix,
+        full_range: ffi::is_rgb(format) || range_of(frame) == ColorRange::Full,
+        // Untagged video sites its chroma left, as MPEG-2 and H.264 do by default.
+        chroma: ffi::is_subsampled(format).then(|| chroma_siting(frame, ffi::LEFT)),
+    }
+}
+
+/// Where `frame`'s subsampled chroma sits, in 256ths of a luma pixel: (across, down);
+/// `unspecified` when the frame does not say.
+pub(crate) fn chroma_siting(frame: &frame::Video, unspecified: (i32, i32)) -> (i32, i32) {
+    use ffmpeg::chroma::Location;
+    match frame.chroma_location() {
+        Location::Left => (0, 128),
+        Location::Center => (128, 128),
+        Location::TopLeft => (0, 0),
+        Location::Top => (128, 0),
+        Location::BottomLeft => (0, 256),
+        Location::Bottom => (128, 256),
+        Location::Unspecified => unspecified,
     }
 }
 

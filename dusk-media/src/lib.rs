@@ -17,8 +17,10 @@ mod probe;
 mod still;
 
 pub use audio::AudioDecoder;
-pub use decode::{Acceleration, DecodedFrame, Following, HUGE_FRAME, Step, VideoDecoder};
-pub use encode::{AudioSettings, VideoSettings, Writer, available_encoders};
+pub use decode::{
+    Acceleration, DecodedFrame, Following, HUGE_FRAME, NormalizedFrame, Step, VideoDecoder,
+};
+pub use encode::{AudioSettings, Timing, VideoSettings, Writer, available_encoders};
 pub use error::MediaError;
 pub use formats::{
     AudioCodec, AudioFormat, Container, ENCODERS, Encoder, Quality, VideoCodec, encoder_named,

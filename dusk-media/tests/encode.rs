@@ -4,10 +4,10 @@
 
 use std::path::{Path, PathBuf};
 
-use dusk_core::{ColorMatrix, ColorRange, MediaTime, Picture, PictureLayout};
+use dusk_core::{ColorMatrix, ColorRange, MediaTime, Picture, PictureLayout, SdrPicture};
 use dusk_media::{
     Acceleration, AudioCodec, AudioDecoder, AudioFormat, AudioSettings, Container, MediaError,
-    Quality, StreamDetail, StreamKind, VideoCodec, VideoDecoder, VideoSettings, Writer,
+    Quality, StreamDetail, StreamKind, Timing, VideoCodec, VideoDecoder, VideoSettings, Writer,
     encoders_of, probe,
 };
 
@@ -384,4 +384,146 @@ fn every_software_encoder_is_available_and_the_list_keeps_the_order() {
     let again = std::time::Instant::now();
     assert_eq!(dusk_media::available_encoders().len(), available.len());
     assert!(again.elapsed() < std::time::Duration::from_millis(5));
+}
+
+/// A `width` by `height` upright SDR picture of one color.
+fn solid(width: u32, height: u32, rgb: [u8; 3]) -> SdrPicture {
+    let count = (width * height) as usize;
+    SdrPicture {
+        width,
+        height,
+        planes: rgb.map(|value| vec![value; count]),
+    }
+}
+
+/// Writes `times` as frames of `rgb` from `encoder` into a `container` file with `timing`.
+fn write_sdr(
+    path: &Path,
+    container: Container,
+    encoder: &'static str,
+    timing: Timing,
+    times: &[i64],
+    rgb: [u8; 3],
+) {
+    let video = VideoSettings {
+        encoder: Some(encoder),
+        timing,
+        ..settings(64, 48)
+    };
+    let mut writer = Writer::create(path, container, video, None).unwrap();
+    for time in times {
+        writer
+            .write_sdr(&solid(64, 48, rgb), MediaTime(*time))
+            .unwrap();
+    }
+    writer.finish().unwrap();
+}
+
+/// When each frame of `path` starts.
+fn frame_times(path: &Path) -> Vec<i64> {
+    let mut decoder = VideoDecoder::open(path, Acceleration::Software).unwrap();
+    std::iter::from_fn(|| decoder.next_frame().unwrap())
+        .map(|frame| frame.time.0)
+        .collect()
+}
+
+#[test]
+fn an_sdr_picture_is_written_in_the_encoders_own_yuv() {
+    let path = output("sdr.mp4");
+    let rgb = [200, 40, 90];
+    write_sdr(
+        &path,
+        Container::Mp4,
+        "libopenh264",
+        Timing::Constant,
+        &[0, 1, 2],
+        rgb,
+    );
+    let mut decoder = VideoDecoder::open(&path, Acceleration::Software).unwrap();
+    let picture = decoder.frame_at(MediaTime(0)).unwrap().unwrap().picture;
+    assert_eq!(
+        (picture.matrix, picture.range),
+        (ColorMatrix::Bt709, ColorRange::Limited)
+    );
+    // The color in limited-range BT.709 YUV, as the encoder should have been given it.
+    let [red, green, blue] = rgb.map(|value| f64::from(value) / 255.0);
+    let luma = 0.2126 * red + 0.7152 * green + 0.0722 * blue;
+    let expected = [
+        16.0 + 219.0 * luma,
+        128.0 + 224.0 * (blue - luma) / 1.8556,
+        128.0 + 224.0 * (red - luma) / 1.5748,
+    ];
+    let center = 24 * 64 + 32;
+    let pair = 12 * 64 + 32;
+    let written = [
+        picture.luma[center],
+        picture.chroma[pair],
+        picture.chroma[pair + 1],
+    ];
+    // Within what encoding a flat picture costs; another matrix or range is 5 to 13 off.
+    for (written, expected) in written.iter().zip(expected) {
+        assert!(
+            (f64::from(*written) - expected).abs() <= 2.0,
+            "{written} for {expected:.1}"
+        );
+    }
+}
+
+#[test]
+fn source_timing_keeps_each_frames_time() {
+    // A phone's variable frame rate: gaps of 40, 30, 70 and 10 ms.
+    let times = [0, 40_000, 70_000, 140_000, 150_000];
+    for container in [Container::Mp4, Container::Mkv] {
+        let path = output(&format!("source-timing.{}", container.extension()));
+        write_sdr(
+            &path,
+            container,
+            "libopenh264",
+            Timing::Source,
+            &times,
+            [90; 3],
+        );
+        let written = frame_times(&path);
+        assert_eq!(written.len(), times.len(), "{container:?}");
+        for (written, time) in written.iter().zip(times) {
+            // MKV counts milliseconds.
+            assert!(
+                (written - time).abs() <= 1_000,
+                "{container:?}: {written} for {time}"
+            );
+        }
+    }
+}
+
+#[test]
+fn constant_timing_spaces_the_frames_evenly() {
+    let path = output("constant-timing.mp4");
+    write_sdr(
+        &path,
+        Container::Mp4,
+        "libopenh264",
+        Timing::Constant,
+        &[0, 40_000, 70_000],
+        [90; 3],
+    );
+    let written = frame_times(&path);
+    assert_eq!(written.len(), 3);
+    for (written, time) in written.iter().zip([0, 33_333, 66_667]) {
+        assert!((written - time).abs() <= 1, "{written} for {time}");
+    }
+}
+
+#[test]
+fn a_picture_of_another_size_is_refused() {
+    let path = output("wrong-size.mp4");
+    let video = VideoSettings {
+        encoder: Some("libopenh264"),
+        ..settings(64, 48)
+    };
+    let mut writer = Writer::create(&path, Container::Mp4, video, None).unwrap();
+    assert!(
+        writer
+            .write_sdr(&solid(32, 48, [0; 3]), MediaTime(0))
+            .is_err()
+    );
 }

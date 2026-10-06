@@ -7,13 +7,14 @@
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
-use dusk_core::{Picture, PictureLayout};
+use dusk_core::{MediaTime, Picture, PictureLayout, SdrPicture};
 use ffmpeg_next as ffmpeg;
 use ffmpeg_next::codec::capabilities::Capabilities;
 use ffmpeg_next::format::sample::Type as SampleType;
 use ffmpeg_next::format::{Pixel, Sample};
 use ffmpeg_next::{ChannelLayout, Dictionary, Rational, codec, color, encoder, frame};
 
+use crate::ffi::{ScaleSide, Scaler};
 use crate::formats::{
     AudioCodec, AudioFormat, Container, ENCODERS, Encoder, Quality, VideoCodec, encoder_named,
     encoders_of,
@@ -34,7 +35,23 @@ pub struct VideoSettings {
     pub quality: Quality,
     /// Only this encoder, instead of the codec's encoders in order.
     pub encoder: Option<&'static str>,
+    /// How the frames are timed.
+    pub timing: Timing,
 }
+
+/// How a video's frames are timed.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Timing {
+    /// One after another at the frame rate, as exports render them.
+    #[default]
+    Constant,
+    /// At the times they are written with, as dusq passes a variable frame rate through; the
+    /// frame rate is their average, which the encoder's rate control goes by.
+    Source,
+}
+
+/// The time base of [`Timing::Source`]: MPEG's 90 kHz clock, which every container takes.
+const SOURCE_CLOCK: i32 = 90_000;
 
 impl VideoSettings {
     /// H.264 at the High preset from the first encoder that opens, as M1 exported.
@@ -46,6 +63,7 @@ impl VideoSettings {
             codec: VideoCodec::H264,
             quality: Quality::HIGH,
             encoder: None,
+            timing: Timing::Constant,
         }
     }
 }
@@ -93,6 +111,31 @@ struct Pictures {
     size: (u32, u32),
     name: &'static str,
     frames: i64,
+    timing: Timing,
+    /// The last frame's timestamp, which the next must pass.
+    last: Option<i64>,
+    /// What turns upright SDR pictures into the encoder's YUV, once one is written.
+    scaler: Option<Scaler>,
+}
+
+impl Pictures {
+    /// The timestamp of the next frame, which starts at `time` in the source.
+    fn next_pts(&mut self, time: MediaTime) -> i64 {
+        let pts = match self.timing {
+            Timing::Constant => self.frames,
+            Timing::Source => {
+                let ticks = i128::from(time.0) * i128::from(SOURCE_CLOCK);
+                // To the nearest tick, halves away from zero.
+                let rounded = (2 * ticks + ticks.signum() * 1_000_000) / 2_000_000;
+                i64::try_from(rounded).unwrap_or(i64::MAX)
+            }
+        };
+        // Encoders refuse a timestamp that does not move forward.
+        let pts = self.last.map_or(pts, |last| pts.max(last + 1));
+        self.last = Some(pts);
+        self.frames += 1;
+        pts
+    }
 }
 
 /// The stream an encoder writes to.
@@ -101,6 +144,10 @@ struct Track {
     /// The encoder's time base and the stream's, which the muxer may have changed.
     encoder_base: Rational,
     stream_base: Rational,
+    /// For video, how long a frame lasts at the average rate, in the encoder's time base:
+    /// what a packet that comes without a duration is given, so the last frame of a file
+    /// with source timing still counts.
+    frame_duration: i64,
 }
 
 /// The sound track: samples wait until there is a whole encoder frame of them.
@@ -188,17 +235,31 @@ impl Writer {
             matches!(container, Container::Mp4 | Container::Mov),
         )
         .map_err(create_error)?;
+        let frame_duration = match video.timing {
+            Timing::Constant => 1,
+            Timing::Source => {
+                let (num, den) = (
+                    u64::from(video.frame_rate.0.max(1)),
+                    u64::from(video.frame_rate.1),
+                );
+                ((SOURCE_CLOCK as u64 * den + num / 2) / num) as i64
+            }
+        };
         let pictures = Pictures {
             track: Track {
                 encoder_base: video_encoder.time_base(),
                 stream_base: stream_base(&output, video_stream),
                 stream: video_stream,
+                frame_duration,
             },
             encoder: video_encoder,
             pixel: chosen.pixel,
             size,
             name: chosen.name,
             frames: 0,
+            timing: video.timing,
+            last: None,
+            scaler: None,
         };
         let audio = sound.map(|pending| pending.into_sound(&output));
         Ok(Writer {
@@ -267,8 +328,54 @@ impl Writer {
         // A new frame each time: the encoder may still hold the previous one.
         let mut frame = frame::Video::new(video.pixel, video.size.0, video.size.1);
         fill(&mut frame, picture, video.pixel);
-        frame.set_pts(Some(video.frames));
-        video.frames += 1;
+        frame.set_pts(Some(video.next_pts(MediaTime(0))));
+        video
+            .encoder
+            .send_frame(&frame)
+            .map_err(|source| encode_error(&self.path, source))?;
+        self.drain_video()
+    }
+
+    /// Encodes the next frame from an upright SDR BT.709 picture of [`size`](Self::size),
+    /// as dusq's CPU path makes them: swscale turns it into the encoder's limited-range YUV
+    /// with Catmull-Rom, its chroma sited left. `time` is when the frame starts, which
+    /// [`Timing::Source`] keeps; constant timing puts it one frame after the last.
+    pub fn write_sdr(&mut self, picture: &SdrPicture, time: MediaTime) -> Result<(), MediaError> {
+        let Some(video) = self.video.as_mut() else {
+            return Err(encode_error(&self.path, ffmpeg::Error::InvalidData));
+        };
+        if (picture.width, picture.height) != video.size {
+            return Err(encode_error(&self.path, ffmpeg::Error::InvalidData));
+        }
+        let scaler = match video.scaler.take() {
+            Some(scaler) => scaler,
+            None => {
+                let source = ScaleSide {
+                    format: Pixel::GBRP,
+                    size: video.size,
+                    matrix: ffmpeg::ffi::SWS_CS_ITU709,
+                    full_range: true,
+                    chroma: None,
+                };
+                let destination = ScaleSide {
+                    format: video.pixel,
+                    size: video.size,
+                    matrix: ffmpeg::ffi::SWS_CS_ITU709,
+                    full_range: false,
+                    chroma: Some(ffi::LEFT),
+                };
+                Scaler::new(source, destination)
+                    .map_err(|source| encode_error(&self.path, source))?
+            }
+        };
+        let scaler = video.scaler.insert(scaler);
+        let mut frame = frame::Video::new(video.pixel, video.size.0, video.size.1);
+        // FFmpeg keeps planar RGB as green, blue, red.
+        let [red, green, blue] = &picture.planes;
+        scaler
+            .planes_to_frame(&[green, blue, red], &mut frame)
+            .map_err(|source| encode_error(&self.path, source))?;
+        frame.set_pts(Some(video.next_pts(time)));
         video
             .encoder
             .send_frame(&frame)
@@ -426,6 +533,7 @@ impl NewSound {
                 encoder_base: self.encoder.time_base(),
                 stream_base: stream_base(output, self.stream),
                 stream: self.stream,
+                frame_duration: 0,
             },
             encoder: self.encoder,
             rate: self.rate,
@@ -570,6 +678,9 @@ fn drain(
         match encoder.receive_packet(&mut packet) {
             Ok(()) => {
                 packet.set_stream(track.stream);
+                if packet.duration() <= 0 && track.frame_duration > 0 {
+                    packet.set_duration(track.frame_duration);
+                }
                 packet.rescale_ts(track.encoder_base, track.stream_base);
                 packet
                     .write_interleaved(output)
@@ -623,7 +734,10 @@ fn open_video(
         i32::try_from(num).unwrap_or(30),
         i32::try_from(den).unwrap_or(1),
     );
-    context.set_time_base(Rational::new(den, num));
+    context.set_time_base(match video.timing {
+        Timing::Constant => Rational::new(den, num),
+        Timing::Source => Rational::new(1, SOURCE_CLOCK),
+    });
     context.set_frame_rate(Some(Rational::new(num, den)));
     // A keyframe every two seconds keeps seeking in the file quick.
     context.set_gop((2.0 * fps).round().max(1.0) as u32);

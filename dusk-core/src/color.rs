@@ -331,9 +331,13 @@ impl SdrConverter {
         })
     }
 
-    /// Step 3 for one pixel of 16-bit full-range RGB: SDR BT.709 values from 0 to 1.
-    pub fn convert(&self, rgb: [u16; 3]) -> [f32; 3] {
-        let mut light = rgb.map(|code| self.decode[usize::from(code)]);
+    /// Step 3 for one pixel of full-range RGB from 0 to 1: SDR BT.709 values from 0 to 1.
+    pub fn convert(&self, rgb: [f32; 3]) -> [f32; 3] {
+        let last = self.decode.len() - 1;
+        let mut light = rgb.map(|value| {
+            let code = (value.clamp(0.0, 1.0) * last as f32 + 0.5) as usize;
+            self.decode[code.min(last)]
+        });
         if self.transfer == Transfer::Hlg {
             // `hlg_ootf`, at the 1000-nit reference.
             let [red, green, blue] = light;
@@ -603,7 +607,7 @@ mod tests {
                     transfer,
                     peak,
                 );
-                let converted = converter.convert(*rgb);
+                let converted = converter.convert(rgb.map(|v| f32::from(v) / 65_535.0));
                 for (converted, reference) in converted.iter().zip(reference) {
                     worst = worst.max((f64::from(*converted) - reference).abs());
                 }

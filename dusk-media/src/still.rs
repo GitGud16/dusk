@@ -342,20 +342,10 @@ fn colors_of(frame: &frame::Video) -> ScaleColors {
         // JPEG's matrix (JFIF), and the default for the rest.
         _ => SWS_CS_ITU601,
     };
-    let source_chroma = ffi::is_subsampled(format).then(|| {
-        use ffmpeg::chroma::Location;
-        match frame.chroma_location() {
-            Location::Left => (0, 128),
-            Location::Center => (128, 128),
-            Location::TopLeft => (0, 0),
-            Location::Top => (128, 0),
-            Location::BottomLeft => (0, 256),
-            Location::Bottom => (128, 256),
-            // JFIF centers its chroma; video sites it left.
-            Location::Unspecified if jpeg_format => (128, 128),
-            Location::Unspecified => (0, 128),
-        }
-    });
+    // JFIF centers its chroma; video sites it left.
+    let unspecified = if jpeg_format { (128, 128) } else { ffi::LEFT };
+    let source_chroma =
+        ffi::is_subsampled(format).then(|| crate::decode::chroma_siting(frame, unspecified));
     ScaleColors {
         source_matrix: matrix,
         source_full_range: full_range,
