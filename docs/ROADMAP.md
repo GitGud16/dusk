@@ -68,7 +68,7 @@ Import one file, see it as a linked video clip and audio clip on one video track
 - Shortcut list panel (`?` key and a toolbar button), searchable. Done, grouped, and it changes keys too.
 - Settings: cache size, default export preset, optional external `ffmpeg.exe` path. Done: File → Settings… (Ctrl+,), applied at once and kept in `settings.txt`.
 
-**Done when**: a full edit can be done without touching the mouse except for dragging clips.
+**Done when**: a full edit can be done without touching the mouse except for dragging clips. Holds: a test (`dusk-app/tests/keyboard.rs`) starts the real binary on a saved project and, with keys posted to its window, splits the clip, deletes the second half, switches the first off and trims its start, then closes and saves with Enter; the saved file holds the edit. A run with keys alone, no clicks and no menu, set a clip to fill from the properties panel, split another and deleted its end, turned the first in the clip editor (opened with Enter) and applied that with Tab and Enter, then exported with Tab to Export, Enter, Enter and the save dialog. Posted keys cannot hold Shift, Ctrl or Alt, so the chords (undo, save, import, the media keys) rest on the shortcut table's tests and the hands-on checks. On the way, Sequence settings' frame rates became reachable with Tab, the timeline began following the playhead that keys move, and numbers typed in dialogs stopped being lost when a button was clicked.
 
 ## M6 — Release 0.1
 
