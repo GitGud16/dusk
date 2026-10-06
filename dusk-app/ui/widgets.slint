@@ -346,6 +346,10 @@ export component NumberField inherits Rectangle {
     in property <bool> enabled: true;
     // Part of a dialog (see `Modal`).
     in property <bool> in-dialog;
+    // Reports each number as it is typed, for a dialog's field whose number is only a choice
+    // until a button takes it: a click on the button leaves the keyboard in the field, so
+    // what was typed would otherwise be lost.
+    in property <bool> live;
     callback edited(value: int);
     // Typing is over, so the window's shortcuts can have the keys back.
     callback finished();
@@ -398,6 +402,14 @@ export component NumberField inherits Rectangle {
             font-family: Theme.font-numeric;
             vertical-alignment: center;
             input-type: number;
+            edited => {
+                if root.live && self.text.is-float() {
+                    let typed = Math.clamp(Math.round(self.text.to-float()), root.minimum, root.maximum);
+                    if typed != root.value {
+                        root.edited(typed);
+                    }
+                }
+            }
             accepted => {
                 root.apply();
                 root.finished();

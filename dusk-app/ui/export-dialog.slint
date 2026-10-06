@@ -211,6 +211,7 @@ export component ExportDialog inherits Rectangle {
 
                     NumberField {
                         in-dialog: true;
+                        live: true;
                         value: root.view.bitrate;
                         maximum: 500000;
                         suffix: "kbit/s";
@@ -232,6 +233,7 @@ export component ExportDialog inherits Rectangle {
 
                     NumberField {
                         in-dialog: true;
+                        live: true;
                         value: root.view.crf;
                         maximum: 63;
                         edited(value) => {
