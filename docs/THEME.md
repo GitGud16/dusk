@@ -93,3 +93,4 @@ Never use pure black or pure white for surfaces or body text.
 - Focus (keyboard): 2px `primary-bright` ring, no glow.
 - Destructive buttons: outlined in `alert` with `alert` text, filled `alert` with `bg-0` text only on the final confirm.
 - Errors: `alert` text on `bg-2`. Warnings: `signal` text on `bg-2`.
+- Status lines (on `bg-1`, at the foot of each window) say what just happened in `text-2`, what to notice about it (an edit that did more than was asked) in `signal`, and what went wrong in `alert`.

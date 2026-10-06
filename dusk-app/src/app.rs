@@ -27,7 +27,9 @@ use crate::speed::{SpeedKey, next_factor};
 use crate::stats::Stats;
 use crate::thumbnails::{THUMBNAIL_CAP, Thumbnails};
 use crate::timeline::{self, View};
-use crate::{ClipEditorWindow, ClipProps, ClipView, MainWindow, MediaView, TickView, TrackView};
+use crate::{
+    ClipEditorWindow, ClipProps, ClipView, MainWindow, MediaView, StatusKind, TickView, TrackView,
+};
 
 thread_local! {
     /// The editor, owned by the UI thread.
@@ -253,8 +255,12 @@ impl App {
     /// why it was refused. True when it was applied.
     pub(crate) fn edit(&mut self, command: Command) -> bool {
         match self.try_edit(command) {
+            Ok(notices) if notices.is_empty() => {
+                self.say("");
+                true
+            }
             Ok(notices) => {
-                self.say(&notices);
+                self.warn(&notices);
                 true
             }
             Err(reason) => {
@@ -886,17 +892,24 @@ impl App {
 
     /// Shows `message` in the status line.
     pub(crate) fn say(&self, message: &str) {
-        if let Some(window) = self.window() {
-            window.set_status(message.into());
-            window.set_status_is_error(false);
-        }
+        self.status(message, StatusKind::Info);
+    }
+
+    /// Shows `message` in the status line as something to notice, such as an edit that did
+    /// more than was asked.
+    pub(crate) fn warn(&self, message: &str) {
+        self.status(message, StatusKind::Warning);
     }
 
     /// Shows `message` in the status line as an error.
     pub(crate) fn fail(&self, message: &str) {
+        self.status(message, StatusKind::Error);
+    }
+
+    fn status(&self, message: &str, kind: StatusKind) {
         if let Some(window) = self.window() {
             window.set_status(message.into());
-            window.set_status_is_error(true);
+            window.set_status_kind(kind);
         }
     }
 

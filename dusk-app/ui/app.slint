@@ -1,6 +1,6 @@
 import { AboutSlint } from "std-widgets.slint";
 import { Theme } from "theme.slint";
-import { Modal, Timecode, ToolButton } from "widgets.slint";
+import { Modal, StatusKind, Timecode, ToolButton } from "widgets.slint";
 import { ClipView, Timeline, TickView, TrackView } from "timeline.slint";
 import { MediaBin, MediaView } from "media-bin.slint";
 import { ClipProperties, ClipProps } from "properties.slint";
@@ -13,6 +13,7 @@ import { SettingsDialog, SettingsView } from "settings-dialog.slint";
 
 export { ClipView, TickView, TrackView, MediaView, ClipProps, ShortcutView }
 export { ClipEditorWindow, EditorProps, EditorSides, ExportView, CompressView, SettingsView }
+export { StatusKind }
 
 export component MainWindow inherits Window {
     title: root.window-title;
@@ -110,7 +111,7 @@ export component MainWindow inherits Window {
 
     // The status line: what just happened, or what went wrong.
     in property <string> status;
-    in property <bool> status-is-error;
+    in property <StatusKind> status-kind;
 
     // A question over the window.
     in property <bool> prompt-open;
@@ -650,7 +651,8 @@ export component MainWindow inherits Window {
 
                     Text {
                         text: root.status;
-                        color: root.status-is-error ? Theme.alert : Theme.text-2;
+                        color: root.status-kind == StatusKind.error ? Theme.alert
+                            : root.status-kind == StatusKind.warning ? Theme.signal : Theme.text-2;
                         vertical-alignment: center;
                         overflow: elide;
                         horizontal-stretch: 1;

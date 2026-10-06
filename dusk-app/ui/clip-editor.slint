@@ -4,7 +4,7 @@
 // as one undoable step.
 
 import { Theme } from "theme.slint";
-import { FieldLabel, Modal, NumberField, PanelTitle, Segmented, Slider, Switch, Timecode, ToolButton } from "widgets.slint";
+import { FieldLabel, Modal, NumberField, PanelTitle, Segmented, Slider, StatusKind, Switch, Timecode, ToolButton } from "widgets.slint";
 import { Prompt } from "dialogs.slint";
 import { ShortcutPanel, ShortcutView } from "shortcut-list.slint";
 import { ExportDialog, ExportView } from "export-dialog.slint";
@@ -228,7 +228,7 @@ export component ClipEditorWindow inherits Window {
 
     // The status line: what just happened, or why a change was refused.
     in property <string> status;
-    in property <bool> status-is-error;
+    in property <StatusKind> status-kind;
     // An export runs, so another cannot start.
     in property <bool> exporting;
     // The export dialog, for the clip alone.
@@ -799,7 +799,8 @@ export component ClipEditorWindow inherits Window {
 
                     Text {
                         text: root.status;
-                        color: root.status-is-error ? Theme.alert : Theme.text-2;
+                        color: root.status-kind == StatusKind.error ? Theme.alert
+                            : root.status-kind == StatusKind.warning ? Theme.signal : Theme.text-2;
                         vertical-alignment: center;
                         overflow: elide;
                         horizontal-stretch: 1;

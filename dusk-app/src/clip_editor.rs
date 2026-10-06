@@ -22,7 +22,7 @@ use crate::platform;
 use crate::shortcuts::Action;
 use crate::speed::{SpeedKey, next_factor};
 use crate::timeline::timecode;
-use crate::{ClipEditorWindow, EditorProps, EditorSides};
+use crate::{ClipEditorWindow, EditorProps, EditorSides, StatusKind};
 
 /// The clip editor's work while its window is open.
 pub struct ClipEditor {
@@ -314,8 +314,14 @@ impl App {
                 }
                 self.editor_follow_project();
                 let message = format!("Applied to the project. {notices}");
-                self.say(message.trim_end());
-                self.editor_say(message.trim_end());
+                let message = message.trim_end();
+                if notices.is_empty() {
+                    self.say(message);
+                    self.editor_say(message);
+                } else {
+                    self.warn(message);
+                    self.editor_warn(message);
+                }
                 true
             }
             Err(reason) => {
@@ -874,17 +880,23 @@ impl App {
 
     /// Shows `message` in the clip editor's status line.
     pub(crate) fn editor_say(&self, message: &str) {
-        if let Some(window) = &self.editor_window {
-            window.set_status(message.into());
-            window.set_status_is_error(false);
-        }
+        self.editor_status(message, StatusKind::Info);
+    }
+
+    /// Shows `message` in the clip editor's status line as something to notice.
+    pub(crate) fn editor_warn(&self, message: &str) {
+        self.editor_status(message, StatusKind::Warning);
     }
 
     /// Shows `message` in the clip editor's status line as an error.
     pub(crate) fn editor_fail(&self, message: &str) {
+        self.editor_status(message, StatusKind::Error);
+    }
+
+    fn editor_status(&self, message: &str, kind: StatusKind) {
         if let Some(window) = &self.editor_window {
             window.set_status(message.into());
-            window.set_status_is_error(true);
+            window.set_status_kind(kind);
         }
     }
 }

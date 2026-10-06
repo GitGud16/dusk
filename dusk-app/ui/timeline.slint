@@ -297,9 +297,12 @@ export component Timeline inherits Rectangle {
                 width: Math.max(1px, (self.end - self.first) * root.zoom * 1px);
                 y: root.row-y(self.shown-row) + Theme.clip-gap;
                 height: root.row-height(self.shown-row) - 2 * Theme.clip-gap;
-                opacity: self.nowhere || self.dimmed ? Theme.dimmed-opacity : 1;
+                // A disabled or muted clip keeps its fill at 40% and a text-3 label (THEME.md);
+                // one dragged where it cannot go fades whole.
+                opacity: self.nowhere ? Theme.dimmed-opacity : 1;
                 border-radius: Theme.radius-clip;
-                background: clip.video ? Theme.primary : Theme.secondary;
+                background: (clip.video ? Theme.primary : Theme.secondary)
+                    .with-alpha(self.dimmed ? Theme.dimmed-opacity : 1);
                 border-width: clip.id == root.selected-clip || self.dragged ? Theme.focus-width
                     : clip.link != 0 && clip.link == root.selected-link ? Theme.border-width : 0px;
                 border-color: self.nowhere ? Theme.alert : Theme.primary-bright;

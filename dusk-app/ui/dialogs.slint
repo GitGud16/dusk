@@ -97,6 +97,8 @@ export component SequenceSettings inherits Rectangle {
     property <int> chosen-height: root.picture-height;
 
     DialogPanel {
+        // Wide enough for the four picture sizes side by side.
+        panel-width: 440px;
         DialogTitle {
             text: "Sequence settings";
         }
@@ -108,10 +110,6 @@ export component SequenceSettings inherits Rectangle {
         // Tab reaches the rates as one control; the arrow keys choose among them, Left and
         // Right along a row and Up and Down between the rows.
         Rectangle {
-            border-radius: Theme.radius-control + 2px;
-            border-width: rates-focus.has-focus ? Theme.focus-width : 0px;
-            border-color: Theme.primary-bright;
-
             rates-focus := FocusScope {
                 focus-on-click: false;
                 key-pressed(event) => {
@@ -135,7 +133,6 @@ export component SequenceSettings inherits Rectangle {
             }
 
             GridLayout {
-                padding: 2px;
                 spacing: Theme.space-1;
 
                 for name[index] in root.rates: Rectangle {
@@ -163,6 +160,17 @@ export component SequenceSettings inherits Rectangle {
                         }
                     }
                 }
+            }
+
+            // The focus ring, drawn just outside the rates so they line up with the fields.
+            Rectangle {
+                x: -Theme.focus-width;
+                y: -Theme.focus-width;
+                width: parent.width + 2 * Theme.focus-width;
+                height: parent.height + 2 * Theme.focus-width;
+                border-radius: Theme.radius-control + Theme.focus-width;
+                border-width: rates-focus.has-focus ? Theme.focus-width : 0px;
+                border-color: Theme.primary-bright;
             }
         }
 

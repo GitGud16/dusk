@@ -5,6 +5,10 @@
 
 import { Theme } from "theme.slint";
 
+// What a status line says: what just happened, something to notice about it (`signal`), or
+// what went wrong (`alert`), as THEME.md colors warnings and errors.
+export enum StatusKind { info, warning, error }
+
 // Whether a dialog is open in this window: while one is, only the dialog's controls (those
 // marked `in-dialog`) take the keyboard, so Tab stays in the dialog and Enter never presses a
 // button behind it. Each window has its own.
