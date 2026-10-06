@@ -46,6 +46,7 @@ Dependencies point downward only: `dusk-app` / `dusk-cli` → `dusk-engine` → 
 cargo build                                   # debug build of the workspace
 cargo run -p dusk-app                         # run the editor
 cargo fmt --all                               # format (local only; CI runs the --check form)
+powershell -ExecutionPolicy Bypass -File scripts\build-release.ps1   # release build, staged folder, installer (docs/SETUP.md, "Release")
 
 # CI, and before every commit
 cargo fmt --all -- --check

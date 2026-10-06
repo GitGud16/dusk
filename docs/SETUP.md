@@ -81,4 +81,21 @@ Changing the pin is a documented decision, not a bump.
 
 ## CI
 
-CI runs the same `scripts\setup-ffmpeg.ps1`, caching `%LOCALAPPDATA%\dusk\ffmpeg-cache\`, then exports `FFMPEG_DIR` and adds the build's `bin\` to the path for later steps. Hosted Windows runners already have LLVM.
+CI runs the same `scripts\setup-ffmpeg.ps1`, caching `%LOCALAPPDATA%\dusk\ffmpeg-cache\`, then exports `FFMPEG_DIR` and adds the build's `bin\` to the path for later steps. Hosted Windows runners already have LLVM. A second job builds the installer (below) on every push, installing Inno Setup with Chocolatey when the runner lacks it, tries it with `scripts\check-installer.ps1` and keeps it as the `dusk-installer` artifact.
+
+## Release
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\build-release.ps1
+```
+
+This builds `dusk.exe` and `dusq.exe` in release (dusq on its own), stages `target\release-stage\Dusk`, the folder the installer installs (the two programs, the five FFmpeg DLLs and `licenses\`), and, when [Inno Setup 6](https://jrsoftware.org/isinfo.php) is installed (`winget install JRSoftware.InnoSetup`), compiles `installer\dusk.iss` into `target\installer\dusk-<version>-setup.exe`. It needs Python 3, which writes `licenses\THIRD-PARTY-NOTICES.txt` from cargo's own record of the crates in both programs (`scripts\third-party-notices.py`). Without Inno Setup it stops after staging, which is enough to measure the installed size and to run Dusk the way the installer leaves it. The version is the workspace's, in `Cargo.toml`.
+
+`scripts\check-installer.ps1` then tries the installer as a user would: it installs it silently into a folder of its own, checks that every staged file arrived, that the Start menu has Dusk and that `.dusk` files open with it, runs `dusq` (a small compression) and `dusk.exe` from there with no FFmpeg on the path, uninstalls, and checks that nothing is left. It prints the download and installed sizes. Since it ends by uninstalling Dusk, it refuses to run on a computer where Dusk is installed; CI runs it after every installer build.
+
+Pushing a tag such as `v0.1.0` runs `.github/workflows/release.yml`, which builds the installer and drafts a GitHub release with it. Before publishing one:
+
+- Add the license texts of the libraries built into FFmpeg's DLLs to `licenses\` (`FFmpeg.txt` names them, from the build's configuration, and where their source is). They are not part of the BtbN download, so getting them means downloading each library's license.
+- Make FFmpeg's exact source available beside the release, as its LGPL asks: `FFmpeg.txt` points at the commit and BtbN's build scripts, and attaching FFmpeg's source archive for that commit to the release is the surest way.
+- Put the Slint badge on the download page, as Slint's Royalty-free License asks.
+- Neither the installer nor the programs are code-signed, so Windows' SmartScreen warns on the first run; the README says how to get past it.

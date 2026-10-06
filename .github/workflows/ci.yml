@@ -54,3 +54,44 @@ jobs:
         run: |
           deps=$(cargo tree -p dusk-cli -e normal,build --prefix none -f '{p}') || exit 1
           if grep -q '^wgpu ' <<<"$deps"; then echo "dusq links wgpu"; exit 1; fi
+
+  # The installer (docs/ARCHITECTURE.md, "Release (0.1)"), kept as an artifact to try.
+  installer:
+    runs-on: windows-2025
+    env:
+      CARGO_TERM_COLOR: always
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache the pinned FFmpeg zip
+        uses: actions/cache@v4
+        with:
+          path: ~\AppData\Local\dusk\ffmpeg-cache
+          key: ffmpeg-${{ hashFiles('scripts/ffmpeg-pin.psd1') }}
+
+      - name: Install the pinned FFmpeg
+        shell: pwsh
+        run: ./scripts/setup-ffmpeg.ps1
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install Inno Setup 6 when the runner lacks it
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) {
+            choco install innosetup --no-progress -y
+          }
+
+      - name: Build the installer
+        shell: pwsh
+        run: ./scripts/build-release.ps1
+
+      - name: Install it, run both programs, uninstall it
+        shell: pwsh
+        run: ./scripts/check-installer.ps1
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dusk-installer
+          path: target/installer/*.exe
+          if-no-files-found: error
