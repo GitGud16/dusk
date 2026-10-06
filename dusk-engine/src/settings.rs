@@ -19,11 +19,11 @@ fn has_clips(project: &Project, kind: TrackKind) -> bool {
 }
 
 /// The sample rate exported sound is mixed and written at.
-#[cfg_attr(
-    not(feature = "gpu"),
-    expect(dead_code, reason = "dusq's CPU path takes it up in M4's fifth step")
-)]
 pub(crate) const AUDIO_RATE: u32 = 48_000;
+
+/// Pictures with more pixels than this are above the 1080p class (docs/ARCHITECTURE.md,
+/// "Decoder pool": the class ends at 2.1 Mpx).
+pub(crate) const LARGE_FRAME: u64 = 2_100_000;
 
 /// What an export writes (docs/ARCHITECTURE.md, "Export details").
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -76,10 +76,6 @@ impl ExportSettings {
     }
 
     /// The sound settings for `codec`, at the sample rate exports mix at.
-    #[cfg_attr(
-        not(feature = "gpu"),
-        expect(dead_code, reason = "dusq's CPU path takes it up in M4's fifth step")
-    )]
     pub(crate) fn audio(&self, codec: AudioCodec) -> AudioSettings {
         let mut audio = AudioSettings::of(codec, AUDIO_RATE);
         if let Some(bit_rate) = self.audio_bit_rate {

@@ -43,3 +43,11 @@ pub(crate) fn init() {
         ffmpeg::util::log::set_level(ffmpeg::util::log::Level::Error);
     });
 }
+
+/// Keeps FFmpeg's own messages off the console, as dusq wants: it says itself what went
+/// wrong, and trying the encoders in turn (docs/ARCHITECTURE.md, "Export details") has FFmpeg
+/// print an error for each one this machine lacks.
+pub fn quiet_logs() {
+    init();
+    ffmpeg::util::log::set_level(ffmpeg::util::log::Level::Quiet);
+}

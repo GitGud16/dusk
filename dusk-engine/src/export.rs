@@ -24,6 +24,7 @@ use crate::info::still_size;
 use crate::mixer::Mixer;
 use crate::placement::placement_at;
 use crate::settings::{AUDIO_RATE, ExportFormat, ExportSettings, export_size, has_sound};
+use crate::transcode::part_path;
 
 /// What an export reports, as [`EngineEvent::Export`].
 #[derive(Debug)]
@@ -143,13 +144,6 @@ fn export(
         Ok(()) => ExportEvent::Cancelled,
         Err(error) => ExportEvent::Failed(error),
     }
-}
-
-/// `path` with `.part` appended: `clip.mp4` becomes `clip.mp4.part`.
-fn part_path(path: &Path) -> PathBuf {
-    let mut name = path.as_os_str().to_owned();
-    name.push(".part");
-    PathBuf::from(name)
 }
 
 /// Writes the whole sequence to `part` as a video file; the encoder used, or `None` when

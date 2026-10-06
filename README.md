@@ -2,7 +2,7 @@
 
 Dusk is a free, open-source, native desktop video editor built in Rust. It exists because the good editors are either paid, or browser-based and full of ads. It must be light: light to install, light to open, and light on RAM and CPU. No accounts, no cloud, no ads, no telemetry. The one thing it does better than anything else is in-place clip editing: click any clip in the timeline and a pop-out window opens for light editing of just that clip (trim, crop, rotate, speed, volume), and the result is applied back into the project or saved as its own file.
 
-**Status**: early development, milestone M0 (foundation). Windows first; Linux and macOS later. See [docs/ROADMAP.md](docs/ROADMAP.md).
+**Status**: early development, milestone M4 (export, compress, extract). Windows first; Linux and macOS later. See [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ## Building
 
@@ -12,6 +12,14 @@ Windows 10/11 with Rust, LLVM and the pinned FFmpeg build; [docs/SETUP.md](docs/
 powershell -ExecutionPolicy Bypass -File scripts\setup-ffmpeg.ps1   # once
 . .\scripts\dev-env.ps1                                             # in every new shell
 cargo run -p dusk-app
+```
+
+The command line, `dusq`, compresses a video or takes its sound out without opening Dusk, and needs no graphics card:
+
+```powershell
+cargo run -p dusk-cli --release -- compress clip.mp4 --short-side 720
+cargo run -p dusk-cli --release -- extract-audio clip.mp4 --format opus
+cargo run -p dusk-cli --release -- --help
 ```
 
 ## Design

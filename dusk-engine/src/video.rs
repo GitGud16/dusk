@@ -21,6 +21,7 @@ use crate::cache::FrameCache;
 use crate::engine::{EngineEvent, EngineOptions, Preview, Report, SharedTransport, lock};
 use crate::info::still_size;
 use crate::placement::placement_at;
+use crate::settings::LARGE_FRAME;
 
 /// What the front asks of the video thread, for one of the previews.
 pub(crate) enum VideoRequest {
@@ -40,9 +41,6 @@ pub(crate) enum VideoRequest {
 const SCRUB_INTERVAL: Duration = Duration::from_millis(16);
 /// While playing, the clock is read at least this often.
 const PLAYBACK_POLL: Duration = Duration::from_millis(10);
-/// Sources with more pixels than this get a decoder to themselves (docs/ARCHITECTURE.md,
-/// "Decoder pool": the 1080p class ends at 2.1 Mpx).
-const LARGE_FRAME: u64 = 2_100_000;
 /// While playing, the next clip to come into view within this much playback is made ready
 /// (docs/ARCHITECTURE.md, "Decoder pool").
 const LOOKAHEAD: Duration = Duration::from_secs(2);

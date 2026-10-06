@@ -1150,6 +1150,8 @@ dependencies = [
 name = "dusk-cli"
 version = "0.0.0"
 dependencies = [
+ "anyhow",
+ "dusk-core",
  "dusk-engine",
 ]
 

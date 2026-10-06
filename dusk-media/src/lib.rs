@@ -26,5 +26,6 @@ pub use formats::{
     AudioCodec, AudioFormat, Container, ENCODERS, Encoder, Quality, VideoCodec, encoder_named,
     encoders_of,
 };
+pub use input::quiet_logs;
 pub use probe::{ProbeInfo, StreamDetail, StreamKind, StreamSummary, probe};
 pub use still::{StillInfo, decode_still, is_still, still_info};

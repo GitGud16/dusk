@@ -56,9 +56,9 @@ Import one file, see it as a linked video clip and audio clip on one video track
 - Compress tool: open a single file, target quality or target size (bitrate ladder + one corrective re-encode), export, no project.
 - Optional external GPL `ffmpeg.exe` export path (raw frames piped).
 - Encoder probing by real session at 640×480 on first export, fall-through on open failure, per-encoder limits table with fixed values; per-encoder memory measured (SVT-AV1 threads and lookahead fixed) and the encoder line in REQUIREMENTS.md updated.
-- CPU path in dusq (normalize → tone-map/rotate in Rust → encoder format) verified against the GPU path by the per-plane PSNR test (≥ 45 dB unscaled, ≥ 40 dB scaled); `--threads`; dusq memory ceiling measured per size class and recorded in REQUIREMENTS.md.
+- CPU path in dusq (normalize → tone-map/rotate in Rust → encoder format) verified against the GPU path by the per-plane PSNR test (≥ 45 dB unscaled, ≥ 40 dB scaled); `--threads`; dusq memory ceiling measured per size class and recorded in REQUIREMENTS.md. The path and `--threads` are done (ARCHITECTURE.md, "Compress tool paths"); the PSNR test and the ceilings come later in M4.
 - Audio-only export (MP3/AAC/Opus/WAV), including the clip editor's Export as file for a sound-only clip. Done: *Sound only* in the export dialog writes the mix of the timeline or of the clip, at 48 kHz.
-- `dusq` (the `dusk-cli` binary) with `compress` and `extract-audio`, built without the `gpu` feature on the CPU transcode path.
+- `dusq` (the `dusk-cli` binary) with `compress` and `extract-audio`, built without the `gpu` feature on the CPU transcode path. Done; compressing to a target size (`--size`) comes with the compress tool.
 
 **Done when**: a 2 GB phone video can be compressed to a 25 MB file from the compress tool in one dialog.
 
