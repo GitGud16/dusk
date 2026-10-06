@@ -145,9 +145,8 @@ pub struct App {
     pub(crate) missing: std::collections::HashSet<MediaId>,
     /// The list of missing media files, while it is open.
     pub(crate) missing_dialog: Option<crate::missing::MissingDialog>,
-    /// Counts the checks for missing media, so that a check overtaken by a newer one changes
-    /// nothing.
-    pub(crate) media_check: u64,
+    /// The checks for missing media, so that a check overtaken by a newer one changes nothing.
+    pub(crate) media_checks: crate::missing::MediaChecks,
     /// What the next check does with what it finds: a project just opened says so.
     pub(crate) media_check_ask: crate::missing::Ask,
     /// The GPL encoders of the user's own `ffmpeg`, picked in the export dialog for this
@@ -220,7 +219,7 @@ impl App {
             about_open: false,
             missing: std::collections::HashSet::new(),
             missing_dialog: None,
-            media_check: 0,
+            media_checks: crate::missing::MediaChecks::default(),
             media_check_ask: crate::missing::Ask::No,
             external: Vec::new(),
             use_external: false,

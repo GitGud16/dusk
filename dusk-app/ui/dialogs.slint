@@ -385,12 +385,16 @@ export component MissingDialog inherits Rectangle {
     property <length> row-height: 40px;
     property <length> list-height: Math.min(5, root.rows.length) * root.row-height;
     property <length> scrolled: 0;
+    // How far the list scrolls at most, and how far it is scrolled, kept within the list as
+    // found files leave it.
+    property <length> most: Math.max(0px, root.rows.length * root.row-height - root.list-height);
+    property <length> top: Math.clamp(root.scrolled, 0px, root.most);
 
     // The picked file stays in view as the keys move through a long list.
     changed picked => {
-        if root.picked * root.row-height < root.scrolled {
+        if root.picked * root.row-height < root.top {
             root.scrolled = root.picked * root.row-height;
-        } else if (root.picked + 1) * root.row-height > root.scrolled + root.list-height {
+        } else if (root.picked + 1) * root.row-height > root.top + root.list-height {
             root.scrolled = (root.picked + 1) * root.row-height - root.list-height;
         }
     }
@@ -417,13 +421,13 @@ export component MissingDialog inherits Rectangle {
 
             TouchArea {
                 scroll-event(event) => {
-                    root.scrolled = Math.clamp(root.scrolled - event.delta-y, 0px, Math.max(0px, list.preferred-height - root.list-height));
+                    root.scrolled = Math.clamp(root.top - event.delta-y, 0px, root.most);
                     return accept;
                 }
             }
 
-            list := VerticalLayout {
-                y: -root.scrolled;
+            VerticalLayout {
+                y: -root.top;
                 height: self.preferred-height;
                 alignment: start;
 

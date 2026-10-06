@@ -26,6 +26,36 @@ pub enum Ask {
     Asked,
 }
 
+/// The checks for missing media files: a check overtaken by a newer one changes nothing, and
+/// the newer one still does what the overtaken one was to do.
+#[derive(Debug, Default)]
+pub struct MediaChecks {
+    count: u64,
+    /// What the check under way is to do.
+    pending: Ask,
+}
+
+impl MediaChecks {
+    /// A new check, overtaking any under way: its number, and what it is to do, which is `ask`,
+    /// or what the overtaken check was to do when `ask` asks nothing.
+    pub fn start(&mut self, ask: Ask) -> (u64, Ask) {
+        self.count += 1;
+        if ask != Ask::No {
+            self.pending = ask;
+        }
+        (self.count, self.pending)
+    }
+
+    /// Whether `check` is the newest check, which is then done.
+    pub fn finish(&mut self, check: u64) -> bool {
+        let newest = check == self.count;
+        if newest {
+            self.pending = Ask::No;
+        }
+        newest
+    }
+}
+
 /// The dialog while it is open: which row is picked, and what the last find came to.
 pub struct MissingDialog {
     pub picked: usize,
@@ -36,6 +66,8 @@ pub struct MissingDialog {
 /// A file Dusk read for a missing media file: what it holds, or why it could not be read.
 pub struct Found {
     pub media: MediaId,
+    /// Where the project said the media was when its file was looked for.
+    pub was: PathBuf,
     pub path: PathBuf,
     pub info: Result<MediaInfo, String>,
 }
@@ -50,27 +82,56 @@ pub struct Relinked {
 }
 
 /// The files among `files` named as the media files `wanted` were, in any case, one for
-/// each: the other missing files beside one that was found.
-pub fn same_names(files: &[PathBuf], wanted: &[(MediaId, PathBuf)]) -> Vec<(MediaId, PathBuf)> {
+/// each: the other missing files beside one that was found. A file in `taken` (the one found,
+/// and those the project uses) is no other media's, and a name two of `wanted` share could be
+/// either's, so it finds neither.
+pub fn same_names(
+    files: &[PathBuf],
+    wanted: &[(MediaId, PathBuf)],
+    taken: &[PathBuf],
+) -> Vec<(MediaId, PathBuf)> {
     let lowercase = |path: &Path| {
         path.file_name()
             .map(|name| name.to_string_lossy().to_lowercase())
     };
+    let shared = |name: &String| {
+        wanted
+            .iter()
+            .filter(|(_, was)| lowercase(was).as_ref() == Some(name))
+            .count()
+            > 1
+    };
     wanted
         .iter()
         .filter_map(|(media, was)| {
-            let name = lowercase(was)?;
-            let file = files
-                .iter()
-                .find(|file| lowercase(file).as_ref() == Some(&name))?;
+            let name = lowercase(was).filter(|name| !shared(name))?;
+            let file = files.iter().find(|file| {
+                lowercase(file).as_ref() == Some(&name)
+                    && !taken.iter().any(|used| same_path(used, file))
+            })?;
             Some((*media, file.clone()))
         })
         .collect()
 }
 
+/// Whether `a` and `b` name the same file: Windows' file names ignore case.
+fn same_path(a: &Path, b: &Path) -> bool {
+    if !cfg!(windows) {
+        return a == b;
+    }
+    let parts = |path: &Path| -> Vec<String> {
+        path.components()
+            .map(|part| part.as_os_str().to_string_lossy().to_lowercase())
+            .collect()
+    };
+    parts(a) == parts(b)
+}
+
 /// Relinks what was found for a missing media file: `found` starts with the file picked for
 /// it, then the files of the same names beside it. The picked file must fit (its clips'
-/// checks, in `RelinkMedia`); of the others, those that fit come along in the same step.
+/// checks, in `RelinkMedia`) and be no other media's; of the others, those that fit come
+/// along in the same step. A media the project no longer names as it did when its file was
+/// looked for (another project opened, an edit undone meanwhile) is left as it is.
 pub fn relink(project: &Project, found: Vec<Found>) -> Relinked {
     let failed = |message: String| Relinked {
         command: None,
@@ -83,6 +144,34 @@ pub fn relink(project: &Project, found: Vec<Found>) -> Relinked {
         return failed(String::new());
     };
     let name = file_name(&picked.path);
+    let unchanged = |found: &Found| {
+        project
+            .media_ref(found.media)
+            .is_some_and(|media| media.path == found.was)
+    };
+    let used = |found: &Found| {
+        project
+            .media()
+            .iter()
+            .any(|media| media.id != found.media && same_path(&media.path, &found.path))
+    };
+    if !unchanged(&picked) {
+        return Relinked {
+            command: None,
+            relinked: Vec::new(),
+            message: format!(
+                "The project changed while Dusk read {name}; if a file is still missing, find \
+                 it again."
+            ),
+            kind: StatusKind::Warning,
+        };
+    }
+    if used(&picked) {
+        return failed(format!(
+            "{name} is already in the project as another media file. Pick the file the project \
+             used, or a copy of it."
+        ));
+    }
     let info = match picked.info {
         Ok(info) => info,
         Err(error) => {
@@ -99,7 +188,7 @@ pub fn relink(project: &Project, found: Vec<Found>) -> Relinked {
         return failed(sentence(&rejection.to_string()));
     }
     let (mut commands, mut relinked, mut misfits) = (vec![first], vec![picked.media], 0);
-    for other in found {
+    for other in found.filter(|other| unchanged(other) && !used(other)) {
         let Ok(info) = other.info else {
             misfits += 1;
             continue;
@@ -146,10 +235,9 @@ pub fn relink(project: &Project, found: Vec<Found>) -> Relinked {
 impl App {
     /// Checks on a thread of its own which of the project's media files are not where it
     /// says, since a drive that went away can keep the system waiting; then does what `ask`
-    /// says. A newer check overtakes one under way.
+    /// says. A newer check overtakes one under way, and does what that one was to do too.
     pub(crate) fn check_media(&mut self, ask: Ask) {
-        self.media_check += 1;
-        let check = self.media_check;
+        let (check, ask) = self.media_checks.start(ask);
         let paths: Vec<(MediaId, PathBuf)> = self
             .project
             .media()
@@ -174,7 +262,7 @@ impl App {
     }
 
     fn media_checked(&mut self, check: u64, missing: Vec<MediaId>, ask: Ask) {
-        if check != self.media_check {
+        if !self.media_checks.finish(check) {
             return;
         }
         self.missing = missing.into_iter().collect();
@@ -262,19 +350,28 @@ impl App {
         };
         self.show_dialog_over(window.window(), ask, move |paths| {
             if let Some(path) = paths.into_iter().next() {
-                with_app(|app| app.find_media(media, path));
+                with_app(|app| app.find_media(media, was, path));
             }
         });
     }
 
-    /// Reads the file picked for `media` on a thread of its own, and the files beside it
-    /// named as the other missing ones, then relinks what fits.
-    fn find_media(&mut self, media: MediaId, path: PathBuf) {
+    /// Reads the file picked for `media`, which the project said was at `was`, on a thread of
+    /// its own, and the files beside it named as the other missing ones, then relinks what
+    /// fits.
+    fn find_media(&mut self, media: MediaId, was: PathBuf, path: PathBuf) {
         let others: Vec<(MediaId, PathBuf)> = self
             .missing_media()
             .into_iter()
             .filter(|(other, _)| *other != media)
             .collect();
+        // The file found, and the files of the project's other media, are none of the others'.
+        let mut taken: Vec<PathBuf> = self
+            .project
+            .media()
+            .iter()
+            .map(|media| media.path.clone())
+            .collect();
+        taken.push(path.clone());
         self.say(&format!("Reading {}…", file_name(&path)));
         let spawned = std::thread::Builder::new()
             .name("dusk relink".to_owned())
@@ -282,6 +379,7 @@ impl App {
                 let read = |path: &Path| media_info(path).map_err(|error| error.to_string());
                 let mut found = vec![Found {
                     media,
+                    was,
                     info: read(&path),
                     path: path.clone(),
                 }];
@@ -292,9 +390,13 @@ impl App {
                     .flatten()
                     .filter_map(|entry| Some(entry.ok()?.path()))
                     .collect();
-                for (other, file) in same_names(&beside, &others) {
+                for (other, file) in same_names(&beside, &others, &taken) {
+                    let Some((_, was)) = others.iter().find(|(media, _)| *media == other) else {
+                        continue;
+                    };
                     found.push(Found {
                         media: other,
+                        was: was.clone(),
                         info: read(&file),
                         path: file,
                     });
@@ -483,12 +585,112 @@ mod tests {
         (project, ids[0], ids[1])
     }
 
+    /// What was read for `media`, still named as the project names it.
     fn found(media: MediaId, path: &str, info: Result<MediaInfo, String>) -> Found {
+        let (project, _, _) = project();
         Found {
             media,
+            was: project.media_ref(media).unwrap().path.clone(),
             path: path.into(),
             info,
         }
+    }
+
+    fn paths(paths: &[&str]) -> Vec<PathBuf> {
+        paths.iter().map(PathBuf::from).collect()
+    }
+
+    #[test]
+    fn the_picked_file_is_not_found_again_for_a_missing_file_of_its_name() {
+        // Cameras name files the same on every card: day 2's C0001 is not day 1's.
+        let files = paths(&["F:/day1/C0001.MP4", "F:/day1/C0002.MP4"]);
+        let wanted = vec![
+            (MediaId(2), PathBuf::from("E:/day2/C0001.MP4")),
+            (MediaId(3), PathBuf::from("E:/day1/C0002.MP4")),
+        ];
+        assert_eq!(
+            same_names(&files, &wanted, &paths(&["F:/day1/c0001.mp4"])),
+            [(MediaId(3), PathBuf::from("F:/day1/C0002.MP4"))]
+        );
+    }
+
+    #[test]
+    fn a_name_two_missing_files_share_finds_neither() {
+        let files = paths(&["F:/cards/C0001.MP4"]);
+        let wanted = vec![
+            (MediaId(2), PathBuf::from("E:/day2/C0001.MP4")),
+            (MediaId(3), PathBuf::from("E:/day3/c0001.mp4")),
+        ];
+        assert_eq!(same_names(&files, &wanted, &[]), []);
+    }
+
+    #[test]
+    fn a_file_the_project_uses_is_not_found_for_another_media() {
+        let files = paths(&["F:/trip/beach.mp4"]);
+        let wanted = vec![(MediaId(2), PathBuf::from("E:/old/beach.mp4"))];
+        assert_eq!(
+            same_names(&files, &wanted, &paths(&["F:/trip/beach.mp4"])),
+            []
+        );
+    }
+
+    #[test]
+    fn a_picked_file_another_media_uses_relinks_nothing() {
+        let (project, beach, _) = project();
+        // hills.mp4 is where the project says; picked for beach.mp4 it would play twice.
+        let relinked = relink(
+            &project,
+            vec![found(beach, "E:/trip/hills.mp4", Ok(info(10)))],
+        );
+        assert!(relinked.command.is_none());
+        assert_eq!(relinked.kind, StatusKind::Error);
+        assert_eq!(
+            relinked.message,
+            "hills.mp4 is already in the project as another media file. Pick the file the \
+             project used, or a copy of it."
+        );
+    }
+
+    #[test]
+    fn a_media_that_changed_while_its_file_was_read_is_left_alone() {
+        // Another project was opened meanwhile, whose media has the same id.
+        let (project, beach, hills) = project();
+        let mut asked = found(beach, "F:/trip/beach.mp4", Ok(info(10)));
+        asked.was = "E:/other project/beach.mp4".into();
+        let relinked = relink(
+            &project,
+            vec![asked, found(hills, "F:/trip/hills.mp4", Ok(info(10)))],
+        );
+        assert!(relinked.command.is_none());
+        assert_eq!(relinked.kind, StatusKind::Warning);
+        assert_eq!(
+            relinked.message,
+            "The project changed while Dusk read beach.mp4; if a file is still missing, find \
+             it again."
+        );
+        // A file beside it whose media changed meanwhile is left too.
+        let mut beside = found(hills, "F:/trip/hills.mp4", Ok(info(10)));
+        beside.was = "E:/other project/hills.mp4".into();
+        let relinked = relink(
+            &project,
+            vec![found(beach, "F:/trip/beach.mp4", Ok(info(10))), beside],
+        );
+        assert_eq!(relinked.relinked, [beach]);
+        assert_eq!(relinked.message, "Found beach.mp4.");
+    }
+
+    #[test]
+    fn a_check_that_overtakes_one_still_does_what_that_one_was_to_do() {
+        // A project was opened, so its missing files are to be listed; the engine's report of
+        // one of them starts a newer check before the first comes back.
+        let mut checks = MediaChecks::default();
+        let (opened, _) = checks.start(Ask::Opened);
+        let (newer, ask) = checks.start(Ask::No);
+        assert_eq!(ask, Ask::Opened);
+        assert!(!checks.finish(opened));
+        assert!(checks.finish(newer));
+        // Done: the next check does only what it is asked.
+        assert_eq!(checks.start(Ask::No).1, Ask::No);
     }
 
     #[test]
@@ -533,7 +735,7 @@ mod tests {
             (MediaId(3), PathBuf::from("E:/other/song.mp3")),
         ];
         assert_eq!(
-            same_names(&files, &wanted),
+            same_names(&files, &wanted, &[]),
             [
                 (MediaId(1), PathBuf::from("F:/trip/BEACH.MP4")),
                 (MediaId(2), PathBuf::from("F:/trip/Hills.mp4")),
