@@ -404,6 +404,10 @@ impl VideoDecoder {
     }
 }
 
+/// Pictures with more pixels than this are above the 1080p class (docs/ARCHITECTURE.md,
+/// "Decoder pool": the class ends at 2.1 Mpx).
+pub const LARGE_FRAME: u64 = 2_100_000;
+
 /// Pictures with more pixels than this, 6K and 8K video, decode on one thread: every further
 /// thread holds frames of its own, which at that size adds up to more than the decoder budget
 /// (docs/ARCHITECTURE.md, "Decoder pool").

@@ -5,6 +5,8 @@
 
 use ffmpeg_next::format::Pixel;
 
+use crate::decode::LARGE_FRAME;
+
 /// A file format for video with sound.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Container {
@@ -298,9 +300,9 @@ impl Encoder {
     pub(crate) fn rate_control(&self, quality: Quality, size: (u32, u32), fps: f64) -> RateControl {
         let level = match quality {
             Quality::Level(level) => level.min(100),
-            Quality::Crf(crf) if self.has_crf() => return self.constant_rate_factor(crf),
+            Quality::Crf(crf) if self.has_crf() => return self.constant_rate_factor(crf, size),
             Quality::Crf(_) => 80,
-            Quality::Bitrate(bits) => return self.target(bits),
+            Quality::Bitrate(bits) => return self.target(bits, size),
         };
         let level = f64::from(level);
         // H.264 and HEVC quantizers run from 0 to 51, AV1's and VP9's from 0 to 63; the
@@ -359,19 +361,19 @@ impl Encoder {
                 // FFmpeg splits these at commas.
                 control.options = vec![("kvazaar-params", format!("preset=fast,qp={h26x}"))];
             }
-            Control::SvtAv1 | Control::Vpx => return self.constant_rate_factor(av1 as u8),
-            Control::X26x => return self.constant_rate_factor(h26x as u8),
+            Control::SvtAv1 | Control::Vpx => return self.constant_rate_factor(av1 as u8, size),
+            Control::X26x => return self.constant_rate_factor(h26x as u8, size),
         }
         control
     }
 
-    /// A raw CRF, for SVT-AV1, VP9, x264 and x265.
-    fn constant_rate_factor(&self, crf: u8) -> RateControl {
+    /// A raw CRF, for SVT-AV1, VP9, x264 and x265, writing frames of `size`.
+    fn constant_rate_factor(&self, crf: u8, size: (u32, u32)) -> RateControl {
         let mut control = RateControl {
             options: vec![("crf", crf.min(63).to_string())],
             ..RateControl::default()
         };
-        control.options.extend(self.speed());
+        control.options.extend(self.speed(size));
         control
     }
 
@@ -379,7 +381,7 @@ impl Encoder {
     /// (docs/ARCHITECTURE.md, "Target file size"). SVT-AV1 takes a peak only in its
     /// constant-quality mode and refuses to open with one otherwise, so it gets the target
     /// alone with a buffer of one second.
-    fn target(&self, bits: u64) -> RateControl {
+    fn target(&self, bits: u64, size: (u32, u32)) -> RateControl {
         let bit_rate = usize::try_from(bits).unwrap_or(usize::MAX);
         let max_rate = match self.control {
             Control::SvtAv1 => 0,
@@ -404,20 +406,32 @@ impl Encoder {
                 ("allow_skip_frames", "0".to_owned()),
             ],
             Control::Kvazaar => vec![("kvazaar-params", "preset=fast".to_owned())],
-            Control::SvtAv1 | Control::Vpx | Control::X26x => self.speed(),
+            Control::SvtAv1 | Control::Vpx | Control::X26x => self.speed(size),
         };
         control
     }
 
-    /// How hard the software encoders that have presets work: fast enough to export at a
-    /// useful pace.
-    fn speed(&self) -> Vec<(&'static str, String)> {
+    /// How hard the software encoders that have presets work, writing frames of `size`: fast
+    /// enough to export at a useful pace, in a bounded amount of memory (docs/ARCHITECTURE.md,
+    /// "Quality"). SVT-AV1 left to itself works on as many pictures at once as there are
+    /// cores for, which held 1.3 GB at 1080p and 4.7 GB at 4K at M4; at most two at once
+    /// (and above the 1080p class one, without its lookahead) it held 0.5 GB and 1.0 GB.
+    /// FFmpeg's libraries default to one thread, which libvpx takes as it is.
+    fn speed(&self, size: (u32, u32)) -> Vec<(&'static str, String)> {
         match self.control {
-            Control::SvtAv1 => vec![("preset", "8".to_owned())],
+            Control::SvtAv1 => {
+                let large = u64::from(size.0) * u64::from(size.1) > LARGE_FRAME;
+                let parallel = if large { "lp=1:lookahead=0" } else { "lp=2" };
+                vec![
+                    ("preset", "8".to_owned()),
+                    ("svtav1-params", parallel.to_owned()),
+                ]
+            }
             Control::Vpx => vec![
                 ("deadline", "good".to_owned()),
                 ("cpu-used", "4".to_owned()),
                 ("row-mt", "1".to_owned()),
+                ("threads", "4".to_owned()),
             ],
             _ => Vec::new(),
         }
@@ -825,6 +839,38 @@ mod tests {
             nvenc.rate_control(Quality::Crf(35), HD, 30.0),
             nvenc.rate_control(Quality::HIGH, HD, 30.0)
         );
+    }
+
+    /// Every way the quality can be set.
+    const QUALITIES: [Quality; 3] = [Quality::HIGH, Quality::Crf(30), Quality::Bitrate(4_000_000)];
+
+    #[test]
+    fn svt_av1_works_on_fewer_pictures_at_once_to_bound_its_memory() {
+        // Left to itself it held 1.3 GB at 1080p and 4.7 GB at 4K (M4).
+        let svt = named("libsvtav1");
+        for quality in QUALITIES {
+            let hd = svt.rate_control(quality, HD, 30.0);
+            assert_eq!(option(&hd, "svtav1-params"), Some("lp=2"), "{quality:?}");
+            // Above the 1080p class, one at a time and without its lookahead.
+            let uhd = svt.rate_control(quality, (3840, 2160), 30.0);
+            assert_eq!(
+                option(&uhd, "svtav1-params"),
+                Some("lp=1:lookahead=0"),
+                "{quality:?}"
+            );
+        }
+        let edge = svt.rate_control(Quality::HIGH, (1920, 1088), 30.0);
+        assert_eq!(option(&edge, "svtav1-params"), Some("lp=2"));
+    }
+
+    #[test]
+    fn vp9_encodes_on_four_threads() {
+        // FFmpeg's libraries default to one thread, which libvpx takes as it is.
+        let vp9 = named("libvpx-vp9");
+        for quality in QUALITIES {
+            let control = vp9.rate_control(quality, HD, 30.0);
+            assert_eq!(option(&control, "threads"), Some("4"), "{quality:?}");
+        }
     }
 
     fn external(name: &str) -> &'static Encoder {

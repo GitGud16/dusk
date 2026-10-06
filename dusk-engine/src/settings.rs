@@ -21,10 +21,6 @@ fn has_clips(project: &Project, kind: TrackKind) -> bool {
 /// The sample rate exported sound is mixed and written at.
 pub(crate) const AUDIO_RATE: u32 = 48_000;
 
-/// Pictures with more pixels than this are above the 1080p class (docs/ARCHITECTURE.md,
-/// "Decoder pool": the class ends at 2.1 Mpx).
-pub(crate) const LARGE_FRAME: u64 = 2_100_000;
-
 /// What an export writes (docs/ARCHITECTURE.md, "Export details").
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ExportFormat {

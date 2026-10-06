@@ -18,7 +18,8 @@ mod still;
 
 pub use audio::AudioDecoder;
 pub use decode::{
-    Acceleration, DecodedFrame, Following, HUGE_FRAME, NormalizedFrame, Step, VideoDecoder,
+    Acceleration, DecodedFrame, Following, HUGE_FRAME, LARGE_FRAME, NormalizedFrame, Step,
+    VideoDecoder,
 };
 pub use encode::{AudioSettings, Timing, VideoSettings, Writer, available_encoders, sdr_to_nv12};
 pub use error::MediaError;

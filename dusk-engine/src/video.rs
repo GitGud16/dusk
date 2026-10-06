@@ -13,7 +13,7 @@ use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, TryRecvError};
 use dusk_audio::PlaybackClock;
 use dusk_core::time::{frame_at, frame_to_media};
 use dusk_core::{ClipId, Frame, MediaId, MediaInfo, MediaKind, MediaTime, Picture, Project};
-use dusk_media::{Acceleration, DecodedFrame, Following, Step, VideoDecoder};
+use dusk_media::{Acceleration, DecodedFrame, Following, LARGE_FRAME, Step, VideoDecoder};
 use dusk_render::{Compositor, Gpu, fit_size};
 
 use crate::EngineError;
@@ -21,7 +21,6 @@ use crate::cache::FrameCache;
 use crate::engine::{EngineEvent, EngineOptions, Preview, Report, SharedTransport, lock};
 use crate::info::still_size;
 use crate::placement::placement_at;
-use crate::settings::LARGE_FRAME;
 
 /// What the front asks of the video thread, for one of the previews.
 pub(crate) enum VideoRequest {

@@ -14,12 +14,12 @@ use std::time::{Duration, Instant};
 use dusk_core::color::SdrConverter;
 use dusk_core::{MediaTime, Orientation, SdrPicture, YuvPicture};
 use dusk_media::{
-    AudioDecoder, AudioFormat, AudioSettings, Container, HUGE_FRAME, MediaError, Quality,
-    StreamDetail, StreamKind, Timing, VideoDecoder, VideoSettings, Writer, probe,
+    AudioDecoder, AudioFormat, AudioSettings, Container, HUGE_FRAME, LARGE_FRAME, MediaError,
+    Quality, StreamDetail, StreamKind, Timing, VideoDecoder, VideoSettings, Writer, probe,
 };
 
 use crate::EngineError;
-use crate::settings::{AUDIO_RATE, ExportFormat, ExportSettings, LARGE_FRAME, export_size};
+use crate::settings::{AUDIO_RATE, ExportFormat, ExportSettings, export_size};
 use crate::size::{corrected, plan_for_size, refused};
 
 /// What dusq's transcode path makes of a file.
