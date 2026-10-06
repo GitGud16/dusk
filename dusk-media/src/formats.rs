@@ -341,14 +341,19 @@ impl Encoder {
     }
 
     /// A target bitrate, peaking at 1.2 times it with a buffer of one peak second
-    /// (docs/ARCHITECTURE.md, "Target file size").
+    /// (docs/ARCHITECTURE.md, "Target file size"). SVT-AV1 takes a peak only in its
+    /// constant-quality mode and refuses to open with one otherwise, so it gets the target
+    /// alone with a buffer of one second.
     fn target(&self, bits: u64) -> RateControl {
         let bit_rate = usize::try_from(bits).unwrap_or(usize::MAX);
-        let max_rate = bit_rate.saturating_add(bit_rate / 5);
+        let max_rate = match self.control {
+            Control::SvtAv1 => 0,
+            _ => bit_rate.saturating_add(bit_rate / 5),
+        };
         let mut control = RateControl {
             bit_rate,
             max_rate,
-            buffer: i32::try_from(max_rate).unwrap_or(i32::MAX),
+            buffer: i32::try_from(max_rate.max(bit_rate)).unwrap_or(i32::MAX),
             ..RateControl::default()
         };
         control.options = match self.control {
@@ -723,7 +728,10 @@ mod tests {
 
     #[test]
     fn a_target_bitrate_peaks_at_1_2_times_with_a_matching_buffer() {
-        for encoder in &ENCODERS {
+        for encoder in ENCODERS
+            .iter()
+            .filter(|encoder| encoder.name != "libsvtav1")
+        {
             let control = encoder.rate_control(Quality::Bitrate(4_000_000), HD, 30.0);
             assert_eq!(
                 (control.bit_rate, control.max_rate, control.buffer),
@@ -732,6 +740,12 @@ mod tests {
                 encoder.name
             );
         }
+        // SVT-AV1 refuses a peak outside its constant-quality mode.
+        let svt = named("libsvtav1").rate_control(Quality::Bitrate(4_000_000), HD, 30.0);
+        assert_eq!(
+            (svt.bit_rate, svt.max_rate, svt.buffer),
+            (4_000_000, 0, 4_000_000)
+        );
         let amf = named("hevc_amf").rate_control(Quality::Bitrate(4_000_000), HD, 30.0);
         assert_eq!(option(&amf, "rc"), Some("vbr_peak"));
     }

@@ -527,3 +527,26 @@ fn a_picture_of_another_size_is_refused() {
             .is_err()
     );
 }
+
+#[test]
+fn every_software_encoder_takes_a_target_bitrate() {
+    // Two seconds at 600 kbit/s: about 150 KB of video.
+    for (name, codec, container) in [
+        ("libopenh264", VideoCodec::H264, Container::Mp4),
+        ("libkvazaar", VideoCodec::Hevc, Container::Mp4),
+        ("libsvtav1", VideoCodec::Av1, Container::Mp4),
+        ("libvpx-vp9", VideoCodec::Vp9, Container::WebM),
+    ] {
+        let path = output(&format!("target-{name}.{}", container.extension()));
+        let video = VideoSettings {
+            codec,
+            encoder: Some(name),
+            quality: Quality::Bitrate(600_000),
+            ..settings(320, 240)
+        };
+        let encoder = write(&path, container, video, None, 60, noisy);
+        assert_eq!(encoder, name);
+        let bytes = std::fs::metadata(&path).unwrap().len();
+        assert!((50_000..=300_000).contains(&bytes), "{name}: {bytes} bytes");
+    }
+}
