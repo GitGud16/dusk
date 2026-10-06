@@ -11,9 +11,10 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use dusk_core::time::frame_to_media;
-use dusk_core::{Frame, MediaId, MediaKind, MediaTime, Picture, Project, TrackKind};
+use dusk_core::{Frame, MediaId, MediaKind, MediaTime, Picture, Project};
 use dusk_media::{
-    Acceleration, AudioCodec, AudioSettings, Container, VideoDecoder, VideoSettings, Writer,
+    Acceleration, AudioCodec, AudioFormat, Container, VideoCodec, VideoDecoder, VideoSettings,
+    Writer,
 };
 use dusk_render::{Compositor, Gpu, ToYuv};
 
@@ -22,6 +23,7 @@ use crate::engine::{EngineEvent, Report};
 use crate::info::still_size;
 use crate::mixer::Mixer;
 use crate::placement::placement_at;
+use crate::settings::{AUDIO_RATE, ExportFormat, ExportSettings, export_size, has_sound};
 
 /// What an export reports, as [`EngineEvent::Export`].
 #[derive(Debug)]
@@ -59,8 +61,6 @@ impl ExportJob {
     }
 }
 
-/// The sample rate of exported sound.
-const AUDIO_RATE: u32 = 48_000;
 /// Progress is reported at most this often.
 const PROGRESS_INTERVAL: Duration = Duration::from_millis(100);
 
@@ -70,6 +70,7 @@ pub(crate) fn spawn(
     gpu: &Gpu,
     project: Arc<Project>,
     path: PathBuf,
+    settings: ExportSettings,
     exporting: Arc<AtomicBool>,
     report: Report,
 ) -> Result<(ExportJob, JoinHandle<()>), EngineError> {
@@ -84,7 +85,7 @@ pub(crate) fn spawn(
         .spawn({
             let exporting = Arc::clone(&exporting);
             move || {
-                let outcome = export(&gpu, &project, &path, &cancel, &report);
+                let outcome = export(&gpu, &project, &path, &settings, &cancel, &report);
                 exporting.store(false, Ordering::Relaxed);
                 report(EngineEvent::Export(outcome));
             }
@@ -103,11 +104,23 @@ fn export(
     gpu: &Gpu,
     project: &Arc<Project>,
     path: &Path,
+    settings: &ExportSettings,
     cancel: &AtomicBool,
     report: &Report,
 ) -> ExportEvent {
     let part = part_path(path);
-    let outcome = write(gpu, project, &part, cancel, report);
+    let outcome = match settings.format {
+        ExportFormat::Video {
+            container,
+            codec,
+            audio,
+        } => write(
+            gpu, project, &part, container, codec, audio, settings, cancel, report,
+        ),
+        ExportFormat::Sound(format) => {
+            write_sound(project, &part, format, settings, cancel, report)
+        }
+    };
     let renamed = match outcome {
         Ok(Some(encoder)) => match std::fs::rename(&part, path) {
             Ok(()) => {
@@ -139,11 +152,17 @@ fn part_path(path: &Path) -> PathBuf {
     PathBuf::from(name)
 }
 
-/// Writes the whole sequence to `part`; the encoder used, or `None` when cancelled.
+/// Writes the whole sequence to `part` as a video file; the encoder used, or `None` when
+/// cancelled.
+#[allow(clippy::too_many_arguments)]
 fn write(
     gpu: &Gpu,
     project: &Arc<Project>,
     part: &Path,
+    container: Container,
+    codec: VideoCodec,
+    audio: AudioCodec,
+    settings: &ExportSettings,
     cancel: &AtomicBool,
     report: &Report,
 ) -> Result<Option<String>, EngineError> {
@@ -152,13 +171,15 @@ fn write(
     if end <= Frame(0) {
         return Err(EngineError::Empty);
     }
-    let sound = sequence.tracks().iter().any(|track| {
-        track.kind() == TrackKind::Audio && !track.muted() && !track.clips().is_empty()
-    });
-    let (width, height) = sequence.resolution();
-    let video = VideoSettings::h264(width, height, (rate.num(), rate.den()));
-    let audio = sound.then(|| AudioSettings::of(AudioCodec::Aac, AUDIO_RATE));
-    let mut writer = Writer::create(part, Container::Mp4, video, audio)?;
+    let sound = has_sound(project);
+    let (width, height) = export_size(sequence.resolution(), settings.short_side);
+    let video = VideoSettings {
+        codec,
+        quality: settings.quality,
+        ..VideoSettings::h264(width, height, (rate.num(), rate.den()))
+    };
+    let audio = sound.then(|| settings.audio(audio));
+    let mut writer = Writer::create(part, container, video, audio)?;
     let size = writer.size();
     let compositor = Compositor::new(gpu);
     let to_yuv = ToYuv::new(gpu);
@@ -189,6 +210,47 @@ fn write(
             writer.write_audio(&samples)?;
             mixed = until;
         }
+        let done = frame as u64 + 1;
+        if done == total || reported.elapsed() >= PROGRESS_INTERVAL {
+            reported = Instant::now();
+            report(EngineEvent::Export(ExportEvent::Progress { done, total }));
+        }
+    }
+    let encoder = writer.encoder().to_owned();
+    writer.finish()?;
+    Ok(Some(encoder))
+}
+
+/// Writes the sequence's sound alone to `part`; the encoder used, or `None` when cancelled.
+fn write_sound(
+    project: &Arc<Project>,
+    part: &Path,
+    format: AudioFormat,
+    settings: &ExportSettings,
+    cancel: &AtomicBool,
+    report: &Report,
+) -> Result<Option<String>, EngineError> {
+    let sequence = project.sequence();
+    let (rate, end) = (sequence.frame_rate(), sequence.end());
+    if end <= Frame(0) {
+        return Err(EngineError::Empty);
+    }
+    let mut writer = Writer::sound(part, format, settings.audio(format.codec()))?;
+    let mut mixer = Mixer::new(Arc::clone(project), AUDIO_RATE, MediaTime(0), 1.0);
+    let mut samples = Vec::new();
+    let mut mixed = 0u64;
+    let total = end.0 as u64;
+    let mut reported = Instant::now();
+    for frame in 0..end.0 {
+        if cancel.load(Ordering::Relaxed) {
+            return Ok(None);
+        }
+        let until = frame_to_media(Frame(frame + 1), rate).0;
+        let until = (i128::from(until) * i128::from(AUDIO_RATE) / 1_000_000) as u64;
+        samples.resize(2 * (until - mixed) as usize, 0.0);
+        mixer.fill(&mut samples)?;
+        writer.write_audio(&samples)?;
+        mixed = until;
         let done = frame as u64 + 1;
         if done == total || reported.elapsed() >= PROGRESS_INTERVAL {
             reported = Instant::now();

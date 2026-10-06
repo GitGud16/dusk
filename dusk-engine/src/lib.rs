@@ -14,6 +14,7 @@ mod info;
 mod mixer;
 #[cfg(feature = "gpu")]
 mod placement;
+mod settings;
 #[cfg(feature = "gpu")]
 mod sound;
 #[cfg(feature = "gpu")]
@@ -21,6 +22,9 @@ mod thumbnail;
 #[cfg(feature = "gpu")]
 mod video;
 
+pub use dusk_media::{
+    AudioCodec, AudioFormat, Container, ENCODERS, Encoder, Quality, VideoCodec, available_encoders,
+};
 #[cfg(feature = "gpu")]
 pub use dusk_render::{Gpu, GpuError, wgpu};
 #[cfg(feature = "gpu")]
@@ -29,5 +33,6 @@ pub use error::EngineError;
 #[cfg(feature = "gpu")]
 pub use export::{ExportEvent, ExportJob};
 pub use info::media_info;
+pub use settings::{ExportFormat, ExportSettings, export_size};
 #[cfg(feature = "gpu")]
 pub use thumbnail::{THUMBNAIL_SIDE, Thumbnail, thumbnail_of};

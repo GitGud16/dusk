@@ -349,7 +349,11 @@ impl App {
             },
         };
         let path = export_path(&base);
-        match self.engine.export(Arc::clone(&self.project), path.clone()) {
+        match self.engine.export(
+            Arc::clone(&self.project),
+            path.clone(),
+            dusk_engine::ExportSettings::default(),
+        ) {
             Ok(job) => {
                 self.export_started(job, false);
                 self.say(&format!("Exporting to {}…", path.display()));

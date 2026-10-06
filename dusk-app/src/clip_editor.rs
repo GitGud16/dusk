@@ -11,7 +11,7 @@ use dusk_core::{
     ClipDraft, ClipEditSession, ClipId, Edge, Fit, Frame, MediaTime, Project, Rational,
     SessionStatus, VideoEdits,
 };
-use dusk_engine::Preview;
+use dusk_engine::{ExportSettings, Preview};
 use slint::{CloseRequestResponse, ComponentHandle, Model, SharedString};
 
 use crate::app::{App, factor_label, sentence, texture_image, with_app};
@@ -883,7 +883,10 @@ impl App {
                  under another name.",
             );
         }
-        match self.engine.export(Arc::new(project), path.clone()) {
+        match self
+            .engine
+            .export(Arc::new(project), path.clone(), ExportSettings::default())
+        {
             Ok(job) => {
                 self.export_started(job, true);
                 let message = format!("Exporting the clip to {}…", path.display());

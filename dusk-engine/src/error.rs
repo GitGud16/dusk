@@ -31,6 +31,9 @@ pub enum EngineError {
     /// There is nothing to export.
     #[error("the timeline is empty; add a clip before exporting")]
     Empty,
+    /// A sound export of a timeline without sound.
+    #[error("the timeline has no sound to export; place an audio clip or unmute an audio track")]
+    NoSound,
     /// A file could not be renamed or removed.
     #[error("Dusk could not finish {}: {source}. Check that you can write to that folder", path.display())]
     Io {

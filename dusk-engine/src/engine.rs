@@ -18,6 +18,7 @@ use dusk_render::{Gpu, wgpu};
 
 use crate::cache::DEFAULT_CAP;
 use crate::export::{self, ExportJob};
+use crate::settings::{ExportFormat, ExportSettings, has_sound};
 use crate::sound::{self, SoundRequest};
 use crate::thumbnail::{self, Thumbnail, ThumbnailJob};
 use crate::video::{self, VideoRequest};
@@ -304,7 +305,15 @@ impl Engine {
     /// Exports `project` to an MP4 file at `path` on its own thread; progress and the outcome
     /// arrive as [`EngineEvent::Export`]. Playback stops, and until the export ends the
     /// preview shows cached frames only (docs/ARCHITECTURE.md, "Export").
-    pub fn export(&self, project: Arc<Project>, path: PathBuf) -> Result<ExportJob, EngineError> {
+    pub fn export(
+        &self,
+        project: Arc<Project>,
+        path: PathBuf,
+        settings: ExportSettings,
+    ) -> Result<ExportJob, EngineError> {
+        if matches!(settings.format, ExportFormat::Sound(_)) && !has_sound(&project) {
+            return Err(EngineError::NoSound);
+        }
         let mut export = self.export.lock().unwrap_or_else(PoisonError::into_inner);
         if self.is_exporting() {
             return Err(EngineError::ExportRunning);
@@ -318,6 +327,7 @@ impl Engine {
             &self.gpu,
             project,
             path,
+            settings,
             Arc::clone(&self.exporting),
             Arc::clone(&self.report),
         )?;

@@ -8,11 +8,15 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 use dusk_core::{
-    ClipEditSession, Command, Edge, Frame, MediaTime, Project, Rational, Rect, Rotation, TrimClips,
-    import,
+    ClipEditSession, Command, Edge, Frame, MediaTime, Project, Rational, Rect, Rotation,
+    SetTrackMuted, TrimClips, import,
 };
-use dusk_engine::{Engine, EngineEvent, EngineOptions, ExportEvent, Gpu, media_info};
+use dusk_engine::{
+    Engine, EngineError, EngineEvent, EngineOptions, ExportEvent, ExportFormat, ExportSettings,
+    Gpu, media_info,
+};
 use dusk_media::{Acceleration, StreamKind, VideoDecoder, probe};
+use dusk_media::{AudioCodec, AudioFormat, Container, Quality, VideoCodec};
 
 fn sample() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../testdata/sample-h264-aac.mp4")
@@ -82,7 +86,11 @@ fn a_clip_exports_to_a_playable_mp4() {
     let (engine, events) = engine();
     let path = output("clip.mp4");
     let _job = engine
-        .export(Arc::new(project_at(Frame(0))), path.clone())
+        .export(
+            Arc::new(project_at(Frame(0))),
+            path.clone(),
+            ExportSettings::default(),
+        )
         .unwrap();
     let (outcome, progress) = outcome(&events);
     match outcome {
@@ -127,7 +135,9 @@ fn a_clip_from_the_clip_editor_exports_at_its_own_rate_and_shape() {
     assert_eq!(export.sequence().resolution(), (121, 201));
     let (engine, events) = engine();
     let path = output("clip-editor.mp4");
-    let _job = engine.export(Arc::new(export), path.clone()).unwrap();
+    let _job = engine
+        .export(Arc::new(export), path.clone(), ExportSettings::default())
+        .unwrap();
     assert!(matches!(outcome(&events).0, ExportEvent::Finished { .. }));
     let written = media_info(&path).unwrap();
     assert_eq!((written.width, written.height), (120, 200));
@@ -174,6 +184,116 @@ fn a_clip_from_the_clip_editor_exports_at_its_own_rate_and_shape() {
     }
 }
 
+/// Exports `project` with `settings` and waits for it to finish.
+fn export_with(project: Project, name: &str, settings: ExportSettings) -> PathBuf {
+    let (engine, events) = engine();
+    let path = output(name);
+    let _job = engine
+        .export(Arc::new(project), path.clone(), settings)
+        .unwrap();
+    match outcome(&events).0 {
+        ExportEvent::Finished { .. } => path,
+        other => panic!("expected the export to finish, got {other:?}"),
+    }
+}
+
+fn video_codec(path: &Path) -> String {
+    probe(path)
+        .unwrap()
+        .streams
+        .iter()
+        .find(|stream| stream.kind == StreamKind::Video)
+        .map(|stream| stream.codec.clone())
+        .unwrap_or_default()
+}
+
+fn audio_codec(path: &Path) -> String {
+    probe(path)
+        .unwrap()
+        .streams
+        .iter()
+        .find(|stream| stream.kind == StreamKind::Audio)
+        .map(|stream| stream.codec.clone())
+        .unwrap_or_default()
+}
+
+#[test]
+fn a_preset_exports_the_short_side_keeping_the_shape() {
+    // The sample is 320x240; a 120-pixel short side makes it 160x120.
+    let settings = ExportSettings {
+        short_side: Some(120),
+        ..ExportSettings::default()
+    };
+    let path = export_with(project_at(Frame(0)), "short-side.mp4", settings);
+    let written = media_info(&path).unwrap();
+    assert_eq!((written.width, written.height), (160, 120));
+}
+
+#[test]
+fn hevc_in_mkv_and_vp9_in_webm_export_from_the_timeline() {
+    let mkv = ExportSettings {
+        format: ExportFormat::Video {
+            container: Container::Mkv,
+            codec: VideoCodec::Hevc,
+            audio: AudioCodec::Aac,
+        },
+        ..ExportSettings::default()
+    };
+    let path = export_with(project_at(Frame(0)), "timeline.mkv", mkv);
+    assert_eq!(
+        (video_codec(&path), audio_codec(&path)),
+        ("hevc".into(), "aac".into())
+    );
+    let webm = ExportSettings {
+        format: ExportFormat::Video {
+            container: Container::WebM,
+            codec: VideoCodec::Vp9,
+            audio: AudioCodec::Opus,
+        },
+        quality: Quality::SMALL,
+        ..ExportSettings::default()
+    };
+    let path = export_with(project_at(Frame(0)), "timeline.webm", webm);
+    assert_eq!(
+        (video_codec(&path), audio_codec(&path)),
+        ("vp9".into(), "opus".into())
+    );
+    let duration = duration_of(&path);
+    assert!((950_000..=1_100_000).contains(&duration), "{duration} µs");
+}
+
+#[test]
+fn sound_alone_exports_the_mix() {
+    let settings = ExportSettings {
+        format: ExportFormat::Sound(AudioFormat::Mp3),
+        ..ExportSettings::default()
+    };
+    let path = export_with(project_at(Frame(0)), "mix.mp3", settings);
+    let info = probe(&path).unwrap();
+    assert_eq!(info.streams.len(), 1);
+    assert_eq!(audio_codec(&path), "mp3");
+    let duration = duration_of(&path);
+    assert!((950_000..=1_150_000).contains(&duration), "{duration} µs");
+}
+
+#[test]
+fn a_timeline_without_sound_has_no_sound_to_export() {
+    let mut project = project_at(Frame(0));
+    let sound_track = project.sequence().tracks()[2].id();
+    Command::SetTrackMuted(SetTrackMuted::new(sound_track, true))
+        .apply(&mut project)
+        .unwrap();
+    let (engine, _events) = engine();
+    let settings = ExportSettings {
+        format: ExportFormat::Sound(AudioFormat::Wav),
+        ..ExportSettings::default()
+    };
+    assert!(matches!(
+        engine.export(Arc::new(project), output("silent.wav"), settings),
+        Err(EngineError::NoSound)
+    ));
+}
+
 #[test]
 fn a_trimmed_clip_exports_only_what_is_left() {
     let mut project = project_at(Frame(0));
@@ -183,7 +303,9 @@ fn a_trimmed_clip_exports_only_what_is_left() {
         .unwrap();
     let (engine, events) = engine();
     let path = output("trimmed.mp4");
-    let _job = engine.export(Arc::new(project), path.clone()).unwrap();
+    let _job = engine
+        .export(Arc::new(project), path.clone(), ExportSettings::default())
+        .unwrap();
     assert!(matches!(outcome(&events).0, ExportEvent::Finished { .. }));
     let duration = duration_of(&path);
     assert!((450_000..=600_000).contains(&duration), "{duration} µs");
@@ -194,7 +316,11 @@ fn a_gap_exports_as_black() {
     let (engine, events) = engine();
     let path = output("gap.mp4");
     let _job = engine
-        .export(Arc::new(project_at(Frame(15))), path.clone())
+        .export(
+            Arc::new(project_at(Frame(15))),
+            path.clone(),
+            ExportSettings::default(),
+        )
         .unwrap();
     assert!(matches!(outcome(&events).0, ExportEvent::Finished { .. }));
     let duration = duration_of(&path);
@@ -209,7 +335,11 @@ fn a_cancelled_export_leaves_nothing_behind() {
     let (engine, events) = engine();
     let path = output("cancelled.mp4");
     let job = engine
-        .export(Arc::new(project_at(Frame(0))), path.clone())
+        .export(
+            Arc::new(project_at(Frame(0))),
+            path.clone(),
+            ExportSettings::default(),
+        )
         .unwrap();
     job.cancel();
     assert!(matches!(outcome(&events).0, ExportEvent::Cancelled));
@@ -223,7 +353,9 @@ fn an_empty_timeline_is_refused() {
     let info = media_info(&sample()).unwrap();
     let empty = Project::new(info.frame_rate.unwrap(), (320, 240));
     let path = output("empty.mp4");
-    let _job = engine.export(Arc::new(empty), path.clone()).unwrap();
+    let _job = engine
+        .export(Arc::new(empty), path.clone(), ExportSettings::default())
+        .unwrap();
     assert!(matches!(outcome(&events).0, ExportEvent::Failed(_)));
     assert!(!path.exists());
     assert!(!part(&path).exists());
@@ -235,7 +367,11 @@ fn closing_the_engine_mid_export_leaves_no_part_file() {
     let path = output("closed.mp4");
     // Ten seconds of black before the clip: long enough to close the engine halfway.
     let _job = engine
-        .export(Arc::new(project_at(Frame(300))), path.clone())
+        .export(
+            Arc::new(project_at(Frame(300))),
+            path.clone(),
+            ExportSettings::default(),
+        )
         .unwrap();
     loop {
         match events.recv_timeout(PATIENCE).expect("progress") {
@@ -255,12 +391,20 @@ fn one_export_runs_at_a_time() {
     let (engine, events) = engine();
     let first = output("first.mp4");
     let _job = engine
-        .export(Arc::new(project_at(Frame(0))), first)
+        .export(
+            Arc::new(project_at(Frame(0))),
+            first,
+            ExportSettings::default(),
+        )
         .unwrap();
     let second = output("second.mp4");
     assert!(
         engine
-            .export(Arc::new(project_at(Frame(0))), second.clone())
+            .export(
+                Arc::new(project_at(Frame(0))),
+                second.clone(),
+                ExportSettings::default()
+            )
             .is_err()
     );
     outcome(&events);
