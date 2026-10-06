@@ -7,6 +7,7 @@ use std::fmt;
 mod clip;
 mod edits;
 mod insert;
+mod media;
 mod moves;
 mod remove;
 mod sequence;
@@ -26,6 +27,7 @@ use crate::time::{Frame, MediaTime, length_for};
 pub use clip::{SetClipEnabled, Unlink};
 pub use edits::{SetAudioEdits, SetVideoEdits};
 pub use insert::InsertClips;
+pub use media::RelinkMedia;
 pub use moves::{MoveClips, nearest_free_position};
 pub use remove::{RemoveClips, remove_one};
 pub use sequence::{SEQUENCE_SIDES, SetSequenceSettings};
@@ -39,6 +41,8 @@ pub use trim::{Edge, TrimClips};
 pub enum Command {
     /// Adds a media file to the project.
     AddMedia(MediaRef),
+    /// Points a media file at another path, such as where a moved file went.
+    RelinkMedia(RelinkMedia),
     /// Places clips on tracks.
     InsertClips(InsertClips),
     /// Moves the start or the end of a clip and its linked partners.
@@ -80,6 +84,7 @@ impl Command {
                 project.media.push(media.clone());
                 Ok(())
             }
+            Command::RelinkMedia(relink) => relink.apply(project),
             Command::InsertClips(insert) => insert.apply(project),
             Command::TrimClips(trim) => trim.apply(project),
             Command::MoveClips(moves) => moves.apply(project),
@@ -111,6 +116,7 @@ impl Command {
     pub fn revert(&mut self, project: &mut Project) {
         match self {
             Command::AddMedia(media) => project.media.retain(|other| other.id != media.id),
+            Command::RelinkMedia(relink) => relink.revert(project),
             Command::InsertClips(insert) => insert.revert(project),
             Command::TrimClips(trim) => trim.revert(project),
             Command::MoveClips(moves) => moves.revert(project),
@@ -140,6 +146,7 @@ impl Command {
             Command::ApplyClipSession(session) => session.notices.clone(),
             Command::Batch(commands) => commands.iter().flat_map(Command::notices).collect(),
             Command::AddMedia(_)
+            | Command::RelinkMedia(_)
             | Command::InsertClips(_)
             | Command::MoveClips(_)
             | Command::SplitClips(_)
@@ -375,6 +382,27 @@ pub enum Rejection {
     /// The sequence size is outside what Dusk supports.
     #[error("the sequence must be 16 to 8192 pixels on each side")]
     Resolution,
+    /// A media file was to be relinked to a file of another kind: a video, a sound or a
+    /// picture where the project used another.
+    #[error(
+        "that file is not the same kind of media as the one the project used; pick that file, or a copy of it"
+    )]
+    RelinkKind(MediaId),
+    /// A media file was to be relinked to a file without sound, while a clip plays its sound.
+    #[error(
+        "that file has no sound, and the project plays the sound of the one it used; pick that file, or a copy of it"
+    )]
+    RelinkNoSound(MediaId),
+    /// A media file was to be relinked to a file shorter than the clips that use it.
+    #[error(
+        "that file is shorter than the clips that use it; pick the file the project used, or a copy of it"
+    )]
+    RelinkTooShort(MediaId),
+    /// A media file was to be relinked to a file whose picture a clip's crop reaches outside.
+    #[error(
+        "that file's picture is too small for a crop of it; pick the file the project used, or a copy of it"
+    )]
+    RelinkCropSize(MediaId),
     /// A ripple delete would move clips onto a clip that overlaps the deleted range.
     #[error(
         "a clip on another track overlaps the deleted range; lock that track or use plain delete"
