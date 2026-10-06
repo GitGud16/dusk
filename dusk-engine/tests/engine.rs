@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, mpsc};
 use std::time::{Duration, Instant};
 
-use dusk_core::{Command, Frame, MediaId, Project, RemoveClips, import, split_at};
+use dusk_core::{Command, Frame, MediaId, Project, RelinkMedia, RemoveClips, import, split_at};
 use dusk_engine::{Engine, EngineEvent, EngineOptions, Gpu, Preview, media_info};
 use dusk_render::Compositor;
 
@@ -255,6 +255,38 @@ fn shows_the_requested_frame_at_the_preview_size() {
     let rgba = Compositor::new(&running.gpu).read_rgba(&texture).unwrap();
     // testsrc2 is colorful; an all-black frame would mean nothing was drawn.
     assert!(rgba.chunks(4).any(|pixel| pixel[..3] != [0, 0, 0]));
+}
+
+#[test]
+fn a_relinked_file_never_shows_the_old_files_frames() {
+    let running = start(project_at(Frame(0)));
+    running.engine.show(Preview::Main, Frame(5));
+    let (_, texture) = running.next_frame();
+    assert!(!is_black(&running, &texture.expect("a picture")));
+    // The same media, now where no file is: the frames decoded from its old place must not
+    // stand in for it, so the frame fails to open.
+    let mut moved = (*project_at(Frame(0))).clone();
+    let media = moved.media()[0].clone();
+    let elsewhere = sample().with_file_name("moved-away.mp4");
+    Command::RelinkMedia(RelinkMedia::new(media.id, elsewhere, media.info))
+        .apply(&mut moved)
+        .unwrap();
+    running.engine.set_project(Preview::Main, Arc::new(moved));
+    running.engine.show(Preview::Main, Frame(5));
+    loop {
+        match running.events.recv_timeout(PATIENCE).expect("an event") {
+            EngineEvent::Error(_) => break,
+            EngineEvent::Frame { texture, .. } => {
+                panic!("a frame came instead of the error: {texture:?}")
+            }
+            _ => {}
+        }
+    }
+    // Then the frame shows black, as a clip whose file is missing does, rather than the
+    // picture that was on screen before.
+    let (frame, texture) = running.next_frame();
+    assert_eq!(frame, Frame(5));
+    assert!(is_black(&running, &texture.expect("a frame")));
 }
 
 #[test]

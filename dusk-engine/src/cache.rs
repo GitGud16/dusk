@@ -118,6 +118,16 @@ impl FrameCache {
         self.used
     }
 
+    /// Drops every frame of `media`, as when the project points it at another file.
+    pub fn forget(&mut self, media: MediaId) {
+        if let Some(frames) = self.media.remove(&media) {
+            self.used -= frames
+                .values()
+                .map(|entry| entry.picture.byte_size())
+                .sum::<usize>();
+        }
+    }
+
     /// Drops the least recently used frame; false when the cache is empty.
     fn evict_one(&mut self) -> bool {
         let oldest = self
@@ -234,6 +244,28 @@ mod tests {
         assert!(cache.get(CLIP, us(0)).is_some());
         assert!(cache.get(CLIP, us(2000)).is_some());
         assert!(cache.get(OTHER, us(0)).is_some());
+    }
+
+    #[test]
+    fn forgetting_a_media_drops_its_frames_alone() {
+        let size = picture(0).byte_size();
+        let mut cache = FrameCache::new(8 * size);
+        for (media, n) in [(CLIP, 0), (CLIP, 1), (OTHER, 0)] {
+            cache.insert(
+                media,
+                us(n * 1000),
+                Following::Next(us(n * 1000 + 1000)),
+                picture(n as u8),
+            );
+        }
+        cache.forget(CLIP);
+        assert!(cache.get(CLIP, us(0)).is_none() && cache.get(CLIP, us(1000)).is_none());
+        assert!(cache.nearest(CLIP, us(0)).is_none());
+        assert!(cache.get(OTHER, us(0)).is_some());
+        assert_eq!(cache.used(), size);
+        // Forgetting a media with nothing cached changes nothing.
+        cache.forget(MediaId(9));
+        assert_eq!(cache.used(), size);
     }
 
     #[test]

@@ -246,6 +246,7 @@ impl VideoThread {
             for request in first.into_iter().chain(inbox.try_iter()) {
                 match request {
                     VideoRequest::Project(preview, project) => {
+                        self.forget_moved_media(preview, &project);
                         let view = self.view_mut(preview);
                         view.project = Some(project);
                         // An edit can change what any frame shows, and what comes next.
@@ -402,7 +403,7 @@ impl VideoThread {
                 self.view_mut(preview).pending_scrub = None;
                 return self.present(preview, frame, shown, true);
             }
-            Err(error) => return self.fail(error),
+            Err(error) => return self.fail_at(preview, frame, error),
         }
         if self.scrub_due(preview) {
             return self.show_exact(preview, frame);
@@ -429,7 +430,7 @@ impl VideoThread {
         };
         match self.shown_at(preview, frame, fetch) {
             Ok(shown) => self.present(preview, frame, shown, !exporting),
-            Err(error) => self.fail(error),
+            Err(error) => self.fail_at(preview, frame, error),
         }
     }
 
@@ -859,6 +860,33 @@ impl VideoThread {
         }
     }
 
+    /// Lets go of what was decoded from a media file that `project` finds somewhere else than
+    /// the project `preview` showed before, as after relinking it: its frames and its decoder
+    /// came from the old place.
+    fn forget_moved_media(&mut self, preview: Preview, project: &Project) {
+        let Some(before) = self.view(preview).project.clone() else {
+            return;
+        };
+        for media in project.media() {
+            let moved = before
+                .media_ref(media.id)
+                .is_some_and(|old| old.path != media.path);
+            if moved {
+                self.cache.forget(media.id);
+                self.decoders.retain(|open| open.media != media.id);
+                if self
+                    .upcoming
+                    .as_ref()
+                    .is_some_and(|upcoming| upcoming.media == media.id)
+                {
+                    self.upcoming = None;
+                }
+            }
+        }
+        self.open_decoders
+            .store(self.decoders_open(), Ordering::Relaxed);
+    }
+
     /// The index of an open decoder for `media`, opened if needed within the decoder budget.
     fn decoder(&mut self, project: &Project, media: MediaId) -> Result<usize, EngineError> {
         let now = Instant::now();
@@ -940,6 +968,13 @@ impl VideoThread {
 
     fn fail(&self, error: EngineError) {
         (self.report)(EngineEvent::Error(error));
+    }
+
+    /// `frame` of `preview` cannot be shown: says why, and shows it black, as a clip whose
+    /// file is missing is, rather than leaving the picture shown before.
+    fn fail_at(&mut self, preview: Preview, frame: Frame, error: EngineError) {
+        self.fail(error);
+        self.present(preview, frame, Shown::Black, true);
     }
 }
 
