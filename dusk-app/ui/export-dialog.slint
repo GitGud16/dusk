@@ -1,0 +1,280 @@
+// The export dialog (docs/ARCHITECTURE.md, "Export details"): a video file or the sound
+// alone, offering only what the loaded FFmpeg can make on this computer. The Rust side works
+// out what is offered and chosen; the dialog shows it and says what changed.
+
+import { Theme } from "theme.slint";
+import { FieldLabel, NumberField, Segmented, Slider, ToolButton } from "widgets.slint";
+import { DialogPanel, DialogTitle } from "dialogs.slint";
+
+// The dialog as the Rust side worked it out.
+export struct ExportView {
+    // The encoders are still being tried; nothing can be chosen yet.
+    probing: bool,
+    // What is chosen can be exported.
+    ready: bool,
+    video-offered: bool,
+    sound-offered: bool,
+    sound-only: bool,
+    containers: [string],
+    container: int,
+    codecs: [string],
+    codec: int,
+    // Which encoder will write the video, such as "On the graphics card (h264_amf)".
+    encoder: string,
+    // The sound codecs the file format holds.
+    sounds: [string],
+    sound: int,
+    sound-formats: [string],
+    sound-format: int,
+    sizes: [string],
+    size: int,
+    // The Quality slider, 0 to 100.
+    level: int,
+    crf-offered: bool,
+    // Advanced: kbit/s and CRF, 0 for off.
+    bitrate: int,
+    crf: int,
+}
+
+export component ExportDialog inherits Rectangle {
+    in property <ExportView> view;
+    // `what` changed to `value`: "kind" (0 video, 1 sound alone), "container", "codec",
+    // "sound", "sound-format", "size", "level", "bitrate" or "crf".
+    callback changed(what: string, value: int);
+    // Export (`export`) or cancel.
+    callback done(export: bool);
+    // Typing in a field is over.
+    callback finished();
+
+    property <bool> advanced: root.view.bitrate > 0 || root.view.crf > 0;
+
+    DialogPanel {
+        panel-width: 520px;
+        keep-top: true;
+
+        DialogTitle {
+            text: "Export";
+        }
+
+        if root.view.probing: Text {
+            text: "Checking which encoders this computer has…";
+            color: Theme.text-2;
+            wrap: word-wrap;
+        }
+
+        if !root.view.probing && root.view.video-offered && root.view.sound-offered: Segmented {
+            options: ["Video", "Sound only"];
+            selected: root.view.sound-only ? 1 : 0;
+            chosen(index) => {
+                root.changed("kind", index);
+            }
+        }
+
+        if !root.view.probing && !root.view.sound-only: VerticalLayout {
+            spacing: Theme.space-3;
+
+            VerticalLayout {
+                spacing: Theme.space-1;
+
+                FieldLabel {
+                    text: "File format";
+                }
+
+                Segmented {
+                    options: root.view.containers;
+                    selected: root.view.container;
+                    chosen(index) => {
+                        root.changed("container", index);
+                    }
+                }
+            }
+
+            VerticalLayout {
+                spacing: Theme.space-1;
+
+                HorizontalLayout {
+                    spacing: Theme.space-2;
+
+                    FieldLabel {
+                        text: "Codec";
+                        horizontal-stretch: 1;
+                    }
+
+                    Text {
+                        text: root.view.encoder;
+                        color: Theme.text-3;
+                        font-size: Theme.font-tiny;
+                    }
+                }
+
+                Segmented {
+                    options: root.view.codecs;
+                    selected: root.view.codec;
+                    chosen(index) => {
+                        root.changed("codec", index);
+                    }
+                }
+            }
+
+            VerticalLayout {
+                spacing: Theme.space-1;
+
+                FieldLabel {
+                    text: "Picture size";
+                }
+
+                Segmented {
+                    options: root.view.sizes;
+                    selected: root.view.size;
+                    chosen(index) => {
+                        root.changed("size", index);
+                    }
+                }
+            }
+
+            VerticalLayout {
+                spacing: Theme.space-1;
+
+                HorizontalLayout {
+                    FieldLabel {
+                        text: "Quality";
+                        horizontal-stretch: 1;
+                    }
+
+                    Text {
+                        text: root.view.bitrate > 0 || root.view.crf > 0 ? "set in Advanced" : Math.round(quality.shown);
+                        color: Theme.text-1;
+                        font-family: Theme.font-numeric;
+                        font-size: Theme.font-tiny;
+                    }
+                }
+
+                Segmented {
+                    options: ["High", "Medium", "Small"];
+                    selected: root.view.level == 80 ? 0 : root.view.level == 60 ? 1 : root.view.level == 40 ? 2 : -1;
+                    chosen(index) => {
+                        root.changed("level", index == 0 ? 80 : index == 1 ? 60 : 40);
+                    }
+                }
+
+                quality := Slider {
+                    minimum: 0;
+                    maximum: 100;
+                    value: root.view.level;
+                    changed(level) => {
+                        root.changed("level", Math.round(level));
+                    }
+                    reset => {
+                        root.changed("level", 80);
+                    }
+                }
+            }
+
+            if root.view.sounds.length > 1: VerticalLayout {
+                spacing: Theme.space-1;
+
+                FieldLabel {
+                    text: "Sound";
+                }
+
+                Segmented {
+                    options: root.view.sounds;
+                    selected: root.view.sound;
+                    chosen(index) => {
+                        root.changed("sound", index);
+                    }
+                }
+            }
+
+            if root.advanced: HorizontalLayout {
+                spacing: Theme.space-2;
+
+                VerticalLayout {
+                    spacing: Theme.space-1;
+
+                    FieldLabel {
+                        text: "Target bitrate, 0 to use Quality";
+                    }
+
+                    NumberField {
+                        value: root.view.bitrate;
+                        maximum: 500000;
+                        suffix: "kbit/s";
+                        edited(value) => {
+                            root.changed("bitrate", value);
+                        }
+                        finished => {
+                            root.finished();
+                        }
+                    }
+                }
+
+                if root.view.crf-offered: VerticalLayout {
+                    spacing: Theme.space-1;
+
+                    FieldLabel {
+                        text: "CRF, 0 for off";
+                    }
+
+                    NumberField {
+                        value: root.view.crf;
+                        maximum: 63;
+                        edited(value) => {
+                            root.changed("crf", value);
+                        }
+                        finished => {
+                            root.finished();
+                        }
+                    }
+                }
+            }
+        }
+
+        if !root.view.probing && root.view.sound-only: VerticalLayout {
+            spacing: Theme.space-1;
+
+            FieldLabel {
+                text: "Sound file format";
+            }
+
+            Segmented {
+                options: root.view.sound-formats;
+                selected: root.view.sound-format;
+                chosen(index) => {
+                    root.changed("sound-format", index);
+                }
+            }
+        }
+
+        HorizontalLayout {
+            spacing: Theme.space-2;
+
+            if !root.view.probing && !root.view.sound-only: ToolButton {
+                text: root.advanced ? "Hide advanced settings" : "Advanced settings";
+                clicked => {
+                    root.advanced = !root.advanced;
+                }
+            }
+
+            Rectangle {
+                horizontal-stretch: 1;
+            }
+
+            ToolButton {
+                text: "Export…";
+                primary: true;
+                enabled: root.view.ready;
+                clicked => {
+                    root.done(true);
+                }
+            }
+
+            ToolButton {
+                text: "Cancel";
+                clicked => {
+                    root.done(false);
+                }
+            }
+        }
+    }
+}

@@ -5,6 +5,19 @@
 use dusk_core::{Project, TrackKind};
 use dusk_media::{AudioCodec, AudioFormat, AudioSettings, Container, Quality, VideoCodec};
 
+/// Whether `project`'s sequence has a picture to show: a video track that is not hidden and
+/// has an enabled clip on it.
+pub fn has_picture(project: &Project) -> bool {
+    has_clips(project, TrackKind::Video)
+}
+
+/// Whether a track of `kind` that is not muted or hidden has an enabled clip on it.
+fn has_clips(project: &Project, kind: TrackKind) -> bool {
+    project.sequence().tracks().iter().any(|track| {
+        track.kind() == kind && !track.muted() && track.clips().iter().any(|clip| clip.enabled)
+    })
+}
+
 /// The sample rate exported sound is mixed and written at.
 #[cfg_attr(
     not(feature = "gpu"),
@@ -89,20 +102,85 @@ pub fn export_size(size: (u32, u32), short_side: Option<u32>) -> (u32, u32) {
 }
 
 /// Whether `project`'s sequence has sound to hear: an audio track that is not muted and has
-/// a clip on it.
-#[cfg_attr(
-    not(feature = "gpu"),
-    expect(dead_code, reason = "dusq's CPU path takes it up in M4's fifth step")
-)]
-pub(crate) fn has_sound(project: &Project) -> bool {
-    project.sequence().tracks().iter().any(|track| {
-        track.kind() == TrackKind::Audio && !track.muted() && !track.clips().is_empty()
-    })
+/// an enabled clip on it.
+pub fn has_sound(project: &Project) -> bool {
+    has_clips(project, TrackKind::Audio)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use dusk_core::{
+        Command, Frame, MediaInfo, MediaKind, MediaTime, Orientation, Rational, SetClipEnabled,
+        SetTrackMuted, import,
+    };
+
+    /// A project with one file imported: its video on V1 and its sound on A1, as it has them.
+    fn imported(has_video: bool, has_audio: bool) -> Project {
+        let rate = Rational::new(30, 1).unwrap();
+        let info = MediaInfo {
+            kind: if has_video {
+                MediaKind::Video
+            } else {
+                MediaKind::Audio
+            },
+            duration: MediaTime(2_000_000),
+            has_video,
+            has_audio,
+            frame_rate: has_video.then_some(rate),
+            vfr: false,
+            width: 1920,
+            height: 1080,
+            orientation: Orientation::UPRIGHT,
+        };
+        let mut project = Project::new(rate, (1920, 1080));
+        import(&project, "clip.mp4".into(), info, Frame(0))
+            .apply(&mut project)
+            .unwrap();
+        project
+    }
+
+    /// `project` with `command` applied.
+    fn after(project: &Project, mut command: Command) -> Project {
+        let mut project = project.clone();
+        command.apply(&mut project).unwrap();
+        project
+    }
+
+    #[test]
+    fn a_picture_needs_a_shown_video_track_with_an_enabled_clip() {
+        let project = imported(true, true);
+        assert!(has_picture(&project));
+        assert!(!has_picture(&imported(false, true)));
+        let track = &project.sequence().tracks()[0];
+        assert_eq!(track.kind(), TrackKind::Video);
+        let hidden = SetTrackMuted::new(track.id(), true);
+        assert!(!has_picture(&after(
+            &project,
+            Command::SetTrackMuted(hidden)
+        )));
+        let disabled = SetClipEnabled::new(track.clips()[0].id, false);
+        assert!(!has_picture(&after(
+            &project,
+            Command::SetClipEnabled(disabled)
+        )));
+    }
+
+    #[test]
+    fn sound_needs_an_audible_track_with_an_enabled_clip() {
+        let project = imported(true, true);
+        assert!(has_sound(&project));
+        assert!(!has_sound(&imported(true, false)));
+        let track = &project.sequence().tracks()[2];
+        assert_eq!(track.kind(), TrackKind::Audio);
+        let muted = SetTrackMuted::new(track.id(), true);
+        assert!(!has_sound(&after(&project, Command::SetTrackMuted(muted))));
+        let disabled = SetClipEnabled::new(track.clips()[0].id, false);
+        assert!(!has_sound(&after(
+            &project,
+            Command::SetClipEnabled(disabled)
+        )));
+    }
 
     #[test]
     fn a_preset_sets_the_short_side_keeping_the_shape() {

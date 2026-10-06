@@ -16,10 +16,10 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 use windows::Win32::UI::Shell::Common::COMDLG_FILTERSPEC;
 use windows::Win32::UI::Shell::{
     FILEOPENDIALOGOPTIONS, FOS_ALLOWMULTISELECT, FOS_FILEMUSTEXIST, FOS_FORCEFILESYSTEM,
-    FOS_OVERWRITEPROMPT, FOS_PATHMUSTEXIST, FileOpenDialog, FileSaveDialog, IFileOpenDialog,
-    IFileSaveDialog, IShellItem, SHCreateItemFromParsingName, SIGDN_FILESYSPATH,
+    FOS_OVERWRITEPROMPT, FOS_PATHMUSTEXIST, FOS_STRICTFILETYPES, FileOpenDialog, FileSaveDialog,
+    IFileOpenDialog, IFileSaveDialog, IShellItem, SHCreateItemFromParsingName, SIGDN_FILESYSPATH,
 };
-use windows::core::{HSTRING, w};
+use windows::core::{HSTRING, PCWSTR, w};
 
 use super::Dialog;
 
@@ -43,11 +43,6 @@ const MEDIA: &[COMDLG_FILTERSPEC] = &[
 const PROJECTS: &[COMDLG_FILTERSPEC] = &[COMDLG_FILTERSPEC {
     pszName: w!("Dusk projects"),
     pszSpec: w!("*.dusk"),
-}];
-
-const MP4: &[COMDLG_FILTERSPEC] = &[COMDLG_FILTERSPEC {
-    pszName: w!("MP4 video"),
-    pszSpec: w!("*.mp4"),
 }];
 
 /// Shows `dialog` owned by the window `owner` and waits for it; what was picked, or nothing.
@@ -108,16 +103,30 @@ unsafe fn pick(owner: Option<HWND>, dialog: &Dialog) -> windows::core::Result<Ve
                     .map(|index| path_of(&items.GetItemAt(index)?))
                     .collect()
             }
-            Dialog::SaveProject { .. } | Dialog::ExportClip { .. } => {
+            Dialog::SaveProject { .. } | Dialog::Export { .. } => {
                 let picker: IFileSaveDialog =
                     CoCreateInstance(&FileSaveDialog, None, CLSCTX_INPROC_SERVER)?;
+                // A file gets the format's extension whatever is typed, so what is written
+                // matches its name.
                 picker.SetOptions(FILEOPENDIALOGOPTIONS(
-                    picker.GetOptions()?.0 | options(&[FOS_OVERWRITEPROMPT]).0,
+                    picker.GetOptions()?.0 | options(&[FOS_OVERWRITEPROMPT, FOS_STRICTFILETYPES]).0,
                 ))?;
                 match dialog {
-                    Dialog::ExportClip { suggested } => {
-                        picker.SetFileTypes(MP4)?;
-                        picker.SetDefaultExtension(w!("mp4"))?;
+                    Dialog::Export { suggested, kind } => {
+                        // The filter's strings live until the dialog has taken them.
+                        let extension = HSTRING::from(
+                            suggested
+                                .extension()
+                                .map(|ext| ext.to_string_lossy().into_owned())
+                                .unwrap_or_default(),
+                        );
+                        let kind = HSTRING::from(kind.as_str());
+                        let spec = HSTRING::from(format!("*.{extension}"));
+                        picker.SetFileTypes(&[COMDLG_FILTERSPEC {
+                            pszName: PCWSTR(kind.as_ptr()),
+                            pszSpec: PCWSTR(spec.as_ptr()),
+                        }])?;
+                        picker.SetDefaultExtension(&extension)?;
                         if let Some(name) = suggested.file_name() {
                             picker.SetFileName(&HSTRING::from(name))?;
                         }
@@ -131,7 +140,7 @@ unsafe fn pick(owner: Option<HWND>, dialog: &Dialog) -> windows::core::Result<Ve
                         {
                             picker.SetFolder(&folder)?;
                         }
-                        picker.SetTitle(w!("Export the clip as a file"))?;
+                        picker.SetTitle(w!("Export"))?;
                     }
                     _ => {
                         let Dialog::SaveProject { suggested } = dialog else {

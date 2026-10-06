@@ -4,17 +4,24 @@ import { Theme } from "theme.slint";
 import { FieldLabel, NumberField, ToolButton } from "widgets.slint";
 
 // The panel a dialog sits on.
-component DialogPanel inherits Rectangle {
+export component DialogPanel inherits Rectangle {
+    in property <length> panel-width: Theme.dialog-width;
+    // The panel keeps its top edge while its content changes height, as a window does, so
+    // only what is below a change moves; otherwise it is centered.
+    in property <bool> keep-top;
+
     background: Theme.scrim;
 
     // Nothing under the dialog can be clicked.
     TouchArea { }
 
     panel := Rectangle {
-        width: Theme.dialog-width;
+        width: root.panel-width;
         height: content.preferred-height;
         x: (parent.width - self.width) / 2;
-        y: (parent.height - self.height) / 2;
+        y: root.keep-top
+            ? max(0px, min(parent.height * 0.12, parent.height - self.height - Theme.space-4))
+            : (parent.height - self.height) / 2;
         background: Theme.bg-2;
         border-width: Theme.border-width;
         border-color: Theme.border;
@@ -29,7 +36,7 @@ component DialogPanel inherits Rectangle {
     }
 }
 
-component DialogTitle inherits Text {
+export component DialogTitle inherits Text {
     color: Theme.text-1;
     font-size: Theme.font-dialog;
     font-weight: Theme.weight-semibold;

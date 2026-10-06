@@ -16,7 +16,8 @@ use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 
 use crate::clip_editor::ClipEditor;
 use crate::document::{Document, Question};
-use crate::files::{Worker, export_path};
+use crate::export_dialog::ExportDialog;
+use crate::files::Worker;
 use crate::history::History;
 use crate::recovery::Session;
 use crate::shortcuts::Action;
@@ -110,6 +111,14 @@ pub struct App {
     pub(crate) export: Option<ExportJob>,
     /// The running export is the clip editor's, which hears how it goes too.
     pub(crate) export_from_editor: bool,
+    /// The encoders that open on this machine, once they have been tried.
+    pub(crate) encoders: Option<Vec<&'static dusk_engine::Encoder>>,
+    /// They are being tried, on a worker.
+    pub(crate) probing_encoders: bool,
+    /// The export dialog, while it is open.
+    pub(crate) export_dialog: Option<ExportDialog>,
+    /// How the last export was written, where the dialog starts next time.
+    pub(crate) last_export: Option<dusk_engine::ExportSettings>,
     pub(crate) view: View,
     /// The question on screen, if one is.
     pub(crate) question: Option<Question>,
@@ -155,6 +164,10 @@ impl App {
             selected_media: None,
             export: None,
             export_from_editor: false,
+            encoders: None,
+            probing_encoders: false,
+            export_dialog: None,
+            last_export: None,
             view: View::new(window.get_timeline_width()),
             question: None,
             dialog_open: false,
@@ -250,6 +263,9 @@ impl App {
 
     /// A key was pressed; true when it was a shortcut, or a dialog took it.
     pub fn key(&mut self, text: &str, ctrl: bool, shift: bool, alt: bool) -> bool {
+        if self.export_dialog_key(text, false) {
+            return true;
+        }
         if self.question.is_some() {
             self.answer_with_key(text);
             return true;
@@ -329,36 +345,6 @@ impl App {
             | Action::ReloadClip
             | Action::KeepDraft
             | Action::ExportClip => {}
-        }
-    }
-
-    /// Exports the timeline to an MP4 beside the project file, or beside the first media
-    /// file while the project is unsaved (the export dialog arrives in M4).
-    pub fn export(&mut self) {
-        if self.export.is_some() {
-            return self.say("An export is already running.");
-        }
-        if self.project.sequence().end() == Frame(0) {
-            return self.fail("Place some media on the timeline before exporting.");
-        }
-        let base = match &self.document.path {
-            Some(path) => path.clone(),
-            None => match self.project.media().first() {
-                Some(media) => media.path.clone(),
-                None => return self.fail("Import some media before exporting."),
-            },
-        };
-        let path = export_path(&base);
-        match self.engine.export(
-            Arc::clone(&self.project),
-            path.clone(),
-            dusk_engine::ExportSettings::default(),
-        ) {
-            Ok(job) => {
-                self.export_started(job, false);
-                self.say(&format!("Exporting to {}…", path.display()));
-            }
-            Err(error) => self.fail(&error.to_string()),
         }
     }
 

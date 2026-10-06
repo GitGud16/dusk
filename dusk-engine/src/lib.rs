@@ -33,6 +33,6 @@ pub use error::EngineError;
 #[cfg(feature = "gpu")]
 pub use export::{ExportEvent, ExportJob};
 pub use info::media_info;
-pub use settings::{ExportFormat, ExportSettings, export_size};
+pub use settings::{ExportFormat, ExportSettings, export_size, has_picture, has_sound};
 #[cfg(feature = "gpu")]
 pub use thumbnail::{THUMBNAIL_SIDE, Thumbnail, thumbnail_of};
