@@ -62,6 +62,8 @@ pub enum Action {
     CompressVideo,
     Quit,
     ShortcutList,
+    /// What Dusk is: its version, its license and what it is built with.
+    About,
     /// Fits the picture with bars or fills the frame: the selected clip's, or the clip
     /// editor's draft.
     ToggleFill,
@@ -513,7 +515,14 @@ pub const ACTIONS: &[ActionInfo] = &[
         "shortcut-list",
         Group::View,
         "Show the keyboard shortcuts",
-        &[letter('?')],
+        &[letter('?'), named(Key::F1)],
+    ),
+    entry(
+        Action::About,
+        "about",
+        Group::View,
+        "About Dusk: its version, its license and what it is built with",
+        &[named(Key::F1).shift()],
     ),
     entry(
         Action::NewProject,

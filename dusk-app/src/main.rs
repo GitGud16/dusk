@@ -4,6 +4,7 @@
 // console for logs.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod about;
 mod app;
 mod clip_editor;
 mod compress_choices;
@@ -53,6 +54,8 @@ fn main() -> anyhow::Result<()> {
     // never dropped, that teardown only lowers a reference count.
     let gpu: &'static Gpu = Box::leak(Box::new(select_renderer()?));
     let window = MainWindow::new()?;
+    window.set_about_version(env!("CARGO_PKG_VERSION").into());
+    window.set_releases_url(about::RELEASES.into());
     // The user's settings and keys, before the engine and the windows use them
     // (docs/ARCHITECTURE.md, "Keyboard and settings"); the files are small, so reading them
     // here keeps no window waiting.
@@ -251,6 +254,15 @@ fn connect(window: &MainWindow) {
     });
     window.on_shortcut_close(|| {
         with_app(App::shortcut_close);
+    });
+    window.on_about_close(|| {
+        with_app(App::about_close);
+    });
+    window.on_about_show_licenses(|| {
+        with_app(|app| app.about_licenses());
+    });
+    window.on_about_link_failed(|| {
+        with_app(|app| app.about_link_failed());
     });
     window.on_settings_changed(|what, value| {
         with_app(|app| app.settings_changed(&what, value));

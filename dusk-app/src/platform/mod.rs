@@ -1,9 +1,10 @@
 //! What differs between operating systems (CLAUDE.md: Windows first, behind a thin layer):
 //! where Dusk keeps its own files, the system's file dialogs, files dropped on the window,
-//! and which letter a key stands for. Linux and macOS add theirs with their builds.
+//! which letter a key stands for, and showing a folder in the system's file manager. Linux
+//! and macOS add theirs with their builds.
 
 use std::cell::{Cell, RefCell};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -44,6 +45,20 @@ pub fn state_dir() -> Option<PathBuf> {
         .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/state")))
         .map(|dir| dir.join("dusk"));
     dir
+}
+
+/// Shows `dir` in the system's file manager (Explorer on Windows), which runs on its own.
+pub fn show_folder(dir: &Path) -> std::io::Result<()> {
+    #[cfg(windows)]
+    let program = "explorer";
+    #[cfg(target_os = "macos")]
+    let program = "open";
+    #[cfg(not(any(windows, target_os = "macos")))]
+    let program = "xdg-open";
+    std::process::Command::new(program)
+        .arg(dir)
+        .spawn()
+        .map(drop)
 }
 
 /// What a file dialog asks for.

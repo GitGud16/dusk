@@ -139,6 +139,8 @@ pub struct App {
     pub(crate) settings: crate::settings::Settings,
     /// The Settings dialog is open.
     pub(crate) settings_open: bool,
+    /// The About dialog is open.
+    pub(crate) about_open: bool,
     /// The GPL encoders of the user's own `ffmpeg`, picked in the export dialog for this
     /// session (docs/ARCHITECTURE.md, "Optional GPL encoders").
     pub(crate) external: Vec<dusk_engine::ExternalEncoder>,
@@ -206,6 +208,7 @@ impl App {
             settings_dir: None,
             settings: crate::settings::Settings::default(),
             settings_open: false,
+            about_open: false,
             external: Vec::new(),
             use_external: false,
             external_note: String::new(),
@@ -336,6 +339,16 @@ impl App {
             }
             return true;
         }
+        if self.about_open {
+            use slint::platform::Key;
+            if [Key::Escape, Key::Return]
+                .into_iter()
+                .any(|key| text == SharedString::from(key).as_str())
+            {
+                self.about_close();
+            }
+            return true;
+        }
         let key = crate::platform::pressed_key();
         let Some(action) = self.keymap.action_for_press(text, key, ctrl, shift, alt) else {
             return false;
@@ -355,6 +368,7 @@ impl App {
             || self.sequence_settings_open
             || self.shortcut_dialog.is_some()
             || self.settings_open
+            || self.about_open
     }
 
     /// Does what a shortcut, a menu item or a button stands for.
@@ -412,6 +426,7 @@ impl App {
             Action::CancelExport => self.cancel_export(),
             Action::Quit => self.quit(),
             Action::ShortcutList => self.open_shortcut_list(),
+            Action::About => self.open_about(),
             Action::ToggleFill => self.toggle_fill(),
             Action::OpenClipEditor => self.open_selected_clip(),
             // The clip editor's own keys mean nothing in the main window.

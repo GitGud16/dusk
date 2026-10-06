@@ -740,6 +740,11 @@ mod tests {
         assert_eq!(press(&map, "o", Some('o'), PLAIN), Some(Action::MarkOut));
         // Settings, as most programs open theirs.
         assert_eq!(press(&map, ",", Some(','), CTRL), Some(Action::Settings));
+        // F1, where people look for help, opens the shortcut list, and Shift+F1 says what
+        // Dusk is.
+        let f1 = named(Key::F1);
+        assert_eq!(press(&map, &f1, None, PLAIN), Some(Action::ShortcutList));
+        assert_eq!(press(&map, &f1, None, SHIFT), Some(Action::About));
     }
 
     #[test]
