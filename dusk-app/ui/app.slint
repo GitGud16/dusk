@@ -16,6 +16,7 @@ export { ClipEditorWindow, EditorProps, EditorSides, ExportView, CompressView, S
 
 export component MainWindow inherits Window {
     title: root.window-title;
+    icon: @image-url("../assets/dusk.svg");
     preferred-width: 1280px;
     preferred-height: 800px;
     min-width: 960px;
@@ -374,12 +375,27 @@ export component MainWindow inherits Window {
                     padding-right: Theme.panel-padding;
                     spacing: Theme.space-3;
 
-                    Text {
-                        text: "Dusk";
-                        color: Theme.text-1;
-                        font-size: Theme.font-title;
-                        font-weight: Theme.weight-semibold;
-                        vertical-alignment: center;
+                    // The logo: the mark beside the wordmark (THEME.md, "Logo").
+                    HorizontalLayout {
+                        spacing: Theme.space-2;
+
+                        VerticalLayout {
+                            alignment: center;
+
+                            Image {
+                                source: @image-url("../assets/dusk.svg");
+                                width: Theme.icon-size;
+                                height: Theme.icon-size;
+                            }
+                        }
+
+                        Text {
+                            text: "Dusk";
+                            color: Theme.text-1;
+                            font-size: Theme.font-title;
+                            font-weight: Theme.weight-semibold;
+                            vertical-alignment: center;
+                        }
                     }
 
                     Rectangle {

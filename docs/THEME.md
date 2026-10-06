@@ -6,6 +6,8 @@ Dark only. Minimal and flat. One brand palette, used in a fixed order of importa
 
 A dusk horizon: the four brand colors stacked as horizontal bands, violet on top, then magenta, pink, and a thin gold stripe at the bottom. Flat shapes, no gradient anywhere, including the splash screen and hero images. Fits in a rounded square for the app icon and reduces cleanly to 16px because it has no fine detail. The wordmark is "Dusk" in Inter semibold, lowercase or sentence case, in `text-1`.
 
+Geometry (M6): a square plate with corners rounded to a fifth of its side; the bands take 9, 5, 4 and 2 twentieths of its height, top to bottom (`primary`, `secondary`, `alert`, `signal`). In the icon each band ends on a whole pixel, so a 16px icon has bands of 7, 4, 3 and 2 pixels, and sizes from 32px leave a sixteenth of the side clear around the plate. `scripts/make-logo.py` draws all of it from these numbers: `dusk-app/assets/dusk.ico` (16 to 256px, built into `dusk.exe`), `dusk-app/assets/dusk.svg` (the windows' icon and the toolbar's mark, 16px beside the wordmark) and `docs/images/logo.png`. Change the numbers there and run it again; never edit the files by hand.
+
 ## Brand colors (in order of importance)
 
 | # | Role | Hex | HSL | Used for |
