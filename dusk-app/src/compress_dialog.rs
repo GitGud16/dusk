@@ -263,7 +263,8 @@ fn compress_view(dialog: &CompressDialog) -> CompressView {
             i32::try_from(megabytes).unwrap_or(i32::MAX),
         ),
         Outcome::NoLength => (
-            "This video does not say how long it is, so it cannot be made to a size; compress              it at a quality."
+            "This video does not say how long it is, so it cannot be made to a size; compress \
+             it at a quality."
                 .to_owned(),
             true,
             0,
