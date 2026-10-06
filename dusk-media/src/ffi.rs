@@ -634,3 +634,24 @@ pub(crate) fn start_time(input: &ffmpeg_next::format::context::Input) -> i64 {
     // AV_NOPTS_VALUE, "no time", is i64::MIN.
     if start == i64::MIN { 0 } else { start }
 }
+
+/// Gives stream `stream` of `output` the four-character codec tag `tag`, which `ffmpeg-next`
+/// cannot set: HEVC in MP4 and MOV is tagged `hvc1`, which Apple's players require.
+pub(crate) fn set_codec_tag(
+    output: &mut ffmpeg_next::format::context::Output,
+    stream: usize,
+    tag: [u8; 4],
+) {
+    // SAFETY: `as_mut_ptr` returns the AVFormatContext that `output` owns, alive for the
+    // borrow. The stream index is checked against `nb_streams` before the array is read, and
+    // every stream that `avformat_new_stream` made has non-null codec parameters. The tag is
+    // a plain integer field, written before the header is, which is when muxers read it.
+    unsafe {
+        let context = output.as_mut_ptr();
+        if stream >= (*context).nb_streams as usize {
+            return;
+        }
+        let raw = *(*context).streams.add(stream);
+        (*(*raw).codecpar).codec_tag = u32::from_le_bytes(tag);
+    }
+}

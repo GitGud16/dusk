@@ -1,12 +1,14 @@
-//! Writing MP4 files: H.264 from the first encoder in the order that opens (a hardware one
-//! where there is one, OpenH264 on CI runners) and AAC audio.
+//! Writing export files: video in every container with each codec it holds, from the first
+//! encoder of the codec that opens (a hardware one where there is one) or from the software
+//! encoder CI runners have, and sound alone in each sound format.
 
 use std::path::{Path, PathBuf};
 
 use dusk_core::{ColorMatrix, ColorRange, MediaTime, Picture, PictureLayout};
 use dusk_media::{
-    Acceleration, AudioDecoder, AudioSettings, MediaError, Mp4Writer, StreamDetail, StreamKind,
-    VideoDecoder, VideoSettings, probe,
+    Acceleration, AudioCodec, AudioDecoder, AudioFormat, AudioSettings, Container, MediaError,
+    Quality, StreamDetail, StreamKind, VideoCodec, VideoDecoder, VideoSettings, Writer,
+    encoders_of, probe,
 };
 
 /// A fresh output path in the target directory, so tests never write next to the sources.
@@ -41,6 +43,17 @@ fn gradient(width: u32, height: u32, n: u32) -> Picture {
     }
 }
 
+/// The same picture with noise on it, which encoders cannot squeeze much.
+fn noisy(width: u32, height: u32, n: u32) -> Picture {
+    let mut picture = gradient(width, height, n);
+    let mut state = 0x9e37_79b9_u32.wrapping_mul(n + 1);
+    for sample in &mut picture.luma {
+        state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        *sample = sample.saturating_add((state >> 27) as u8).min(235);
+    }
+    picture
+}
+
 /// `frames` frames of a 440 Hz tone, interleaved stereo at 48 kHz.
 fn tone(start: usize, frames: usize) -> Vec<f32> {
     (start..start + frames)
@@ -51,22 +64,26 @@ fn tone(start: usize, frames: usize) -> Vec<f32> {
         .collect()
 }
 
+/// H.264 from the first encoder that opens, at the High preset.
 fn settings(width: u32, height: u32) -> VideoSettings {
-    VideoSettings {
-        width,
-        height,
-        frame_rate: (30, 1),
-    }
+    VideoSettings::h264(width, height, (30, 1))
 }
 
-/// Writes one second at 30 fps, with sound when `sound` is set.
-fn write_second(path: &Path, width: u32, height: u32, sound: bool) -> String {
-    let audio = sound.then_some(AudioSettings { rate: 48_000 });
-    let mut writer = Mp4Writer::create(path, settings(width, height), audio).unwrap();
+/// Writes `frames` frames at 30 fps, with a second of sound per 30 frames when `audio` is
+/// set; returns the encoder used.
+fn write(
+    path: &Path,
+    container: Container,
+    video: VideoSettings,
+    audio: Option<AudioSettings>,
+    frames: u32,
+    picture: fn(u32, u32, u32) -> Picture,
+) -> String {
+    let mut writer = Writer::create(path, container, video, audio).unwrap();
     let (width, height) = writer.size();
-    for n in 0..30 {
-        writer.write_video(&gradient(width, height, n)).unwrap();
-        if sound {
+    for n in 0..frames {
+        writer.write_video(&picture(width, height, n)).unwrap();
+        if audio.is_some() {
             writer.write_audio(&tone(n as usize * 1600, 1600)).unwrap();
         }
     }
@@ -84,10 +101,36 @@ fn psnr(a: &[u8], b: &[u8]) -> f64 {
     10.0 * (255.0f64.powi(2) / (squared / a.len() as f64)).log10()
 }
 
+fn codec_of(path: &Path, kind: StreamKind) -> String {
+    probe(path)
+        .unwrap()
+        .streams
+        .iter()
+        .find(|stream| stream.kind == kind)
+        .map(|stream| stream.codec.clone())
+        .unwrap_or_default()
+}
+
+/// The software encoder of `codec`, which every machine has.
+fn software(codec: VideoCodec) -> &'static str {
+    encoders_of(codec)
+        .find(|encoder| !encoder.hardware)
+        .map(|encoder| encoder.name)
+        .unwrap()
+}
+
 #[test]
 fn a_second_of_video_and_sound_becomes_a_playable_mp4() {
     let path = output("second.mp4");
-    let encoder = write_second(&path, 320, 240, true);
+    let audio = Some(AudioSettings::of(AudioCodec::Aac, 48_000));
+    let encoder = write(
+        &path,
+        Container::Mp4,
+        settings(320, 240),
+        audio,
+        30,
+        gradient,
+    );
     assert!(
         ["h264_nvenc", "h264_qsv", "h264_amf", "libopenh264"].contains(&encoder.as_str()),
         "{encoder}"
@@ -111,12 +154,7 @@ fn a_second_of_video_and_sound_becomes_a_playable_mp4() {
             ..
         }
     ));
-    let audio = info
-        .streams
-        .iter()
-        .find(|stream| stream.kind == StreamKind::Audio)
-        .unwrap();
-    assert_eq!(audio.codec, "aac");
+    assert_eq!(codec_of(&path, StreamKind::Audio), "aac");
 
     // The pictures come back close to what went in.
     let mut decoder = VideoDecoder::open(&path, Acceleration::Software).unwrap();
@@ -139,23 +177,182 @@ fn a_second_of_video_and_sound_becomes_a_playable_mp4() {
 #[test]
 fn video_without_sound_has_one_stream() {
     let path = output("silent.mp4");
-    write_second(&path, 160, 96, false);
+    write(&path, Container::Mp4, settings(160, 96), None, 30, gradient);
     let info = probe(&path).unwrap();
     assert_eq!(info.streams.len(), 1);
     assert_eq!(info.streams[0].kind, StreamKind::Video);
 }
 
 #[test]
+fn every_container_holds_each_of_its_codecs() {
+    for container in Container::ALL {
+        for &codec in container.video_codecs() {
+            let expected = match codec {
+                VideoCodec::H264 => "h264",
+                VideoCodec::Hevc => "hevc",
+                VideoCodec::Av1 => "av1",
+                VideoCodec::Vp9 => "vp9",
+            };
+            let name = format!("holds-{expected}.{}", container.extension());
+            let path = output(&name);
+            let audio = Some(AudioSettings::of(container.audio_codecs()[0], 48_000));
+            let video = VideoSettings {
+                codec,
+                encoder: Some(software(codec)),
+                ..settings(160, 96)
+            };
+            let encoder = write(&path, container, video, audio, 10, gradient);
+            assert_eq!(encoder, software(codec));
+            assert_eq!(codec_of(&path, StreamKind::Video), expected, "{name}");
+            let sound = match container.audio_codecs()[0] {
+                AudioCodec::Aac => "aac",
+                _ => "opus",
+            };
+            assert_eq!(codec_of(&path, StreamKind::Audio), sound, "{name}");
+        }
+    }
+}
+
+#[test]
+fn mkv_holds_opus_sound_too() {
+    let path = output("opus.mkv");
+    let audio = Some(AudioSettings::of(AudioCodec::Opus, 48_000));
+    let video = VideoSettings {
+        encoder: Some("libopenh264"),
+        ..settings(160, 96)
+    };
+    write(&path, Container::Mkv, video, audio, 30, gradient);
+    assert_eq!(codec_of(&path, StreamKind::Audio), "opus");
+    let mut sound = AudioDecoder::open(&path, 48_000, 2).unwrap();
+    sound.seek(MediaTime(250_000)).unwrap();
+    let mut samples = vec![0.0; 2 * 4800];
+    assert_eq!(sound.read(&mut samples).unwrap(), 4800);
+    let peak = samples.iter().fold(0.0f32, |peak, s| peak.max(s.abs()));
+    assert!((0.4..0.6).contains(&peak), "peak {peak}");
+}
+
+#[test]
+fn hevc_in_mp4_is_tagged_the_way_apple_players_need() {
+    let path = output("tagged.mp4");
+    let video = VideoSettings {
+        codec: VideoCodec::Hevc,
+        encoder: Some("libkvazaar"),
+        ..settings(160, 96)
+    };
+    write(&path, Container::Mp4, video, None, 10, gradient);
+    let bytes = std::fs::read(&path).unwrap();
+    let has = |tag: &[u8]| bytes.windows(4).any(|window| window == tag);
+    assert!(has(b"hvc1") && !has(b"hev1"));
+}
+
+#[test]
+fn a_file_format_that_cannot_hold_the_codec_is_refused() {
+    let path = output("refused.webm");
+    let refused = Writer::create(&path, Container::WebM, settings(160, 96), None);
+    assert!(matches!(
+        refused,
+        Err(MediaError::Unsupported {
+            format: "WebM",
+            codec: "H.264"
+        })
+    ));
+    let aac = Some(AudioSettings::of(AudioCodec::Aac, 48_000));
+    let vp9 = VideoSettings {
+        codec: VideoCodec::Vp9,
+        ..settings(160, 96)
+    };
+    assert!(matches!(
+        Writer::create(&path, Container::WebM, vp9, aac),
+        Err(MediaError::Unsupported { .. })
+    ));
+    let wav = AudioSettings::of(AudioCodec::Mp3, 48_000);
+    assert!(matches!(
+        Writer::sound(&output("refused.wav"), AudioFormat::Wav, wav),
+        Err(MediaError::Unsupported { .. })
+    ));
+}
+
+#[test]
+fn lower_quality_writes_smaller_files() {
+    let size_at = |quality: Quality, name: &str| {
+        let path = output(name);
+        let video = VideoSettings {
+            codec: VideoCodec::Hevc,
+            encoder: Some("libkvazaar"),
+            quality,
+            ..settings(320, 240)
+        };
+        write(&path, Container::Mkv, video, None, 30, noisy);
+        std::fs::metadata(&path).unwrap().len()
+    };
+    let high = size_at(Quality::HIGH, "high.mkv");
+    let small = size_at(Quality::SMALL, "small.mkv");
+    assert!(small < high, "{small} bytes against {high}");
+}
+
+#[test]
+fn a_target_bitrate_lands_near_it() {
+    let path = output("target.mp4");
+    let video = VideoSettings {
+        encoder: Some("libopenh264"),
+        quality: Quality::Bitrate(1_000_000),
+        ..settings(640, 360)
+    };
+    write(&path, Container::Mp4, video, None, 60, noisy);
+    let bytes = std::fs::metadata(&path).unwrap().len() as f64;
+    // Two seconds at 1 Mbit/s are 250 kB.
+    assert!(
+        (150_000.0..=350_000.0).contains(&bytes),
+        "{bytes} bytes for 2 s at 1 Mbit/s"
+    );
+}
+
+#[test]
+fn sound_alone_is_written_in_each_sound_format() {
+    for format in AudioFormat::ALL {
+        let path = output(&format!("sound.{}", format.extension()));
+        let mut writer =
+            Writer::sound(&path, format, AudioSettings::of(format.codec(), 48_000)).unwrap();
+        assert_eq!(writer.size(), (0, 0));
+        for second in 0..2 {
+            writer.write_audio(&tone(second * 48_000, 48_000)).unwrap();
+        }
+        writer.finish().unwrap();
+        let info = probe(&path).unwrap();
+        assert_eq!(info.streams.len(), 1, "{format:?}");
+        let codec = &info.streams[0].codec;
+        let expected = match format {
+            AudioFormat::Mp3 => "mp3",
+            AudioFormat::M4a => "aac",
+            AudioFormat::Opus => "opus",
+            AudioFormat::Wav => "pcm_s16le",
+        };
+        assert_eq!(codec, expected);
+        let duration = info.duration_us.unwrap();
+        assert!(
+            (1_950_000..=2_100_000).contains(&duration),
+            "{format:?}: {duration} µs"
+        );
+        let mut sound = AudioDecoder::open(&path, 48_000, 2).unwrap();
+        sound.seek(MediaTime(500_000)).unwrap();
+        let mut samples = vec![0.0; 2 * 4800];
+        assert_eq!(sound.read(&mut samples).unwrap(), 4800);
+        let peak = samples.iter().fold(0.0f32, |peak, s| peak.max(s.abs()));
+        assert!((0.4..0.6).contains(&peak), "{format:?}: peak {peak}");
+    }
+}
+
+#[test]
 fn odd_sizes_are_rounded_down_to_what_encoders_take() {
     let path = output("odd.mp4");
-    let writer = Mp4Writer::create(&path, settings(321, 241), None).unwrap();
+    let writer = Writer::create(&path, Container::Mp4, settings(321, 241), None).unwrap();
     assert_eq!(writer.size(), (320, 240));
 }
 
 #[test]
 fn sizes_beyond_the_encoders_limits_are_scaled_down_keeping_the_shape() {
     let path = output("large.mp4");
-    let writer = Mp4Writer::create(&path, settings(8192, 2048), None).unwrap();
+    let writer = Writer::create(&path, Container::Mp4, settings(8192, 2048), None).unwrap();
     let (width, height) = writer.size();
     assert!(width <= 4096 && height <= 4096, "{width}x{height}");
     assert_eq!((width, height), (4096, 1024));
@@ -165,7 +362,26 @@ fn sizes_beyond_the_encoders_limits_are_scaled_down_keeping_the_shape() {
 fn a_folder_that_does_not_exist_is_reported() {
     let path = output("missing").join("nowhere").join("out.mp4");
     assert!(matches!(
-        Mp4Writer::create(&path, settings(64, 64), None),
+        Writer::create(&path, Container::Mp4, settings(64, 64), None),
         Err(MediaError::Create { .. })
     ));
+}
+
+#[test]
+fn every_software_encoder_is_available_and_the_list_keeps_the_order() {
+    let available = dusk_media::available_encoders();
+    let names: Vec<&str> = available.iter().map(|encoder| encoder.name).collect();
+    for software in ["libopenh264", "libkvazaar", "libsvtav1", "libvpx-vp9"] {
+        assert!(names.contains(&software), "{software} in {names:?}");
+    }
+    let order: Vec<&str> = dusk_media::ENCODERS
+        .iter()
+        .map(|encoder| encoder.name)
+        .filter(|name| names.contains(name))
+        .collect();
+    assert_eq!(names, order);
+    // Asked again, the same list comes back at once.
+    let again = std::time::Instant::now();
+    assert_eq!(dusk_media::available_encoders().len(), available.len());
+    assert!(again.elapsed() < std::time::Duration::from_millis(5));
 }

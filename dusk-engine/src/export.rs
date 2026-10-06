@@ -12,7 +12,9 @@ use std::time::{Duration, Instant};
 
 use dusk_core::time::frame_to_media;
 use dusk_core::{Frame, MediaId, MediaKind, MediaTime, Picture, Project, TrackKind};
-use dusk_media::{Acceleration, AudioSettings, Mp4Writer, VideoDecoder, VideoSettings};
+use dusk_media::{
+    Acceleration, AudioCodec, AudioSettings, Container, VideoDecoder, VideoSettings, Writer,
+};
 use dusk_render::{Compositor, Gpu, ToYuv};
 
 use crate::EngineError;
@@ -154,13 +156,9 @@ fn write(
         track.kind() == TrackKind::Audio && !track.muted() && !track.clips().is_empty()
     });
     let (width, height) = sequence.resolution();
-    let video = VideoSettings {
-        width,
-        height,
-        frame_rate: (rate.num(), rate.den()),
-    };
-    let audio = sound.then_some(AudioSettings { rate: AUDIO_RATE });
-    let mut writer = Mp4Writer::create(part, video, audio)?;
+    let video = VideoSettings::h264(width, height, (rate.num(), rate.den()));
+    let audio = sound.then(|| AudioSettings::of(AudioCodec::Aac, AUDIO_RATE));
+    let mut writer = Writer::create(part, Container::Mp4, video, audio)?;
     let size = writer.size();
     let compositor = Compositor::new(gpu);
     let to_yuv = ToYuv::new(gpu);
