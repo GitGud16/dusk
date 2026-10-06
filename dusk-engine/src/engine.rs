@@ -77,9 +77,10 @@ pub enum EngineEvent {
     Error(EngineError),
     /// An export moved on.
     Export(ExportEvent),
-    /// The thumbnail of a media file is ready.
+    /// The thumbnail of a media file is ready, made from the file at `path`.
     Thumbnail {
         media: MediaId,
+        path: PathBuf,
         thumbnail: Thumbnail,
     },
 }

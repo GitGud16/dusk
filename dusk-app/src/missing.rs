@@ -315,7 +315,6 @@ impl App {
         {
             for media in &relinked.relinked {
                 self.missing.remove(media);
-                self.thumbnails.forget(*media);
             }
             self.refresh_bin();
         }

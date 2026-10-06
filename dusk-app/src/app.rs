@@ -738,7 +738,11 @@ impl App {
                 texture,
             } => self.show_frame(preview, frame, texture),
             EngineEvent::Export(event) => self.export_event(event),
-            EngineEvent::Thumbnail { media, thumbnail } => {
+            EngineEvent::Thumbnail {
+                media,
+                path,
+                thumbnail,
+            } => {
                 let pixels = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(
                     &thumbnail.rgba,
                     thumbnail.width,
@@ -746,7 +750,7 @@ impl App {
                 );
                 let bytes = thumbnail.rgba.len();
                 self.thumbnails
-                    .insert(media, slint::Image::from_rgba8(pixels), bytes);
+                    .insert(media, path, slint::Image::from_rgba8(pixels), bytes);
                 self.refresh_bin();
             }
         }

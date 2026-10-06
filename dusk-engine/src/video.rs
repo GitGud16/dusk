@@ -5,6 +5,8 @@
 //! one of them plays it follows the playback clock, and a worker thread gets the next clip to
 //! come into view ready.
 
+use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
@@ -82,6 +84,7 @@ pub(crate) fn spawn(
                 views: [main, View::default()],
                 cache: FrameCache::new(cap),
                 decoders: Vec::new(),
+                sources: HashMap::new(),
                 upcoming: None,
                 lookahead_busy: Arc::new(AtomicBool::new(false)),
                 playing: None,
@@ -217,6 +220,9 @@ struct VideoThread {
     views: [View; 2],
     cache: FrameCache,
     decoders: Vec<OpenDecoder>,
+    /// The file each media's frames and decoder came from, as the projects named it, to tell
+    /// when a project names another file for that media.
+    sources: HashMap<MediaId, PathBuf>,
     /// While playing forwards, the next clip to come into view.
     upcoming: Option<Upcoming>,
     /// A lookahead worker is running, holding a decoder; there is one at a time.
@@ -246,7 +252,7 @@ impl VideoThread {
             for request in first.into_iter().chain(inbox.try_iter()) {
                 match request {
                     VideoRequest::Project(preview, project) => {
-                        self.forget_moved_media(preview, &project);
+                        self.forget_changed_media(&project);
                         let view = self.view_mut(preview);
                         view.project = Some(project);
                         // An edit can change what any frame shows, and what comes next.
@@ -860,18 +866,16 @@ impl VideoThread {
         }
     }
 
-    /// Lets go of what was decoded from a media file that `project` finds somewhere else than
-    /// the project `preview` showed before, as after relinking it: its frames and its decoder
-    /// came from the old place.
-    fn forget_moved_media(&mut self, preview: Preview, project: &Project) {
-        let Some(before) = self.view(preview).project.clone() else {
-            return;
-        };
+    /// Lets go of what was decoded for a media that `project` finds in another file than the
+    /// one its frames and decoder came from: a file relinked to another place, or an id given
+    /// to new media after the media that had it went (an import undone, another made).
+    fn forget_changed_media(&mut self, project: &Project) {
         for media in project.media() {
-            let moved = before
-                .media_ref(media.id)
-                .is_some_and(|old| old.path != media.path);
-            if moved {
+            let changed = self
+                .sources
+                .insert(media.id, media.path.clone())
+                .is_some_and(|before| before != media.path);
+            if changed {
                 self.cache.forget(media.id);
                 self.decoders.retain(|open| open.media != media.id);
                 if self

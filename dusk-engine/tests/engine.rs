@@ -142,8 +142,13 @@ fn thumbnails_come_from_the_thumbnail_thread() {
     running.engine.make_thumbnail(MediaId(7), sample(), info);
     let thumbnail = loop {
         match running.events.recv_timeout(PATIENCE).expect("an event") {
-            EngineEvent::Thumbnail { media, thumbnail } => {
-                assert_eq!(media, MediaId(7));
+            EngineEvent::Thumbnail {
+                media,
+                path,
+                thumbnail,
+            } => {
+                // Which media, and the file it was made from.
+                assert_eq!((media, path), (MediaId(7), sample()));
                 break thumbnail;
             }
             EngineEvent::Frame { .. } => {}
@@ -287,6 +292,49 @@ fn a_relinked_file_never_shows_the_old_files_frames() {
     let (frame, texture) = running.next_frame();
     assert_eq!(frame, Frame(5));
     assert!(is_black(&running, &texture.expect("a frame")));
+}
+
+#[test]
+fn a_media_id_given_to_another_file_never_shows_the_old_files_frames() {
+    let running = start(project_at(Frame(0)));
+    running.engine.show(Preview::Main, Frame(5));
+    let (_, texture) = running.next_frame();
+    assert!(!is_black(&running, &texture.expect("a picture")));
+    let info = media_info(&sample()).unwrap();
+    // The media goes (an import undone), and a new one is given its id: here a file that is
+    // not there, so a frame of the old file would be the only picture it could show.
+    let empty = Project::new(info.frame_rate.unwrap(), (320, 240));
+    running
+        .engine
+        .set_project(Preview::Main, Arc::new(empty.clone()));
+    running.engine.show(Preview::Main, Frame(5));
+    let (_, texture) = running.next_frame();
+    assert!(is_black(&running, &texture.expect("a frame")));
+    let mut other = empty;
+    import(
+        &other,
+        sample().with_file_name("another-file.mp4"),
+        info,
+        Frame(0),
+    )
+    .apply(&mut other)
+    .unwrap();
+    assert_eq!(
+        other.media()[0].id,
+        project_at(Frame(0)).media()[0].id,
+        "the new media has the old one's id"
+    );
+    running.engine.set_project(Preview::Main, Arc::new(other));
+    running.engine.show(Preview::Main, Frame(5));
+    loop {
+        match running.events.recv_timeout(PATIENCE).expect("an event") {
+            EngineEvent::Error(_) => break,
+            EngineEvent::Frame { texture, .. } => {
+                panic!("a frame came instead of the error: {texture:?}")
+            }
+            _ => {}
+        }
+    }
 }
 
 #[test]
