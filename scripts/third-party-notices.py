@@ -92,7 +92,10 @@ def main():
     out = Path(sys.argv[1])
     packages = {
         (package["name"], package["version"]): package
-        for package in json.loads(cargo("metadata", "--format-version", "1", "--offline"))["packages"]
+        # Windows' packages only: a build fetches no other platform's crates.
+        for package in json.loads(
+            cargo("metadata", "--format-version", "1", "--filter-platform", TARGET, "--offline")
+        )["packages"]
     }
     crates = sorted(linked_crates())
     # The standard texts, as crates of the build ship them.

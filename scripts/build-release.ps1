@@ -59,7 +59,9 @@ foreach ($prefix in $pin.ShipDlls) {
 }
 
 # Licenses. Slint's crate carries its own license and the GPL text FFmpeg's LGPL builds on.
-$metadata = cargo metadata --format-version 1 --offline | ConvertFrom-Json
+# Windows' packages only: a build fetches no other platform's crates, so --offline would fail
+# on them.
+$metadata = cargo metadata --format-version 1 --filter-platform x86_64-pc-windows-msvc --offline | ConvertFrom-Json
 if ($LASTEXITCODE -ne 0) { throw 'cargo metadata failed.' }
 $slint = @($metadata.packages | Where-Object { $_.name -eq 'slint' })[0]
 $slintLicenses = Join-Path (Split-Path -Parent $slint.manifest_path) 'LICENSES'
