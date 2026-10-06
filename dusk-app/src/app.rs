@@ -287,6 +287,17 @@ impl App {
 
     /// A key was pressed; true when it was a shortcut, or a dialog took it.
     pub fn key(&mut self, text: &str, ctrl: bool, shift: bool, alt: bool) -> bool {
+        // Slint moves the keyboard through a dialog's controls with the keys no one takes.
+        let dialog = self.compress_dialog.is_some()
+            || self
+                .export_dialog
+                .as_ref()
+                .is_some_and(|dialog| !dialog.in_editor())
+            || self.question.is_some()
+            || self.sequence_settings_open;
+        if dialog && crate::keymap::moves_focus(text) {
+            return false;
+        }
         if self.compress_dialog_key(text) || self.export_dialog_key(text, false) {
             return true;
         }

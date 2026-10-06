@@ -44,7 +44,7 @@ pub struct ExportDialog {
 }
 
 impl ExportDialog {
-    fn in_editor(&self) -> bool {
+    pub(crate) fn in_editor(&self) -> bool {
         matches!(self.target, ExportTarget::Clip { .. })
     }
 

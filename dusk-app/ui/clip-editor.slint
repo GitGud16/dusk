@@ -4,7 +4,7 @@
 // as one undoable step.
 
 import { Theme } from "theme.slint";
-import { FieldLabel, NumberField, PanelTitle, Segmented, Slider, Switch, Timecode, ToolButton } from "widgets.slint";
+import { FieldLabel, Modal, NumberField, PanelTitle, Segmented, Slider, Switch, Timecode, ToolButton } from "widgets.slint";
 import { Prompt } from "dialogs.slint";
 import { ShortcutPanel, ShortcutView } from "shortcut-list.slint";
 import { ExportDialog, ExportView } from "export-dialog.slint";
@@ -261,8 +261,20 @@ export component ClipEditorWindow inherits Window {
         keys.focus();
     }
 
+    // Whether a dialog is open over the window: only its controls take the keyboard then (see
+    // `Modal`), and the keys go back to the shortcuts whenever one opens or closes.
+    property <bool> modal-open: root.export-open || root.prompt-open;
+    changed modal-open => {
+        Modal.open = root.modal-open;
+        keys.focus();
+    }
+
     keys := FocusScope {
         key-pressed(event) => {
+            // Escape gives the keys back to the shortcuts from a control that had them.
+            if event.text == Key.Escape && !self.has-focus {
+                self.focus();
+            }
             return root.key(event.text, event.modifiers.control, event.modifiers.shift, event.modifiers.alt) ? EventResult.accept : EventResult.reject;
         }
 

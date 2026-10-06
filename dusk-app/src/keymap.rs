@@ -243,6 +243,14 @@ impl fmt::Display for Keys {
     }
 }
 
+/// Whether `text`, a key press's text, is Tab or Shift+Tab, which move the keyboard from one
+/// control to the next while a dialog is open, whatever the keymap says.
+pub fn moves_focus(text: &str) -> bool {
+    [Key::Tab, Key::Backtab]
+        .into_iter()
+        .any(|key| text.starts_with(char::from(key)))
+}
+
 /// The keys of every action: the defaults, with the user's changes over them.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Keymap {

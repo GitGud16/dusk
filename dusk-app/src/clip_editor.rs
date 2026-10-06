@@ -690,6 +690,15 @@ impl App {
     /// A key was pressed in the clip editor; true when it was a shortcut there, or its
     /// question took it.
     pub fn editor_key(&mut self, text: &str, ctrl: bool, shift: bool, alt: bool) -> bool {
+        // Slint moves the keyboard through a dialog's controls with the keys no one takes.
+        let dialog = self
+            .editor
+            .as_ref()
+            .is_some_and(|editor| editor.question.is_some())
+            || self.export_dialog_in_editor();
+        if dialog && crate::keymap::moves_focus(text) {
+            return false;
+        }
         if self
             .editor
             .as_ref()

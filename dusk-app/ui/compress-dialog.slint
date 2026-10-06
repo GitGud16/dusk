@@ -63,6 +63,7 @@ export component CompressDialog inherits Rectangle {
         }
 
         if !root.view.reading: Segmented {
+            in-dialog: true;
             options: ["To a file size", "At a quality"];
             selected: root.view.by-size ? 0 : 1;
             chosen(index) => {
@@ -81,6 +82,7 @@ export component CompressDialog inherits Rectangle {
                 spacing: Theme.space-2;
 
                 NumberField {
+                    in-dialog: true;
                     horizontal-stretch: 1;
                     value: root.view.megabytes;
                     minimum: 1;
@@ -95,6 +97,7 @@ export component CompressDialog inherits Rectangle {
                 }
 
                 for preset in [8, 25, 50, 100]: ToolButton {
+                    in-dialog: true;
                     text: preset + " MB";
                     clicked => {
                         root.changed("megabytes", preset);
@@ -121,6 +124,7 @@ export component CompressDialog inherits Rectangle {
             }
 
             Segmented {
+                in-dialog: true;
                 options: ["High", "Medium", "Small"];
                 selected: root.view.level == 80 ? 0 : root.view.level == 60 ? 1 : root.view.level == 40 ? 2 : -1;
                 chosen(index) => {
@@ -129,6 +133,7 @@ export component CompressDialog inherits Rectangle {
             }
 
             quality := Slider {
+                in-dialog: true;
                 minimum: 0;
                 maximum: 100;
                 value: root.view.level;
@@ -152,6 +157,7 @@ export component CompressDialog inherits Rectangle {
             spacing: Theme.space-2;
 
             if root.view.smallest > 0: ToolButton {
+                in-dialog: true;
                 text: "Use " + root.view.smallest + " MB";
                 clicked => {
                     root.changed("smallest", 0);
@@ -163,6 +169,7 @@ export component CompressDialog inherits Rectangle {
             }
 
             ToolButton {
+                in-dialog: true;
                 text: "Compress…";
                 primary: true;
                 enabled: root.view.ready;
@@ -172,6 +179,7 @@ export component CompressDialog inherits Rectangle {
             }
 
             ToolButton {
+                in-dialog: true;
                 text: "Cancel";
                 clicked => {
                     root.done(false);

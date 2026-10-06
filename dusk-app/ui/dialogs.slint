@@ -69,6 +69,7 @@ export component Prompt inherits Rectangle {
             spacing: Theme.space-2;
 
             for answer[index] in root.answers: ToolButton {
+                in-dialog: true;
                 text: answer;
                 primary: index == 0 && index != root.destructive;
                 destructive: index == root.destructive;
@@ -142,6 +143,7 @@ export component SequenceSettings inherits Rectangle {
             spacing: Theme.space-2;
 
             NumberField {
+                in-dialog: true;
                 value: root.chosen-width;
                 minimum: 16;
                 maximum: 8192;
@@ -155,6 +157,7 @@ export component SequenceSettings inherits Rectangle {
             }
 
             NumberField {
+                in-dialog: true;
                 value: root.chosen-height;
                 minimum: 16;
                 maximum: 8192;
@@ -177,6 +180,7 @@ export component SequenceSettings inherits Rectangle {
                 { label: "1280×720", width: 1280, height: 720 },
                 { label: "3840×2160", width: 3840, height: 2160 },
             ]: ToolButton {
+                in-dialog: true;
                 text: size.label;
                 clicked => {
                     root.chosen-width = size.width;
@@ -197,6 +201,7 @@ export component SequenceSettings inherits Rectangle {
             spacing: Theme.space-2;
 
             ToolButton {
+                in-dialog: true;
                 text: "Apply";
                 primary: true;
                 clicked => {
@@ -205,6 +210,7 @@ export component SequenceSettings inherits Rectangle {
             }
 
             ToolButton {
+                in-dialog: true;
                 text: "Cancel";
                 clicked => {
                     root.done(false, root.chosen-rate, root.chosen-width, root.chosen-height);
