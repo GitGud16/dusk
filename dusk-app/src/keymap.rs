@@ -659,6 +659,20 @@ mod tests {
     }
 
     #[test]
+    fn tab_and_shift_tab_move_the_keyboard() {
+        assert!(moves_focus(&named(Key::Tab)));
+        assert!(moves_focus(&named(Key::Backtab)));
+        for other in [
+            named(Key::Return),
+            named(Key::Escape),
+            " ".to_owned(),
+            "t".to_owned(),
+        ] {
+            assert!(!moves_focus(&other), "{other:?}");
+        }
+    }
+
+    #[test]
     fn a_file_changes_only_the_actions_it_names() {
         let (map, problems) = Keymap::read("split = X\nredo = Ctrl+Y\n");
         assert!(problems.is_empty(), "{problems:?}");
