@@ -390,12 +390,37 @@ impl App {
 
     /// What the media bin says of a missing file: how to find it.
     pub(crate) fn missing_detail(&self) -> String {
+        format!("Cannot be found: {}", self.find_hint())
+    }
+
+    /// How to find a missing file: the key that does it, or the menu item when the user took
+    /// its keys away.
+    fn find_hint(&self) -> String {
         let keys = self.keymap.keys_text(Action::FindMissingMedia);
         if keys.is_empty() {
-            "Cannot be found: File, Find missing media".to_owned()
+            "File, Find missing media finds it".to_owned()
         } else {
-            format!("Cannot be found: {keys} finds it")
+            format!("{keys} finds it")
         }
+    }
+
+    /// The engine could not do something. A media file that went away while Dusk ran says
+    /// so and how to find it, and the bin marks it once a check has seen it gone.
+    pub(crate) fn engine_failed(&mut self, error: &EngineError) {
+        if let Some(path) = error.missing_file()
+            && let Some(message) = gone_message(&self.project, path, &self.find_hint())
+        {
+            let known = self
+                .project
+                .media()
+                .iter()
+                .any(|media| media.path == path && self.missing.contains(&media.id));
+            if !known {
+                self.check_media(Ask::No);
+            }
+            return self.fail(&message);
+        }
+        self.fail(&sentence(&error.to_string()));
     }
 }
 
@@ -406,6 +431,16 @@ pub(crate) fn media_paths(project: &Project) -> Vec<(MediaId, &Path)> {
         .iter()
         .map(|media| (media.id, media.path.as_path()))
         .collect()
+}
+
+/// What the status line says when the engine finds that `path`, a media file of `project`,
+/// went away; `hint` says how to find it. `None` for a file the project does not use.
+pub fn gone_message(project: &Project, path: &Path, hint: &str) -> Option<String> {
+    let media = project.media().iter().find(|media| media.path == path)?;
+    Some(format!(
+        "{} cannot be found, so its clips are black and silent; {hint}.",
+        file_name(&media.path)
+    ))
 }
 
 fn file_name(path: &Path) -> String {
@@ -455,6 +490,32 @@ mod tests {
             path: path.into(),
             info,
         }
+    }
+
+    #[test]
+    fn a_media_file_that_went_away_says_how_to_find_it() {
+        let (project, _, _) = project();
+        assert_eq!(
+            gone_message(
+                &project,
+                Path::new("E:/trip/hills.mp4"),
+                "Ctrl+Shift+M finds it"
+            )
+            .as_deref(),
+            Some(
+                "hills.mp4 cannot be found, so its clips are black and silent; Ctrl+Shift+M \
+                 finds it."
+            )
+        );
+        // Files the project does not use are not its media.
+        assert_eq!(
+            gone_message(
+                &project,
+                Path::new("E:/trip/notes.mp4"),
+                "Ctrl+Shift+M finds it"
+            ),
+            None
+        );
     }
 
     #[test]

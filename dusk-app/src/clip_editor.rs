@@ -121,7 +121,9 @@ impl App {
             && let Err(error) = window.show()
         {
             self.forget_editor();
-            return self.fail(&format!("The clip editor could not open: {error}."));
+            return self.fail(&format!(
+                "The clip editor could not open: {error}. Update the graphics driver and try again."
+            ));
         }
         // Showing the window sized its preview, but the callback came too early to be heard.
         self.editor_preview_resized(
@@ -141,7 +143,9 @@ impl App {
                     self.editor_window = Some(window);
                 }
                 Err(error) => {
-                    self.fail(&format!("The clip editor could not open: {error}."));
+                    self.fail(&format!(
+                "The clip editor could not open: {error}. Update the graphics driver and try again."
+            ));
                     return None;
                 }
             }
@@ -854,7 +858,8 @@ impl App {
             return;
         };
         if self.export.is_some() {
-            return self.editor_say("An export is already running.");
+            return self
+                .editor_say("An export is already running; wait for it to finish or cancel it.");
         }
         let project = match editor.session.export_project(&self.project) {
             Ok(project) => project,

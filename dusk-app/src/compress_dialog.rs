@@ -26,7 +26,7 @@ impl App {
     /// Ctrl+M and the File menu: asks for a video, then opens the compress dialog for it.
     pub(crate) fn compress_video(&mut self) {
         if self.export.is_some() {
-            return self.say("An export is already running.");
+            return self.say("An export is already running; wait for it to finish or cancel it.");
         }
         if self.compress_dialog.is_some() || self.export_dialog.is_some() {
             return;
@@ -147,7 +147,7 @@ impl App {
         target: CompressTarget,
     ) {
         if self.export.is_some() {
-            return self.fail("An export is already running.");
+            return self.fail("An export is already running; wait for it to finish or cancel it.");
         }
         let over_media = same_file(&source, &path)
             || self

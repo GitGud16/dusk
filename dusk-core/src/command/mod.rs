@@ -335,7 +335,7 @@ pub enum Rejection {
     #[error("the clip would overlap another clip; make room first")]
     Overlap(TrackId),
     /// A clip's source range does not lie within its media file.
-    #[error("the clip reaches outside its source file")]
+    #[error("the clip reaches outside its source file; trim it to lie within the file")]
     SourceRange(ClipId),
     /// The edit would leave a clip shorter than one frame.
     #[error("a clip must be at least one frame long")]
@@ -368,7 +368,7 @@ pub enum Rejection {
     #[error("the volume must be between -60 and +12 dB")]
     Volume(ClipId),
     /// The crop is empty or reaches outside the picture.
-    #[error("the crop must lie inside the picture")]
+    #[error("the crop must lie inside the picture; crop less")]
     Crop(ClipId),
     /// A split was asked for at a frame that is not strictly inside the clip.
     #[error("move the playhead inside the clip to split it")]

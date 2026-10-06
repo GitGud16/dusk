@@ -897,7 +897,7 @@ impl VideoThread {
         let Some(media_ref) = project.media_ref(media) else {
             return Err(EngineError::Unsupported {
                 path: Default::default(),
-                reason: "the project lists a clip without its media file",
+                reason: "the project lists a clip without its media file; open the project again",
             });
         };
         let large = is_large(&media_ref.info);

@@ -27,7 +27,7 @@ pub const FORMAT_VERSION: u32 = 1;
 #[derive(Debug, thiserror::Error)]
 pub enum FileError {
     /// The text is not a Dusk project file, or a value in it is out of range.
-    #[error("the project file is damaged or is not a Dusk project ({0})")]
+    #[error("the project file is damaged or is not a Dusk project ({0}); open another copy of it")]
     Unreadable(String),
     /// The file is in a format version this Dusk does not read.
     #[error(
@@ -35,7 +35,9 @@ pub enum FileError {
     )]
     Version(u64),
     /// The file breaks a timeline rule.
-    #[error("the project file breaks a timeline rule: {0}")]
+    #[error(
+        "the project file breaks a timeline rule ({0}); if it was changed by hand, undo that change, or open another copy of it"
+    )]
     Invalid(#[from] Rejection),
 }
 

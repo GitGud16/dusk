@@ -113,11 +113,15 @@ impl App {
         match session {
             Ok(mut session) => {
                 if let Err(error) = session.record_project(self.document.path.as_deref()) {
-                    self.fail(&format!("Autosave is off: {error}."));
+                    self.fail(&format!(
+                        "Autosave is off: {error}. Save your work yourself until Dusk starts again."
+                    ));
                 }
                 self.session = Some(session);
             }
-            Err(error) => self.fail(&format!("Autosave is off: {error}.")),
+            Err(error) => self.fail(&format!(
+                "Autosave is off: {error}. Save your work yourself until Dusk starts again."
+            )),
         }
         self.open_command_line(files);
         // The newest leftover is offered now; any older ones at the next start.
@@ -403,7 +407,8 @@ impl App {
             && let Err(error) = session.record_project(path.as_deref())
         {
             self.fail(&format!(
-                "Autosave may not find this project after a crash: {error}."
+                "Autosave may not find this project after a crash: {error}. Save often until \
+                 Dusk starts again."
             ));
         }
     }
@@ -534,7 +539,7 @@ impl App {
                 self.say("Recovered. Save to keep it.");
             }
             Err(error) => self.fail(&format!(
-                "Could not recover the autosave: {}",
+                "Could not recover the autosave: {} Open the project's last saved file instead.",
                 sentence(&error)
             )),
         }

@@ -58,7 +58,7 @@ impl App {
     /// The system could not open the releases page.
     pub fn about_link_failed(&self) {
         self.fail(&format!(
-            "Your browser did not open. The releases page is {RELEASES}"
+            "Your browser did not open; go to {RELEASES} for new versions of Dusk."
         ));
     }
 }

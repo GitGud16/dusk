@@ -59,7 +59,7 @@ impl App {
     /// Ctrl+E, the toolbar and the File menu: the export dialog for the timeline.
     pub(crate) fn export(&mut self) {
         if self.export.is_some() {
-            return self.say("An export is already running.");
+            return self.say("An export is already running; wait for it to finish or cancel it.");
         }
         if self.project.sequence().end() == Frame(0) {
             return self.fail("Place some media on the timeline before exporting.");
@@ -379,7 +379,10 @@ impl App {
             }
         };
         if self.export.is_some() {
-            return fail(self, "An export is already running.");
+            return fail(
+                self,
+                "An export is already running; wait for it to finish or cancel it.",
+            );
         }
         if self
             .project

@@ -731,7 +731,7 @@ impl App {
                 self.stopped(preview, frame);
                 self.refresh_transport();
             }
-            EngineEvent::Error(error) => self.fail(&error.to_string()),
+            EngineEvent::Error(error) => self.engine_failed(&error),
             EngineEvent::Frame {
                 preview,
                 frame,

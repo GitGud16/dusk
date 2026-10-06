@@ -38,7 +38,7 @@ pub fn compress_project(source: PathBuf, info: MediaInfo) -> Result<Project, Eng
         .apply(&mut project)
         .map_err(|_| EngineError::Unsupported {
             path: source,
-            reason: "it could not be placed on a timeline",
+            reason: "it could not be placed on a timeline; convert it to MP4 and try again",
         })?;
     Ok(project)
 }

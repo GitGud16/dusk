@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use dusk_media::MediaError;
 
@@ -93,9 +93,33 @@ fn megabytes_up(bytes: u64) -> String {
     format!("{}.{}", tenths / 10, tenths % 10)
 }
 
+impl EngineError {
+    /// The file that is not where it was said to be, when that is what went wrong: a media
+    /// file of the project that went away, for one.
+    pub fn missing_file(&self) -> Option<&Path> {
+        match self {
+            EngineError::Media(MediaError::NotAFile { path }) => Some(path),
+            _ => None,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_file_that_is_not_there_is_named() {
+        let missing = EngineError::Media(MediaError::NotAFile {
+            path: PathBuf::from("E:/trip/beach.mp4"),
+        });
+        assert_eq!(missing.missing_file(), Some(Path::new("E:/trip/beach.mp4")));
+        let other = EngineError::Media(MediaError::NoAudio {
+            path: PathBuf::from("E:/trip/beach.mp4"),
+        });
+        assert_eq!(other.missing_file(), None);
+        assert_eq!(EngineError::Empty.missing_file(), None);
+    }
 
     #[test]
     fn the_smallest_size_is_never_said_below_itself() {
