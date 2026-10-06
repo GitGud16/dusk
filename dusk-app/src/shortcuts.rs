@@ -20,6 +20,12 @@ pub enum Action {
     StepForward,
     GoToStart,
     GoToEnd,
+    /// Up and Down: the playhead to the previous or next cut, where any clip starts or ends.
+    PreviousCut,
+    NextCut,
+    /// Shift+Left and Shift+Right: the playhead a second back or ahead.
+    BackSecond,
+    AheadSecond,
     Undo,
     Redo,
     Split,
@@ -29,6 +35,12 @@ pub enum Action {
     Unlink,
     ToggleEnabled,
     Place,
+    /// Selects the clip at the playhead, the next one down when one there is selected.
+    SelectAtPlayhead,
+    SelectNone,
+    /// Selects the media before or after the selected one in the bin.
+    PreviousMedia,
+    NextMedia,
     /// Hides or shows, mutes or unmutes, the track at this index (V1, V2, A1, A2).
     ToggleMute(usize),
     /// Locks or unlocks the track at this index.
@@ -53,10 +65,12 @@ pub enum Action {
     ToggleFill,
     /// Opens the selected clip in the clip editor.
     OpenClipEditor,
-    /// The clip editor's own: start or end the clip at the playhead, turn and mirror the
-    /// picture, apply the draft to the project, close the window.
+    /// Starts or ends the clip at the playhead: the selected clip in the main window, the
+    /// draft in the clip editor.
     MarkIn,
     MarkOut,
+    /// The clip editor's own: turn and mirror the picture, apply the draft to the project,
+    /// close the window.
     TurnLeft,
     TurnRight,
     MirrorLeftRight,
@@ -206,6 +220,34 @@ pub const ACTIONS: &[ActionInfo] = &[
         &[named(Key::End)],
     ),
     entry(
+        Action::PreviousCut,
+        "previous-cut",
+        Group::Playback,
+        "Go to the previous cut",
+        &[named(Key::UpArrow)],
+    ),
+    entry(
+        Action::NextCut,
+        "next-cut",
+        Group::Playback,
+        "Go to the next cut, where any clip starts or ends",
+        &[named(Key::DownArrow)],
+    ),
+    entry(
+        Action::BackSecond,
+        "back-a-second",
+        Group::Playback,
+        "Back one second",
+        &[named(Key::LeftArrow).shift()],
+    ),
+    entry(
+        Action::AheadSecond,
+        "ahead-a-second",
+        Group::Playback,
+        "Ahead one second",
+        &[named(Key::RightArrow).shift()],
+    ),
+    entry(
         Action::Undo,
         "undo",
         Group::Editing,
@@ -272,8 +314,50 @@ pub const ACTIONS: &[ActionInfo] = &[
         Action::Place,
         "place",
         Group::Editing,
-        "Place the selected media at the playhead",
+        "Place the selected media at the playhead, and go past it",
         &[letter('p')],
+    ),
+    entry(
+        Action::PreviousMedia,
+        "previous-media",
+        Group::Editing,
+        "Select the media above in the bin",
+        &[named(Key::UpArrow).alt()],
+    ),
+    entry(
+        Action::NextMedia,
+        "next-media",
+        Group::Editing,
+        "Select the media below in the bin",
+        &[named(Key::DownArrow).alt()],
+    ),
+    entry(
+        Action::SelectAtPlayhead,
+        "select-at-playhead",
+        Group::Editing,
+        "Select the clip at the playhead; press again for the one below it",
+        &[letter('d')],
+    ),
+    entry(
+        Action::SelectNone,
+        "select-none",
+        Group::Editing,
+        "Select no clip",
+        &[letter('a').ctrl().shift()],
+    ),
+    entry(
+        Action::MarkIn,
+        "mark-in",
+        Group::Editing,
+        "Start the clip at the playhead: the selected one, or the clip editor's",
+        &[letter('i')],
+    ),
+    entry(
+        Action::MarkOut,
+        "mark-out",
+        Group::Editing,
+        "End the clip at the playhead: the selected one, or the clip editor's",
+        &[letter('o')],
     ),
     entry(
         Action::OpenClipEditor,
@@ -281,20 +365,6 @@ pub const ACTIONS: &[ActionInfo] = &[
         Group::Editing,
         "Open the selected clip in the clip editor",
         &[named(Key::Return)],
-    ),
-    entry(
-        Action::MarkIn,
-        "mark-in",
-        Group::ClipEditor,
-        "Clip editor: start the clip at the playhead",
-        &[letter('i')],
-    ),
-    entry(
-        Action::MarkOut,
-        "mark-out",
-        Group::ClipEditor,
-        "Clip editor: end the clip at the playhead",
-        &[letter('o')],
     ),
     entry(
         Action::TurnRight,

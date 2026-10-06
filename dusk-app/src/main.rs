@@ -16,6 +16,7 @@ mod export_dialog;
 mod files;
 mod history;
 mod keymap;
+mod navigation;
 mod platform;
 mod recovery;
 mod settings;

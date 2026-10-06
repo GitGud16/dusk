@@ -21,6 +21,9 @@ export struct MediaView {
 export component MediaBin inherits Rectangle {
     in property <[MediaView]> media;
     in property <int> selected: -1;
+    // The selected item's place in the list, -1 for none: the list scrolls to keep it in view
+    // when the keys pick another.
+    in property <int> selected-row: -1;
     callback select(media: int);
     // Double-clicked: place it at the playhead.
     callback activate(media: int);
@@ -35,6 +38,21 @@ export component MediaBin inherits Rectangle {
     property <bool> dragging;
     property <length> press-x;
     property <length> press-y;
+
+    // Where the selected item's row starts in the list: its padding, then 44px rows 2px apart.
+    pure function selected-top() -> length {
+        return Theme.space-1 + root.selected-row * 46px;
+    }
+
+    changed selected-row => {
+        if root.selected-row >= 0 {
+            if root.selected-top() < root.scrolled {
+                root.scrolled = root.selected-top();
+            } else if root.selected-top() + 44px > root.scrolled + view.height {
+                root.scrolled = root.selected-top() + 44px - view.height;
+            }
+        }
+    }
 
     background: Theme.bg-1;
 
@@ -90,7 +108,7 @@ export component MediaBin inherits Rectangle {
                 }
             }
 
-            Rectangle {
+            view := Rectangle {
                 clip: true;
 
                 list := VerticalLayout {

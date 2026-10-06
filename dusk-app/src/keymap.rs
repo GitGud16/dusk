@@ -621,6 +621,36 @@ mod tests {
     }
 
     #[test]
+    fn keys_edit_without_the_mouse() {
+        let map = Keymap::default();
+        let up = named(Key::UpArrow);
+        let down = named(Key::DownArrow);
+        assert_eq!(press(&map, &up, None, PLAIN), Some(Action::PreviousCut));
+        assert_eq!(press(&map, &down, None, PLAIN), Some(Action::NextCut));
+        assert_eq!(
+            press(&map, &named(Key::LeftArrow), None, SHIFT),
+            Some(Action::BackSecond)
+        );
+        assert_eq!(
+            press(&map, &named(Key::RightArrow), None, SHIFT),
+            Some(Action::AheadSecond)
+        );
+        assert_eq!(
+            press(&map, "d", Some('d'), PLAIN),
+            Some(Action::SelectAtPlayhead)
+        );
+        assert_eq!(
+            press(&map, "A", Some('a'), CTRL_SHIFT),
+            Some(Action::SelectNone)
+        );
+        assert_eq!(press(&map, &up, None, ALT), Some(Action::PreviousMedia));
+        assert_eq!(press(&map, &down, None, ALT), Some(Action::NextMedia));
+        // I and O start and end a clip in either window.
+        assert_eq!(press(&map, "i", Some('i'), PLAIN), Some(Action::MarkIn));
+        assert_eq!(press(&map, "o", Some('o'), PLAIN), Some(Action::MarkOut));
+    }
+
+    #[test]
     fn a_file_changes_only_the_actions_it_names() {
         let (map, problems) = Keymap::read("split = X\nredo = Ctrl+Y\n");
         assert!(problems.is_empty(), "{problems:?}");

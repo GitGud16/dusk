@@ -17,6 +17,7 @@ use crate::app::{App, factor_label, sentence, texture_image, with_app};
 use crate::document::Next;
 use crate::draft::{self, EditorView, Sides, Source};
 use crate::export_dialog::ExportTarget;
+use crate::navigation::one_second;
 use crate::platform;
 use crate::shortcuts::Action;
 use crate::speed::{SpeedKey, next_factor};
@@ -728,6 +729,12 @@ impl App {
             Action::StepForward => self.editor_step(1),
             Action::GoToStart => self.editor_seek(Frame(0)),
             Action::GoToEnd => self.editor_seek(Frame(i64::MAX)),
+            Action::BackSecond => {
+                self.editor_step(-one_second(self.project.sequence().frame_rate()));
+            }
+            Action::AheadSecond => {
+                self.editor_step(one_second(self.project.sequence().frame_rate()));
+            }
             Action::MarkIn => self.editor_mark(Edge::Start),
             Action::MarkOut => self.editor_mark(Edge::End),
             Action::TurnLeft => self.editor_turn(false),
@@ -771,7 +778,13 @@ impl App {
             | Action::ZoomOut
             | Action::ZoomFit
             | Action::SequenceSettings
-            | Action::OpenClipEditor => return false,
+            | Action::OpenClipEditor
+            | Action::PreviousCut
+            | Action::NextCut
+            | Action::SelectAtPlayhead
+            | Action::SelectNone
+            | Action::PreviousMedia
+            | Action::NextMedia => return false,
         }
         true
     }

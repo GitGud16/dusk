@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Instant;
 
 use dusk_core::time::STANDARD_RATES;
-use dusk_core::{ClipId, Command, Frame, MediaId, Project};
+use dusk_core::{ClipId, Command, Edge, Frame, MediaId, Project};
 use dusk_engine::{Engine, EngineEvent, ExportEvent, ExportJob, Preview};
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 
@@ -20,6 +20,7 @@ use crate::document::{Document, Question};
 use crate::export_dialog::ExportDialog;
 use crate::files::Worker;
 use crate::history::History;
+use crate::navigation::{cut_after, cut_before, one_second};
 use crate::recovery::Session;
 use crate::shortcuts::Action;
 use crate::speed::{SpeedKey, next_factor};
@@ -323,6 +324,16 @@ impl App {
             Action::StepForward => self.step(1),
             Action::GoToStart => self.seek(Frame(0)),
             Action::GoToEnd => self.seek(self.last_frame()),
+            Action::PreviousCut => self.go_to_cut(false),
+            Action::NextCut => self.go_to_cut(true),
+            Action::BackSecond => self.step(-one_second(self.project.sequence().frame_rate())),
+            Action::AheadSecond => self.step(one_second(self.project.sequence().frame_rate())),
+            Action::SelectAtPlayhead => self.select_at_playhead(),
+            Action::SelectNone => self.select_clip(-1),
+            Action::PreviousMedia => self.select_neighbor_media(false),
+            Action::NextMedia => self.select_neighbor_media(true),
+            Action::MarkIn => self.trim_selected_to_playhead(Edge::Start),
+            Action::MarkOut => self.trim_selected_to_playhead(Edge::End),
             Action::Undo => self.undo(),
             Action::Redo => self.redo(),
             Action::Split => self.split(),
@@ -358,9 +369,7 @@ impl App {
             Action::ToggleFill => self.toggle_fill(),
             Action::OpenClipEditor => self.open_selected_clip(),
             // The clip editor's own keys mean nothing in the main window.
-            Action::MarkIn
-            | Action::MarkOut
-            | Action::TurnLeft
+            Action::TurnLeft
             | Action::TurnRight
             | Action::MirrorLeftRight
             | Action::MirrorTopBottom
@@ -533,6 +542,17 @@ impl App {
     fn step(&mut self, frames: i64) {
         let from = self.stop_playing(Preview::Main).unwrap_or(self.playhead);
         self.seek(from + Frame(frames));
+    }
+
+    /// Up and Down: the playhead goes to the previous or next cut, or stays at the last one.
+    fn go_to_cut(&mut self, forward: bool) {
+        let from = self.stop_playing(Preview::Main).unwrap_or(self.playhead);
+        let cut = if forward {
+            cut_after(&self.project, from)
+        } else {
+            cut_before(&self.project, from)
+        };
+        self.seek(cut.unwrap_or(from));
     }
 
     /// Moves the playhead to `frame` and shows exactly that frame.
@@ -745,8 +765,11 @@ impl App {
                 thumbnail: self.thumbnails.get(row.id).unwrap_or_default(),
             })
             .collect();
+        let selected = self.selected_media.map_or(-1, |media| id_int(media.0));
+        let row = media.iter().position(|view| view.id == selected);
         replace_if_changed(&self.models.media, media);
-        window.set_selected_media(self.selected_media.map_or(-1, |media| id_int(media.0)));
+        window.set_selected_media(selected);
+        window.set_selected_media_row(row.and_then(|row| i32::try_from(row).ok()).unwrap_or(-1));
     }
 
     /// Shows the selected clip's properties.
@@ -808,8 +831,10 @@ impl App {
         (self.project.sequence().end() - Frame(1)).max(Frame(0))
     }
 
+    /// Where the playhead can go: from the start to just past the last frame, where placing
+    /// media puts it after everything.
     fn clamp(&self, frame: Frame) -> Frame {
-        frame.clamp(Frame(0), self.last_frame())
+        frame.clamp(Frame(0), self.project.sequence().end())
     }
 
     /// Shows `message` in the status line.

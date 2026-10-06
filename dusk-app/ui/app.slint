@@ -38,6 +38,8 @@ export component MainWindow inherits Window {
     // The media bin.
     in property <[MediaView]> media;
     in property <int> selected-media: -1;
+    // The selected media's place in the bin, -1 for none.
+    in property <int> selected-media-row: -1;
     callback select-media(media: int);
     callback place-media-at-playhead(media: int);
     // Where media dragged from the bin onto `row` at `frame` would start, or -1; and the drop.
@@ -373,6 +375,7 @@ export component MainWindow inherits Window {
                     width: Theme.side-panel-width;
                     media: root.media;
                     selected: root.selected-media;
+                    selected-row: root.selected-media-row;
                     select(media) => {
                         root.select-media(media);
                     }

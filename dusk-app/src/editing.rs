@@ -16,6 +16,7 @@ use dusk_engine::{EngineError, media_info};
 
 use crate::app::{App, absolute, file_name, frame_int, sentence, with_app};
 use crate::document::Question;
+use crate::navigation::{neighbor_media, next_clip_at};
 use crate::platform::Dialog;
 use crate::timeline::{self, tracks_for_row};
 
@@ -145,6 +146,38 @@ impl App {
         self.refresh_bin();
     }
 
+    /// D: selects the clip at the playhead, the next one down when one there is selected.
+    pub(crate) fn select_at_playhead(&mut self) {
+        match next_clip_at(&self.project, self.playhead, self.selected_clip) {
+            Some(clip) => {
+                self.selected_clip = Some(clip);
+                self.refresh_selection();
+                self.refresh_properties();
+            }
+            None => self.say("There is no clip at the playhead."),
+        }
+    }
+
+    /// Alt+Up and Alt+Down: selects the media before or after the selected one in the bin.
+    pub(crate) fn select_neighbor_media(&mut self, forward: bool) {
+        if let Some(media) = neighbor_media(&self.project, self.selected_media, forward) {
+            self.selected_media = Some(media);
+            self.refresh_bin();
+        }
+    }
+
+    /// I and O in the main window: the selected clip starts or ends at the playhead.
+    pub(crate) fn trim_selected_to_playhead(&mut self, edge: Edge) {
+        let Some(clip) = self.selected_clip else {
+            return self.say("Select a clip to start or end it at the playhead.");
+        };
+        self.edit(Command::TrimClips(TrimClips::new(
+            clip,
+            edge,
+            self.playhead,
+        )));
+    }
+
     /// Media from the bin was dropped on `row` at `frame`, a place where it fits.
     pub fn place_media(&mut self, media: i32, row: i32, frame: i32) {
         let (Ok(media), Ok(row)) = (u64::try_from(media), usize::try_from(row)) else {
@@ -248,6 +281,14 @@ impl App {
             self.selected_clip = Some(new_clip);
             self.refresh_selection();
             self.refresh_properties();
+            // Placed at the playhead, it moves the playhead past it, so placing again puts the
+            // next clip after it.
+            if row.is_none()
+                && let Some((_, clip)) = self.project.find_clip(new_clip)
+            {
+                let end = clip.end();
+                self.seek(end);
+            }
         }
     }
 
