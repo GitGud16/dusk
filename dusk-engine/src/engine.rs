@@ -223,6 +223,12 @@ impl Engine {
         let _ = self.sound.send(SoundRequest::Project(preview, project));
     }
 
+    /// Lets the frame cache hold at most `cap` bytes from now on; a smaller cap gives back
+    /// what lies above it at once (docs/REQUIREMENTS.md: the cache cap is a user setting).
+    pub fn set_cache_cap(&self, cap: usize) {
+        let _ = self.video.send(VideoRequest::CacheCap(cap));
+    }
+
     /// Draws `preview` at `size` (width, height) in pixels from now on, and redraws it.
     pub fn set_preview_size(&self, preview: Preview, size: (u32, u32)) {
         let _ = self.video.send(VideoRequest::Size(preview, size));
