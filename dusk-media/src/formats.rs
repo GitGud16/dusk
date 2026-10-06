@@ -94,7 +94,8 @@ impl Container {
     }
 
     /// FFmpeg's muxer for it.
-    pub(crate) fn muxer(self) -> &'static str {
+    /// FFmpeg's name for its muxer.
+    pub fn muxer(self) -> &'static str {
         match self {
             Container::Mp4 => "mp4",
             Container::Mov => "mov",
@@ -197,6 +198,8 @@ enum Control {
     Kvazaar,
     SvtAv1,
     Vpx,
+    /// x264 and x265, in a user's own `ffmpeg`.
+    X26x,
 }
 
 /// An encoder Dusk can use, with the limits FFmpeg cannot report (docs/ARCHITECTURE.md,
@@ -238,9 +241,40 @@ pub(crate) struct RateControl {
 }
 
 impl Encoder {
-    /// Whether it takes a raw CRF (Advanced): SVT-AV1 and VP9.
+    /// Whether it takes a raw CRF (Advanced): SVT-AV1, VP9, and x264 and x265.
     pub fn has_crf(&self) -> bool {
-        matches!(self.control, Control::SvtAv1 | Control::Vpx)
+        matches!(self.control, Control::SvtAv1 | Control::Vpx | Control::X26x)
+    }
+
+    /// Its options for `quality`, writing frames of `size` at `fps`, as a user's own `ffmpeg`
+    /// takes them on its command line (docs/ARCHITECTURE.md, "Optional GPL encoders"): each
+    /// name, without its dash, and its value, starting with the pixel format it takes.
+    pub fn command_line(
+        &self,
+        quality: Quality,
+        size: (u32, u32),
+        fps: f64,
+    ) -> Vec<(&'static str, String)> {
+        let control = self.rate_control(quality, size, fps);
+        let pixel = self
+            .pixel
+            .descriptor()
+            .map_or("yuv420p", |pixel| pixel.name());
+        let mut options = vec![("pix_fmt", pixel.to_owned())];
+        if control.bit_rate > 0 {
+            options.push(("b:v", control.bit_rate.to_string()));
+        }
+        if control.max_rate > 0 {
+            options.push(("maxrate", control.max_rate.to_string()));
+        }
+        if control.buffer > 0 {
+            options.push(("bufsize", control.buffer.to_string()));
+        }
+        if let Some(quality) = control.global_quality {
+            options.push(("global_quality:v", quality.to_string()));
+        }
+        options.extend(control.options);
+        options
     }
 
     /// The largest frame size it takes with the shape of `wanted` at `fps` frames a second,
@@ -326,11 +360,12 @@ impl Encoder {
                 control.options = vec![("kvazaar-params", format!("preset=fast,qp={h26x}"))];
             }
             Control::SvtAv1 | Control::Vpx => return self.constant_rate_factor(av1 as u8),
+            Control::X26x => return self.constant_rate_factor(h26x as u8),
         }
         control
     }
 
-    /// A raw CRF, for SVT-AV1 and VP9.
+    /// A raw CRF, for SVT-AV1, VP9, x264 and x265.
     fn constant_rate_factor(&self, crf: u8) -> RateControl {
         let mut control = RateControl {
             options: vec![("crf", crf.min(63).to_string())],
@@ -369,7 +404,7 @@ impl Encoder {
                 ("allow_skip_frames", "0".to_owned()),
             ],
             Control::Kvazaar => vec![("kvazaar-params", "preset=fast".to_owned())],
-            Control::SvtAv1 | Control::Vpx => self.speed(),
+            Control::SvtAv1 | Control::Vpx | Control::X26x => self.speed(),
         };
         control
     }
@@ -536,6 +571,28 @@ pub static ENCODERS: [Encoder; 13] = [
     ),
 ];
 
+/// The GPL encoders Dusk reaches only through a user's own `ffmpeg` (docs/ARCHITECTURE.md,
+/// "Optional GPL encoders"). They are not in the FFmpeg Dusk ships, so they are never tried
+/// for an export of its own; their limits are their codecs' levels.
+pub static EXTERNAL_ENCODERS: [Encoder; 2] = [
+    encoder(
+        "libx264",
+        VideoCodec::H264,
+        Control::X26x,
+        8192,
+        H264_AREA,
+        H264_LUMA_RATE,
+    ),
+    encoder(
+        "libx265",
+        VideoCodec::Hevc,
+        Control::X26x,
+        8192,
+        LARGE_AREA,
+        LARGE_LUMA_RATE,
+    ),
+];
+
 /// The encoders of `codec`, in the order they are tried.
 pub fn encoders_of(codec: VideoCodec) -> impl Iterator<Item = &'static Encoder> {
     ENCODERS
@@ -546,6 +603,13 @@ pub fn encoders_of(codec: VideoCodec) -> impl Iterator<Item = &'static Encoder> 
 /// The encoder called `name`.
 pub fn encoder_named(name: &str) -> Option<&'static Encoder> {
     ENCODERS.iter().find(|encoder| encoder.name == name)
+}
+
+/// The GPL encoder called `name`, from [`EXTERNAL_ENCODERS`].
+pub fn external_encoder_named(name: &str) -> Option<&'static Encoder> {
+    EXTERNAL_ENCODERS
+        .iter()
+        .find(|encoder| encoder.name == name)
 }
 
 #[cfg(test)]
@@ -692,7 +756,7 @@ mod tests {
                 .and_then(|value| value.parse().ok())
                 .unwrap_or(0.0)
         };
-        for encoder in &ENCODERS {
+        for encoder in ENCODERS.iter().chain(&EXTERNAL_ENCODERS) {
             let at = |level: u8| encoder.rate_control(Quality::Level(level), HD, 30.0);
             let (fine, coarse) = (at(80), at(40));
             let finer = match encoder.control {
@@ -703,7 +767,9 @@ mod tests {
                 Control::Kvazaar => {
                     option(&fine, "kvazaar-params") != option(&coarse, "kvazaar-params")
                 }
-                Control::SvtAv1 | Control::Vpx => number(&fine, "crf") < number(&coarse, "crf"),
+                Control::SvtAv1 | Control::Vpx | Control::X26x => {
+                    number(&fine, "crf") < number(&coarse, "crf")
+                }
             };
             assert!(finer, "{}: {fine:?} against {coarse:?}", encoder.name);
         }
@@ -758,6 +824,72 @@ mod tests {
         assert_eq!(
             nvenc.rate_control(Quality::Crf(35), HD, 30.0),
             nvenc.rate_control(Quality::HIGH, HD, 30.0)
+        );
+    }
+
+    fn external(name: &str) -> &'static Encoder {
+        external_encoder_named(name).unwrap_or_else(|| panic!("{name} is in the GPL table"))
+    }
+
+    #[test]
+    fn the_gpl_encoders_are_never_tried_in_the_shipped_ffmpeg() {
+        let listed: Vec<(&str, VideoCodec)> = EXTERNAL_ENCODERS
+            .iter()
+            .map(|encoder| (encoder.name, encoder.codec))
+            .collect();
+        assert_eq!(
+            listed,
+            [("libx264", VideoCodec::H264), ("libx265", VideoCodec::Hevc)]
+        );
+        for encoder in &EXTERNAL_ENCODERS {
+            assert!(encoder_named(encoder.name).is_none(), "{}", encoder.name);
+            assert!(!encoder.hardware && encoder.has_crf(), "{}", encoder.name);
+        }
+        assert!(external_encoder_named("libopenh264").is_none());
+        // The codecs' levels bound them, not a hardware encoder's 4096-pixel side.
+        assert_eq!(external("libx264").fit((5120, 1440), 30.0), (5120, 1440));
+        let (width, height) = external("libx264").fit((4096, 2304), 60.0);
+        assert!(u64::from(width) * u64::from(height) * 60 <= 530_841_600);
+        assert_eq!(external("libx265").fit((7680, 4320), 30.0), (7680, 4320));
+    }
+
+    /// An encoder's options for `quality` as an `ffmpeg` command line has them.
+    fn command_line(encoder: &Encoder, quality: Quality) -> String {
+        encoder
+            .command_line(quality, HD, 30.0)
+            .iter()
+            .map(|(name, value)| format!("-{name} {value}"))
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    #[test]
+    fn an_external_ffmpeg_is_given_the_same_mapping_as_options() {
+        // The slider maps as for every H.264 and HEVC encoder: 21 at High.
+        assert_eq!(
+            command_line(external("libx264"), Quality::HIGH),
+            "-pix_fmt yuv420p -crf 21"
+        );
+        assert_eq!(
+            command_line(external("libx265"), Quality::SMALL),
+            "-pix_fmt yuv420p -crf 29"
+        );
+        assert_eq!(
+            command_line(external("libx265"), Quality::Crf(30)),
+            "-pix_fmt yuv420p -crf 30"
+        );
+        assert_eq!(
+            command_line(external("libx264"), Quality::Bitrate(4_000_000)),
+            "-pix_fmt yuv420p -b:v 4000000 -maxrate 4800000 -bufsize 4800000"
+        );
+        // The shipped encoders translate the same way.
+        assert_eq!(
+            command_line(named("libopenh264"), Quality::HIGH),
+            "-pix_fmt yuv420p -b:v 9331200 -rc_mode bitrate -allow_skip_frames 0"
+        );
+        assert_eq!(
+            command_line(named("h264_qsv"), Quality::HIGH),
+            "-pix_fmt nv12 -global_quality:v 21 -preset medium"
         );
     }
 }

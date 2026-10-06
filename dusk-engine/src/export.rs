@@ -11,7 +11,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use dusk_core::time::frame_to_media;
-use dusk_core::{Frame, MediaId, MediaKind, MediaTime, Picture, Project};
+use dusk_core::{Frame, MediaId, MediaKind, MediaTime, Picture, Project, Rational};
 use dusk_media::{
     Acceleration, AudioCodec, AudioFormat, Container, Quality, VideoCodec, VideoDecoder,
     VideoSettings, Writer,
@@ -20,6 +20,7 @@ use dusk_render::{Compositor, Gpu, ToYuv};
 
 use crate::EngineError;
 use crate::engine::{EngineEvent, Report};
+use crate::external::{Encoding, ExternalEncoder, ExternalJob};
 use crate::info::still_size;
 use crate::mixer::Mixer;
 use crate::placement::placement_at;
@@ -75,14 +76,23 @@ impl ExportJob {
 /// Progress is reported at most this often.
 const PROGRESS_INTERVAL: Duration = Duration::from_millis(100);
 
+/// How an export writes its file.
+#[derive(Clone, Debug)]
+pub(crate) struct ExportPlan {
+    pub settings: ExportSettings,
+    /// A size to aim at: a file more than 3% over it is made again once, smaller.
+    pub size: Option<u64>,
+    /// A user's own `ffmpeg` to encode the video with, in place of Dusk's encoders.
+    pub external: Option<ExternalEncoder>,
+}
+
 /// Starts exporting `project` to `path` on a new thread, which ends after reporting the
-/// outcome; with a `size`, a file more than 3% over it is made again once, smaller.
+/// outcome.
 pub(crate) fn spawn(
     gpu: &Gpu,
     project: Arc<Project>,
     path: PathBuf,
-    settings: ExportSettings,
-    size: Option<u64>,
+    plan: ExportPlan,
     exporting: Arc<AtomicBool>,
     report: Report,
 ) -> Result<(ExportJob, JoinHandle<()>), EngineError> {
@@ -97,7 +107,7 @@ pub(crate) fn spawn(
         .spawn({
             let exporting = Arc::clone(&exporting);
             move || {
-                let outcome = export(&gpu, &project, &path, &settings, size, &cancel, &report);
+                let outcome = export(&gpu, &project, &path, &plan, &cancel, &report);
                 exporting.store(false, Ordering::Relaxed);
                 report(EngineEvent::Export(outcome));
             }
@@ -111,21 +121,22 @@ pub(crate) fn spawn(
     }
 }
 
-/// Exports, making the file again once when it comes out too far over `size`, then renames
-/// the finished file or removes what was written.
+/// Exports, making the file again once when it comes out too far over the plan's size, then
+/// renames the finished file or removes what was written.
 fn export(
     gpu: &Gpu,
     project: &Arc<Project>,
     path: &Path,
-    settings: &ExportSettings,
-    size: Option<u64>,
+    plan: &ExportPlan,
     cancel: &AtomicBool,
     report: &Report,
 ) -> ExportEvent {
     let part = part_path(path);
-    let mut outcome = write_file(gpu, project, &part, settings, cancel, report);
+    let external = plan.external.as_ref();
+    let settings = &plan.settings;
+    let mut outcome = write_file(gpu, project, &part, settings, external, cancel, report);
     if let (Ok(Some(_)), Some(target), Quality::Bitrate(bit_rate)) =
-        (&outcome, size, settings.quality)
+        (&outcome, plan.size, settings.quality)
     {
         let first = std::fs::metadata(&part).map_or(0, |file| file.len());
         if let Some(lower) = corrected(bit_rate, target, first) {
@@ -134,7 +145,7 @@ fn export(
                 quality: Quality::Bitrate(lower),
                 ..*settings
             };
-            outcome = write_file(gpu, project, &part, &again, cancel, report);
+            outcome = write_file(gpu, project, &part, &again, external, cancel, report);
         }
     }
     let renamed = match outcome {
@@ -162,25 +173,42 @@ fn export(
     }
 }
 
-/// Writes the sequence to `part` in `settings`' format; the encoder used, or `None` when
-/// cancelled.
+/// Writes the sequence to `part` in `settings`' format, the video through `external` when
+/// given; the encoder used, or `None` when cancelled.
 fn write_file(
     gpu: &Gpu,
     project: &Arc<Project>,
     part: &Path,
     settings: &ExportSettings,
+    external: Option<&ExternalEncoder>,
     cancel: &AtomicBool,
     report: &Report,
 ) -> Result<Option<String>, EngineError> {
-    match settings.format {
-        ExportFormat::Video {
-            container,
-            codec,
-            audio,
-        } => write(
+    match (settings.format, external) {
+        (
+            ExportFormat::Video {
+                container, audio, ..
+            },
+            Some(external),
+        ) => {
+            let format = (container, audio);
+            write_external(
+                gpu, project, part, format, settings, external, cancel, report,
+            )
+        }
+        (
+            ExportFormat::Video {
+                container,
+                codec,
+                audio,
+            },
+            None,
+        ) => write(
             gpu, project, part, container, codec, audio, settings, cancel, report,
         ),
-        ExportFormat::Sound(format) => write_sound(project, part, format, settings, cancel, report),
+        (ExportFormat::Sound(format), _) => {
+            write_sound(project, part, format, settings, cancel, report)
+        }
     }
 }
 
@@ -212,35 +240,17 @@ fn write(
     };
     let audio = sound.then(|| settings.audio(audio));
     let mut writer = Writer::create(part, container, video, audio)?;
-    let size = writer.size();
-    let compositor = Compositor::new(gpu);
-    let to_yuv = ToYuv::new(gpu);
-    let mut decoders = Decoders::default();
-    let mut mixer = sound.then(|| Mixer::new(Arc::clone(project), AUDIO_RATE, MediaTime(0), 1.0));
-    let mut samples = Vec::new();
-    let mut mixed = 0u64;
+    let mut frames = Frames::new(gpu, writer.size());
+    let mut mix = sound.then(|| Mix::new(project));
     let total = end.0 as u64;
     let mut reported = Instant::now();
     for frame in 0..end.0 {
         if cancel.load(Ordering::Relaxed) {
             return Ok(None);
         }
-        let texture = match decoders.picture(project, Frame(frame))? {
-            Some(picture) => {
-                let placement = placement_at(project, Frame(frame));
-                compositor.render_placed(&picture, &placement, size)?
-            }
-            None => compositor.blank(size)?,
-        };
-        writer.write_video(&to_yuv.convert(&texture)?)?;
-        if let Some(mixer) = mixer.as_mut() {
-            // The sound up to the end of this frame.
-            let until = frame_to_media(Frame(frame + 1), rate).0;
-            let until = (i128::from(until) * i128::from(AUDIO_RATE) / 1_000_000) as u64;
-            samples.resize(2 * (until - mixed) as usize, 0.0);
-            mixer.fill(&mut samples)?;
-            writer.write_audio(&samples)?;
-            mixed = until;
+        writer.write_video(&frames.draw(project, Frame(frame))?)?;
+        if let Some(mix) = mix.as_mut() {
+            writer.write_audio(mix.through(Frame(frame))?)?;
         }
         let done = frame as u64 + 1;
         if done == total || reported.elapsed() >= PROGRESS_INTERVAL {
@@ -262,27 +272,19 @@ fn write_sound(
     cancel: &AtomicBool,
     report: &Report,
 ) -> Result<Option<String>, EngineError> {
-    let sequence = project.sequence();
-    let (rate, end) = (sequence.frame_rate(), sequence.end());
+    let end = project.sequence().end();
     if end <= Frame(0) {
         return Err(EngineError::Empty);
     }
     let mut writer = Writer::sound(part, format, settings.audio(format.codec()))?;
-    let mut mixer = Mixer::new(Arc::clone(project), AUDIO_RATE, MediaTime(0), 1.0);
-    let mut samples = Vec::new();
-    let mut mixed = 0u64;
+    let mut mix = Mix::new(project);
     let total = end.0 as u64;
     let mut reported = Instant::now();
     for frame in 0..end.0 {
         if cancel.load(Ordering::Relaxed) {
             return Ok(None);
         }
-        let until = frame_to_media(Frame(frame + 1), rate).0;
-        let until = (i128::from(until) * i128::from(AUDIO_RATE) / 1_000_000) as u64;
-        samples.resize(2 * (until - mixed) as usize, 0.0);
-        mixer.fill(&mut samples)?;
-        writer.write_audio(&samples)?;
-        mixed = until;
+        writer.write_audio(mix.through(Frame(frame))?)?;
         let done = frame as u64 + 1;
         if done == total || reported.elapsed() >= PROGRESS_INTERVAL {
             reported = Instant::now();
@@ -292,6 +294,159 @@ fn write_sound(
     let encoder = writer.encoder().to_owned();
     writer.finish()?;
     Ok(Some(encoder))
+}
+
+/// Writes the whole sequence to `part` as a video file through a user's own `ffmpeg`
+/// (docs/ARCHITECTURE.md, "Optional GPL encoders"): the sound is mixed into a WAV file beside
+/// the part file first, then every frame is drawn as for Dusk's own encoders and piped in.
+/// The encoder used, or `None` when cancelled.
+#[allow(clippy::too_many_arguments)]
+fn write_external(
+    gpu: &Gpu,
+    project: &Arc<Project>,
+    part: &Path,
+    (container, audio): (Container, AudioCodec),
+    settings: &ExportSettings,
+    external: &ExternalEncoder,
+    cancel: &AtomicBool,
+    report: &Report,
+) -> Result<Option<String>, EngineError> {
+    let sequence = project.sequence();
+    let (rate, end) = (sequence.frame_rate(), sequence.end());
+    if end <= Frame(0) {
+        return Err(EngineError::Empty);
+    }
+    let fps = f64::from(rate.num()) / f64::from(rate.den());
+    let wanted = export_size(sequence.resolution(), settings.short_side);
+    let size = external.encoder.fit(wanted, fps);
+    // The WAV never outlives the export, however it ends.
+    let sound = Removed(sound_part(part));
+    let mixed = has_sound(project);
+    if mixed {
+        let mut writer =
+            Writer::sound(&sound.0, AudioFormat::Wav, settings.audio(AudioCodec::Pcm))?;
+        let mut mix = Mix::new(project);
+        for frame in 0..end.0 {
+            if cancel.load(Ordering::Relaxed) {
+                return Ok(None);
+            }
+            writer.write_audio(mix.through(Frame(frame))?)?;
+        }
+        writer.finish()?;
+    }
+    let job = ExternalJob {
+        size,
+        rate: (rate.num(), rate.den()),
+        sound: mixed.then_some(sound.0.as_path()),
+        container,
+        quality: settings.quality,
+        audio: settings.audio(audio),
+        output: part,
+    };
+    let total = end.0 as u64;
+    let progress = {
+        let report = Arc::clone(report);
+        move |encoded: u64| {
+            let done = encoded.min(total);
+            report(EngineEvent::Export(ExportEvent::Progress { done, total }));
+        }
+    };
+    // Dropping it on the way out stops the program.
+    let mut encoding = Encoding::start(external, &job, progress)?;
+    let mut frames = Frames::new(gpu, size);
+    for frame in 0..end.0 {
+        if cancel.load(Ordering::Relaxed) {
+            return Ok(None);
+        }
+        if !encoding.write(frames.draw(project, Frame(frame))?, cancel)? {
+            return Ok(None);
+        }
+    }
+    if !encoding.finish(cancel)? {
+        return Ok(None);
+    }
+    Ok(Some(external.label()))
+}
+
+/// Where an external export mixes the sound for the program to read: beside the part file,
+/// as `name.ext.part.wav`.
+pub(crate) fn sound_part(part: &Path) -> PathBuf {
+    let mut name = part.as_os_str().to_owned();
+    name.push(".wav");
+    PathBuf::from(name)
+}
+
+/// A file removed when this is dropped, if it is there.
+struct Removed(PathBuf);
+
+impl Drop for Removed {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+/// Draws the sequence's frames for an encoder: each at the export size, in limited-range
+/// BT.709 YUV.
+struct Frames {
+    compositor: Compositor,
+    to_yuv: ToYuv,
+    decoders: Decoders,
+    size: (u32, u32),
+}
+
+impl Frames {
+    fn new(gpu: &Gpu, size: (u32, u32)) -> Frames {
+        Frames {
+            compositor: Compositor::new(gpu),
+            to_yuv: ToYuv::new(gpu),
+            decoders: Decoders::default(),
+            size,
+        }
+    }
+
+    /// Timeline frame `frame` of `project`, as the encoder takes it.
+    fn draw(&mut self, project: &Project, frame: Frame) -> Result<Picture, EngineError> {
+        let texture = match self.decoders.picture(project, frame)? {
+            Some(picture) => {
+                let placement = placement_at(project, frame);
+                self.compositor
+                    .render_placed(&picture, &placement, self.size)?
+            }
+            None => self.compositor.blank(self.size)?,
+        };
+        Ok(self.to_yuv.convert(&texture)?)
+    }
+}
+
+/// The sequence's sound, mixed a frame at a time.
+struct Mix {
+    mixer: Mixer,
+    rate: Rational,
+    samples: Vec<f32>,
+    /// Sample frames mixed so far.
+    mixed: u64,
+}
+
+impl Mix {
+    fn new(project: &Arc<Project>) -> Mix {
+        Mix {
+            mixer: Mixer::new(Arc::clone(project), AUDIO_RATE, MediaTime(0), 1.0),
+            rate: project.sequence().frame_rate(),
+            samples: Vec::new(),
+            mixed: 0,
+        }
+    }
+
+    /// The sound from where the last call ended to the end of timeline frame `frame`,
+    /// interleaved stereo.
+    fn through(&mut self, frame: Frame) -> Result<&[f32], EngineError> {
+        let until = frame_to_media(Frame(frame.0 + 1), self.rate).0;
+        let until = (i128::from(until) * i128::from(AUDIO_RATE) / 1_000_000) as u64;
+        self.samples.resize(2 * (until - self.mixed) as usize, 0.0);
+        self.mixer.fill(&mut self.samples)?;
+        self.mixed = until;
+        Ok(&self.samples)
+    }
 }
 
 /// The export's own decoders, at most two open (docs/ARCHITECTURE.md, "Decoder pool"). An

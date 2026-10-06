@@ -1,11 +1,12 @@
 //! The export dialog's choices (docs/ARCHITECTURE.md, "Export details"): only what the
 //! loaded FFmpeg can produce on this machine is offered, the encoder each codec will use is
 //! shown, size presets never enlarge the picture, and the choices become the engine's
-//! export settings.
+//! export settings. A user's own `ffmpeg` can write the codecs it has a GPL encoder for
+//! ("Optional GPL encoders").
 
 use dusk_engine::{
-    AudioCodec, AudioFormat, Container, Encoder, ExportFormat, ExportSettings, Quality, VideoCodec,
-    export_size,
+    AudioCodec, AudioFormat, Container, Encoder, ExportFormat, ExportSettings, ExternalEncoder,
+    Quality, VideoCodec, export_size,
 };
 
 /// The short sides the size presets offer, largest first.
@@ -37,6 +38,10 @@ pub struct ExportChoices {
     pub bitrate_kbps: Option<u32>,
     /// Advanced: a raw CRF, for an encoder that has one; it takes over from the rest.
     pub crf: Option<u8>,
+    /// The GPL encoders of the user's own `ffmpeg`, when one was picked.
+    pub external: Vec<ExternalEncoder>,
+    /// Whether that program writes the codecs it has an encoder for.
+    pub use_external: bool,
 }
 
 impl ExportChoices {
@@ -63,6 +68,8 @@ impl ExportChoices {
             level: 80,
             bitrate_kbps: None,
             crf: None,
+            external: Vec::new(),
+            use_external: false,
         };
         if let Some(before) = before {
             match before.format {
@@ -128,12 +135,38 @@ impl ExportChoices {
             .collect()
     }
 
-    /// The encoder that will write the chosen codec: the first here, in the order tried.
+    /// The encoder that will write the chosen codec: the user's own `ffmpeg`'s when it is
+    /// used, else the first here, in the order tried.
     pub fn encoder(&self) -> Option<&'static Encoder> {
+        if let Some(external) = self.chosen_external() {
+            return Some(external.encoder);
+        }
         self.available
             .iter()
             .copied()
             .find(|encoder| encoder.codec == self.codec)
+    }
+
+    /// The user's own `ffmpeg`'s encoder for the chosen codec, when it has one.
+    fn external_for_codec(&self) -> Option<&ExternalEncoder> {
+        self.external
+            .iter()
+            .find(|external| external.encoder.codec == self.codec)
+    }
+
+    /// Whether the user's own `ffmpeg` can write the chosen codec, so the choice between it
+    /// and Dusk's encoder is offered.
+    pub fn external_offered(&self) -> bool {
+        self.external_for_codec().is_some()
+    }
+
+    /// The user's own `ffmpeg`'s encoder when it writes the video: it is used, it has an
+    /// encoder for the chosen codec, and the export is a video file.
+    pub fn chosen_external(&self) -> Option<&ExternalEncoder> {
+        if !self.use_external || self.sound_only {
+            return None;
+        }
+        self.external_for_codec()
     }
 
     /// Whether a sound-only export is offered: only when there is sound.
@@ -222,7 +255,7 @@ impl ExportChoices {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dusk_engine::{ENCODERS, Quality};
+    use dusk_engine::{ENCODERS, ExternalEncoder, Quality};
 
     fn named(names: &[&str]) -> Vec<&'static Encoder> {
         ENCODERS
@@ -395,6 +428,59 @@ mod tests {
             Some(before),
         );
         assert_eq!(hevc_gone.codec, VideoCodec::H264);
+    }
+
+    fn program_with(names: &[&str]) -> Vec<ExternalEncoder> {
+        names
+            .iter()
+            .map(|name| ExternalEncoder {
+                program: "ffmpeg.exe".into(),
+                encoder: dusk_engine::external_encoder_named(name).unwrap(),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_users_ffmpeg_writes_the_codecs_it_has_an_encoder_for() {
+        let mut choices = choices(here());
+        assert!(!choices.external_offered());
+        choices.external = program_with(&["libx264"]);
+        choices.use_external = true;
+        assert!(choices.external_offered());
+        let chosen = choices
+            .chosen_external()
+            .map(|external| external.encoder.name);
+        assert_eq!(chosen, Some("libx264"));
+        assert_eq!(choices.encoder().map(|e| e.name), Some("libx264"));
+        // It has no HEVC encoder, so Dusk's own writes HEVC.
+        choices.codec = VideoCodec::Hevc;
+        assert!(!choices.external_offered());
+        assert!(choices.chosen_external().is_none());
+        assert_eq!(choices.encoder().map(|e| e.name), Some("hevc_amf"));
+        // Sound alone never goes through it.
+        choices.codec = VideoCodec::H264;
+        choices.sound_only = true;
+        assert!(choices.chosen_external().is_none());
+        // Turned off, Dusk's own encoder writes the video.
+        choices.sound_only = false;
+        choices.use_external = false;
+        assert!(choices.external_offered());
+        assert!(choices.chosen_external().is_none());
+        assert_eq!(choices.encoder().map(|e| e.name), Some("h264_amf"));
+    }
+
+    #[test]
+    fn x264_in_a_users_ffmpeg_takes_a_crf() {
+        let mut choices = choices(here());
+        choices.external = program_with(&["libx264", "libx265"]);
+        choices.use_external = true;
+        assert!(choices.crf_offered());
+        choices.crf = Some(18);
+        assert_eq!(choices.settings().quality, Quality::Crf(18));
+        // Dusk's own H.264 encoders have none.
+        choices.use_external = false;
+        assert!(!choices.crf_offered());
+        assert_eq!(choices.settings().quality, Quality::Level(80));
     }
 
     #[test]

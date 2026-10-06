@@ -52,9 +52,9 @@ Import one file, see it as a linked video clip and audio clip on one video track
 
 ## M4 — Export, compress, extract
 
-- Export dialog: container (MP4/MKV/MOV, WebM as VP9/AV1), resolution presets, Quality 0–100 mapped per encoder, Advanced target bitrate for any encoder and CRF only where the encoder has one (SVT-AV1, VP9), encoders shown by availability. Done: one dialog for the timeline and the clip editor (ARCHITECTURE.md, "Export details"), which names the encoder each codec will use.
+- Export dialog: container (MP4/MKV/MOV, WebM as VP9/AV1), resolution presets, Quality 0–100 mapped per encoder, Advanced target bitrate for any encoder and CRF only where the encoder has one (SVT-AV1, VP9, and x264 and x265 in a user's own `ffmpeg.exe`), encoders shown by availability. Done: one dialog for the timeline and the clip editor (ARCHITECTURE.md, "Export details"), which names the encoder each codec will use.
 - Compress tool: open a single file, target quality or target size (bitrate ladder + one corrective re-encode), export, no project. Done: File → Compress a video… (Ctrl+M), one dialog (ARCHITECTURE.md, "Compress tool paths"), and `dusq compress --size`.
-- Optional external GPL `ffmpeg.exe` export path (raw frames piped).
+- Optional external GPL `ffmpeg.exe` export path (raw frames piped). Done: Advanced → *Use my own ffmpeg.exe…* offers its `libx264` and `libx265` beside Dusk's own encoders for the session (ARCHITECTURE.md, "Optional GPL encoders"); M5 keeps the path.
 - Encoder probing by real session at 640×480 on first export, fall-through on open failure, per-encoder limits table with fixed values; per-encoder memory measured (SVT-AV1 threads and lookahead fixed) and the encoder line in REQUIREMENTS.md updated.
 - CPU path in dusq (normalize → tone-map/rotate in Rust → encoder format) verified against the GPU path by the per-plane PSNR test (≥ 45 dB unscaled, ≥ 40 dB scaled); `--threads`; dusq memory ceiling measured per size class and recorded in REQUIREMENTS.md. The path, `--threads` and the PSNR test are done (ARCHITECTURE.md, "Compress tool paths": every plane 56 to 67 dB); the ceilings come later in M4.
 - Audio-only export (MP3/AAC/Opus/WAV), including the clip editor's Export as file for a sound-only clip. Done: *Sound only* in the export dialog writes the mix of the timeline or of the clip, at 48 kHz.

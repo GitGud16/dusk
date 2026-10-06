@@ -1,15 +1,17 @@
 //! The export dialog on the UI thread (docs/ARCHITECTURE.md, "Export details"): it opens
 //! over the main window for the timeline or over the clip editor for its clip, probes the
 //! encoders on a worker the first time, asks where to save with the system's dialog and
-//! starts the export. What it offers is worked out in `export_choices`.
+//! starts the export. What it offers is worked out in `export_choices`. Its Advanced section
+//! takes the user's own `ffmpeg` for the GPL encoders ("Optional GPL encoders"), checked on a
+//! worker and kept for the session.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use dusk_core::{Frame, Project};
 use dusk_engine::{
-    AudioCodec, AudioFormat, Encoder, EngineError, ExportFormat, ExportSettings,
-    available_encoders, has_picture, has_sound,
+    AudioCodec, AudioFormat, Encoder, EngineError, ExportFormat, ExportSettings, ExternalEncoder,
+    available_encoders, external_encoders, has_picture, has_sound,
 };
 use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
 
@@ -105,13 +107,16 @@ impl App {
     }
 
     fn choices_for(&self, dialog: &ExportDialog, encoders: Vec<&'static Encoder>) -> ExportChoices {
-        ExportChoices::new(
+        let mut choices = ExportChoices::new(
             encoders,
             dialog.size,
             dialog.has_video,
             dialog.has_sound,
             self.last_export,
-        )
+        );
+        choices.external = self.external.clone();
+        choices.use_external = self.use_external;
+        choices
     }
 
     /// The encoders that open on this machine are known.
@@ -130,6 +135,9 @@ impl App {
 
     /// The dialog's `what` changed to `value` (see ui/export-dialog.slint).
     pub fn export_changed(&mut self, what: &str, value: i32) {
+        if what == "program" {
+            return self.pick_program();
+        }
         let Some(choices) = self
             .export_dialog
             .as_mut()
@@ -168,7 +176,79 @@ impl App {
             "level" => choices.level = value.clamp(0, 100) as u8,
             "bitrate" => choices.bitrate_kbps = u32::try_from(value).ok().filter(|kbps| *kbps > 0),
             "crf" => choices.crf = u8::try_from(value.min(63)).ok().filter(|crf| *crf > 0),
+            "external" => choices.use_external = value == 1,
             _ => {}
+        }
+        self.refresh_export_dialog();
+    }
+
+    /// Asks for the user's own `ffmpeg` program with the system's dialog, over the export
+    /// dialog's window, and checks the program picked.
+    fn pick_program(&mut self) {
+        let Some(dialog) = &self.export_dialog else {
+            return;
+        };
+        let done = |paths: Vec<PathBuf>| {
+            if let Some(program) = paths.into_iter().next() {
+                with_app(|app| app.check_program(program));
+            }
+        };
+        if dialog.in_editor() {
+            if let Some(window) = self
+                .editor_window
+                .as_ref()
+                .map(ComponentHandle::clone_strong)
+            {
+                self.show_dialog_over(window.window(), Dialog::OpenProgram, done);
+            }
+        } else if let Some(window) = self.window() {
+            self.show_dialog_over(window.window(), Dialog::OpenProgram, done);
+        }
+    }
+
+    /// Asks `program` for its encoders on a worker; the dialog says so meanwhile.
+    fn check_program(&mut self, program: PathBuf) {
+        self.external_note = format!("Checking {}…", program.display());
+        self.refresh_export_dialog();
+        let spawned = std::thread::Builder::new()
+            .name("dusk ffmpeg check".to_owned())
+            .spawn(move || {
+                let checked = external_encoders(&program);
+                let _ = slint::invoke_from_event_loop(move || {
+                    with_app(|app| app.program_checked(&program, checked));
+                });
+            });
+        if let Err(error) = spawned {
+            self.external_note = crate::app::sentence(&EngineError::Thread(error).to_string());
+            self.refresh_export_dialog();
+        }
+    }
+
+    /// What `program` has is known: exports use it from now on when it has a GPL encoder.
+    fn program_checked(
+        &mut self,
+        program: &Path,
+        checked: Result<Vec<ExternalEncoder>, EngineError>,
+    ) {
+        match checked {
+            Ok(found) => {
+                self.external_note = program_note(program, &found);
+                self.use_external = !found.is_empty();
+                self.external = found;
+            }
+            Err(error) => {
+                self.external_note = crate::app::sentence(&error.to_string());
+                self.use_external = false;
+                self.external.clear();
+            }
+        }
+        if let Some(choices) = self
+            .export_dialog
+            .as_mut()
+            .and_then(|dialog| dialog.choices.as_mut())
+        {
+            choices.external = self.external.clone();
+            choices.use_external = self.use_external;
         }
         self.refresh_export_dialog();
     }
@@ -185,6 +265,8 @@ impl App {
         };
         let settings = choices.settings();
         self.last_export = Some(settings);
+        self.use_external = choices.use_external;
+        let external = choices.chosen_external().cloned();
         let extension = settings.extension();
         let suggested = match &dialog.target {
             ExportTarget::Timeline => {
@@ -217,7 +299,7 @@ impl App {
         let target = dialog.target;
         let done = move |paths: Vec<PathBuf>| {
             if let Some(path) = paths.into_iter().next() {
-                with_app(|app| app.start_export(target, path, settings));
+                with_app(|app| app.start_export(target, path, settings, external));
             }
         };
         if in_editor {
@@ -233,8 +315,15 @@ impl App {
         }
     }
 
-    /// Writes `target` to `path` with `settings`; never over a media file of the project.
-    fn start_export(&mut self, target: ExportTarget, path: PathBuf, settings: ExportSettings) {
+    /// Writes `target` to `path` with `settings`, the video through the user's own `ffmpeg`
+    /// when `external` is given; never over a media file of the project.
+    fn start_export(
+        &mut self,
+        target: ExportTarget,
+        path: PathBuf,
+        settings: ExportSettings,
+        external: Option<ExternalEncoder>,
+    ) {
         let in_editor = matches!(target, ExportTarget::Clip { .. });
         let fail = |app: &App, message: &str| {
             if in_editor {
@@ -262,7 +351,14 @@ impl App {
             ExportTarget::Timeline => Arc::clone(&self.project),
             ExportTarget::Clip { project, .. } => Arc::new(*project),
         };
-        match self.engine.export(project, path.clone(), settings) {
+        let started = match external {
+            Some(external) => {
+                self.engine
+                    .export_external(project, path.clone(), settings, external)
+            }
+            None => self.engine.export(project, path.clone(), settings),
+        };
+        match started {
             Ok(job) => {
                 self.export_started(job, in_editor);
                 let what = if in_editor { "the clip " } else { "" };
@@ -325,7 +421,7 @@ impl App {
         let Some(dialog) = &self.export_dialog else {
             return;
         };
-        let view = export_view(dialog);
+        let view = export_view(dialog, &self.external_note);
         if dialog.in_editor() {
             if let Some(window) = &self.editor_window {
                 window.set_export_view(view);
@@ -343,6 +439,19 @@ fn kind_name(settings: &ExportSettings) -> String {
     match settings.format {
         ExportFormat::Video { container, .. } => format!("{} video", container.name()),
         ExportFormat::Sound(format) => format!("{} sound", format.name()),
+    }
+}
+
+/// What the dialog says of the user's `program`, which has the GPL encoders `found`.
+fn program_note(program: &Path, found: &[ExternalEncoder]) -> String {
+    let names: Vec<&str> = found.iter().map(|external| external.encoder.name).collect();
+    match names.as_slice() {
+        [] => format!(
+            "{} has neither libx264 nor libx265, so Dusk's own encoders are used.",
+            program.display()
+        ),
+        [one] => format!("{} has {one}.", program.display()),
+        [first @ .., last] => format!("{} has {} and {last}.", program.display(), first.join(", ")),
     }
 }
 
@@ -368,8 +477,8 @@ fn index_of<T: PartialEq>(items: &[T], item: &T) -> i32 {
         .unwrap_or(-1)
 }
 
-/// What the dialog shows of `dialog`.
-fn export_view(dialog: &ExportDialog) -> ExportView {
+/// What the dialog shows of `dialog`, with `external_note` about the user's own `ffmpeg`.
+fn export_view(dialog: &ExportDialog, external_note: &str) -> ExportView {
     let Some(choices) = &dialog.choices else {
         return ExportView {
             probing: true,
@@ -382,7 +491,9 @@ fn export_view(dialog: &ExportDialog) -> ExportView {
     let sounds = choices.container.audio_codecs();
     let sizes = choices.sizes();
     let encoder = choices.encoder().map_or_else(String::new, |encoder| {
-        if encoder.hardware {
+        if choices.chosen_external().is_some() {
+            format!("In your ffmpeg ({})", encoder.name)
+        } else if encoder.hardware {
             format!("On the graphics card ({})", encoder.name)
         } else {
             format!(
@@ -418,6 +529,9 @@ fn export_view(dialog: &ExportDialog) -> ExportView {
             .and_then(|kbps| i32::try_from(kbps).ok())
             .unwrap_or(0),
         crf: choices.crf.map_or(0, i32::from),
+        external_offered: choices.external_offered(),
+        external: choices.chosen_external().is_some(),
+        external_note: external_note.into(),
     }
 }
 
@@ -441,5 +555,54 @@ mod tests {
         assert!(!dialog(None).ready());
         let choices = ExportChoices::new(ENCODERS.iter().collect(), (1920, 1080), true, true, None);
         assert!(dialog(Some(choices)).ready());
+    }
+
+    #[test]
+    fn the_note_names_the_gpl_encoders_the_program_has() {
+        let program = Path::new("C:/tools/ffmpeg.exe");
+        let with = |names: &[&str]| -> Vec<ExternalEncoder> {
+            names
+                .iter()
+                .map(|name| ExternalEncoder {
+                    program: program.to_path_buf(),
+                    encoder: dusk_engine::external_encoder_named(name).unwrap(),
+                })
+                .collect()
+        };
+        assert_eq!(
+            program_note(program, &with(&[])),
+            "C:/tools/ffmpeg.exe has neither libx264 nor libx265, so Dusk's own encoders are used."
+        );
+        assert_eq!(
+            program_note(program, &with(&["libx264"])),
+            "C:/tools/ffmpeg.exe has libx264."
+        );
+        assert_eq!(
+            program_note(program, &with(&["libx264", "libx265"])),
+            "C:/tools/ffmpeg.exe has libx264 and libx265."
+        );
+    }
+
+    #[test]
+    fn the_dialog_says_when_the_users_ffmpeg_writes_the_video() {
+        let mut choices =
+            ExportChoices::new(ENCODERS.iter().collect(), (1920, 1080), true, true, None);
+        let note = "Your ffmpeg has libx264.";
+        let view = export_view(&dialog(Some(choices.clone())), note);
+        assert!(!view.external_offered);
+        assert_eq!(view.external_note, note);
+        choices.external = vec![dusk_engine::ExternalEncoder {
+            program: "ffmpeg.exe".into(),
+            encoder: dusk_engine::external_encoder_named("libx264").unwrap(),
+        }];
+        choices.use_external = true;
+        let view = export_view(&dialog(Some(choices.clone())), note);
+        assert!(view.external_offered && view.external);
+        assert_eq!(view.encoder, "In your ffmpeg (libx264)");
+        assert!(view.crf_offered);
+        choices.use_external = false;
+        let view = export_view(&dialog(Some(choices)), note);
+        assert!(view.external_offered && !view.external);
+        assert_eq!(view.encoder, "On the graphics card (h264_nvenc)");
     }
 }

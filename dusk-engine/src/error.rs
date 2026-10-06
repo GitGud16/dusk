@@ -62,6 +62,29 @@ pub enum EngineError {
     /// A worker thread could not start.
     #[error("Dusk could not start a worker thread ({0}); close some programs and try again")]
     Thread(std::io::Error),
+    /// The user's own `ffmpeg` program could not be run.
+    #[error("Dusk could not run {}: {source}. Pick your ffmpeg.exe again", path.display())]
+    ExternalProgram {
+        /// The program.
+        path: PathBuf,
+        /// What the system said.
+        #[source]
+        source: std::io::Error,
+    },
+    /// The program picked does not list its encoders as `ffmpeg` does.
+    #[error("{} is not an ffmpeg program that Dusk can use; pick an ffmpeg.exe", path.display())]
+    NotFfmpeg {
+        /// The program.
+        path: PathBuf,
+    },
+    /// The user's own `ffmpeg` stopped with an error.
+    #[error(
+        "your ffmpeg stopped: {message}. Export with Dusk's own encoder, or check that program"
+    )]
+    ExternalFailed {
+        /// What it said last, or how it ended.
+        message: String,
+    },
 }
 
 /// `bytes` in megabytes with one decimal, rounded up, so the size said is never below it.

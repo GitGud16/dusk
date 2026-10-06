@@ -12,6 +12,8 @@ mod equivalence;
 mod error;
 #[cfg(feature = "gpu")]
 mod export;
+#[cfg(feature = "gpu")]
+mod external;
 mod info;
 #[cfg(feature = "gpu")]
 mod mixer;
@@ -29,8 +31,8 @@ mod video;
 
 pub use compress::{CompressTarget, compress_project, compress_settings};
 pub use dusk_media::{
-    AudioCodec, AudioFormat, Container, ENCODERS, Encoder, Quality, VideoCodec, available_encoders,
-    quiet_logs,
+    AudioCodec, AudioFormat, Container, ENCODERS, EXTERNAL_ENCODERS, Encoder, Quality, VideoCodec,
+    available_encoders, external_encoder_named, quiet_logs,
 };
 #[cfg(feature = "gpu")]
 pub use dusk_render::{Gpu, GpuError, wgpu};
@@ -39,6 +41,8 @@ pub use engine::{DECODER_IDLE, Engine, EngineEvent, EngineOptions, Preview};
 pub use error::EngineError;
 #[cfg(feature = "gpu")]
 pub use export::{ExportEvent, ExportJob};
+#[cfg(feature = "gpu")]
+pub use external::{ExternalEncoder, external_encoders};
 pub use info::media_info;
 pub use settings::{ExportFormat, ExportSettings, export_size, has_picture, has_sound};
 pub use size::{SizePlan, SizeRefusal, corrected, plan_for_size};

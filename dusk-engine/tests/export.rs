@@ -8,12 +8,12 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 use dusk_core::{
-    ClipEditSession, Command, Edge, Frame, MediaTime, Project, Rational, Rect, Rotation,
-    SetTrackMuted, TrimClips, import,
+    ClipEditSession, ColorMatrix, ColorRange, Command, Edge, Frame, MediaTime, Picture, Project,
+    Rational, Rect, Rotation, SetTrackMuted, TrimClips, import,
 };
 use dusk_engine::{
     CompressTarget, Engine, EngineError, EngineEvent, EngineOptions, ExportEvent, ExportFormat,
-    ExportSettings, Gpu, media_info,
+    ExportSettings, ExternalEncoder, Gpu, media_info,
 };
 use dusk_media::{Acceleration, StreamKind, VideoDecoder, probe};
 use dusk_media::{AudioCodec, AudioFormat, Container, Quality, VideoCodec};
@@ -520,4 +520,204 @@ fn the_compress_tool_makes_a_file_too_far_over_again() {
     );
     assert_eq!(again, 1);
     assert!(!part(&path).exists());
+}
+
+/// The pinned build's own `ffmpeg` program, standing in for a user's GPL one: it has OpenH264
+/// where theirs has x264, and the export drives either the same way.
+fn own_ffmpeg() -> Option<PathBuf> {
+    let program = PathBuf::from(std::env::var_os("FFMPEG_DIR")?)
+        .join("bin")
+        .join(if cfg!(windows) {
+            "ffmpeg.exe"
+        } else {
+            "ffmpeg"
+        });
+    if !program.is_file() {
+        eprintln!("skipped: no ffmpeg program in the pinned build");
+        return None;
+    }
+    Some(program)
+}
+
+fn through(program: PathBuf, encoder: &str) -> ExternalEncoder {
+    let encoder = dusk_media::encoder_named(encoder)
+        .or_else(|| dusk_media::external_encoder_named(encoder))
+        .unwrap();
+    ExternalEncoder { program, encoder }
+}
+
+/// The picture shown at `time` in the video at `path`.
+fn picture_at(path: &Path, time: MediaTime) -> Picture {
+    let mut decoder = VideoDecoder::open(path, Acceleration::Software).unwrap();
+    decoder.frame_at(time).unwrap().unwrap().picture
+}
+
+fn psnr(a: &[u8], b: &[u8]) -> f64 {
+    let squared: f64 = a
+        .iter()
+        .zip(b)
+        .map(|(a, b)| (f64::from(*a) - f64::from(*b)).powi(2))
+        .sum();
+    10.0 * (255.0f64.powi(2) / (squared / a.len() as f64).max(1e-9)).log10()
+}
+
+#[test]
+fn an_export_runs_through_the_users_own_ffmpeg() {
+    let Some(program) = own_ffmpeg() else {
+        return;
+    };
+    let (engine, events) = engine();
+    let path = output("external.mp4");
+    let _job = engine
+        .export_external(
+            Arc::new(project_at(Frame(0))),
+            path.clone(),
+            ExportSettings::default(),
+            through(program, "libopenh264"),
+        )
+        .unwrap();
+    let (outcome, progress) = outcome(&events);
+    match outcome {
+        ExportEvent::Finished { encoder, bytes, .. } => {
+            assert_eq!(encoder, "libopenh264 in your ffmpeg");
+            assert_eq!(bytes, std::fs::metadata(&path).unwrap().len());
+        }
+        other => panic!("expected the export to finish, got {other:?}"),
+    }
+    assert!(!part(&path).exists());
+    assert_eq!(progress.last(), Some(&(30, 30)));
+    assert_eq!(
+        (video_codec(&path), audio_codec(&path)),
+        ("h264".into(), "aac".into())
+    );
+    let duration = duration_of(&path);
+    assert!((950_000..=1_100_000).contains(&duration), "{duration} µs");
+    // The frames went in as Dusk draws them: the same picture as its own export shows,
+    // tagged limited-range BT.709 (a 320x240 file without tags would read as BT.601).
+    let external = picture_at(&path, MediaTime(500_000));
+    assert_eq!((external.width, external.height), (320, 240));
+    assert_eq!(
+        (external.matrix, external.range),
+        (ColorMatrix::Bt709, ColorRange::Limited)
+    );
+    let own = picture_at(
+        &export_with(
+            project_at(Frame(0)),
+            "external-own.mp4",
+            ExportSettings::default(),
+        ),
+        MediaTime(500_000),
+    );
+    let luma = psnr(&external.luma, &own.luma);
+    let chroma = psnr(&external.chroma, &own.chroma);
+    assert!(
+        luma >= 30.0 && chroma >= 30.0,
+        "{luma:.1} dB, {chroma:.1} dB"
+    );
+}
+
+#[test]
+fn an_external_export_writes_over_a_part_file_left_behind() {
+    let Some(program) = own_ffmpeg() else {
+        return;
+    };
+    let (engine, events) = engine();
+    let path = output("external-stale.mp4");
+    // As a crash mid-export would leave it.
+    std::fs::write(part(&path), b"half a file").unwrap();
+    let _job = engine
+        .export_external(
+            Arc::new(project_at(Frame(0))),
+            path.clone(),
+            ExportSettings::default(),
+            through(program, "libopenh264"),
+        )
+        .unwrap();
+    let outcome = outcome(&events).0;
+    assert!(
+        matches!(outcome, ExportEvent::Finished { .. }),
+        "{outcome:?}"
+    );
+    assert!(path.is_file() && !part(&path).exists());
+}
+
+#[test]
+fn a_cancelled_external_export_leaves_nothing_behind() {
+    let Some(program) = own_ffmpeg() else {
+        return;
+    };
+    let (engine, events) = engine();
+    let path = output("external-cancelled.mp4");
+    // Ten seconds of black first, so the export is still running when it is cancelled.
+    let job = engine
+        .export_external(
+            Arc::new(project_at(Frame(300))),
+            path.clone(),
+            ExportSettings::default(),
+            through(program, "libopenh264"),
+        )
+        .unwrap();
+    loop {
+        match events.recv_timeout(PATIENCE).expect("progress") {
+            EngineEvent::Export(ExportEvent::Progress { .. }) => break,
+            EngineEvent::Export(other) => panic!("the export ended early: {other:?}"),
+            _ => {}
+        }
+    }
+    job.cancel();
+    assert!(matches!(outcome(&events).0, ExportEvent::Cancelled));
+    assert!(!path.exists());
+    assert!(!part(&path).exists());
+    assert!(!sound_part(&path).exists());
+}
+
+/// Where an external export mixes the sound for the program to read.
+fn sound_part(path: &Path) -> PathBuf {
+    let mut name = part(path).into_os_string();
+    name.push(".wav");
+    PathBuf::from(name)
+}
+
+#[test]
+fn an_external_program_that_fails_says_why() {
+    let Some(program) = own_ffmpeg() else {
+        return;
+    };
+    // The pinned build has no x264, so the program stops at once.
+    let (engine, events) = engine();
+    let path = output("external-failed.mp4");
+    let _job = engine
+        .export_external(
+            Arc::new(project_at(Frame(0))),
+            path.clone(),
+            ExportSettings::default(),
+            through(program, "libx264"),
+        )
+        .unwrap();
+    match outcome(&events).0 {
+        ExportEvent::Failed(error @ EngineError::ExternalFailed { .. }) => {
+            assert!(error.to_string().contains("libx264"), "{error}");
+        }
+        other => panic!("expected the program's error, got {other:?}"),
+    }
+    assert!(!path.exists() && !part(&path).exists() && !sound_part(&path).exists());
+}
+
+#[test]
+fn an_external_program_that_is_missing_is_reported() {
+    let (engine, events) = engine();
+    let path = output("external-missing.mp4");
+    let _job = engine
+        .export_external(
+            Arc::new(project_at(Frame(0))),
+            path.clone(),
+            ExportSettings::default(),
+            through(PathBuf::from("no such folder/ffmpeg.exe"), "libx264"),
+        )
+        .unwrap();
+    assert!(matches!(
+        outcome(&events).0,
+        ExportEvent::Failed(EngineError::ExternalProgram { .. })
+    ));
+    assert!(!path.exists() && !part(&path).exists() && !sound_part(&path).exists());
 }

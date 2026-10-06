@@ -38,6 +38,8 @@ pub enum Dialog {
     OpenProject,
     /// A video to compress, one file.
     OpenVideo,
+    /// The user's own `ffmpeg` program, for the GPL encoders Dusk does not ship.
+    OpenProgram,
     /// Where to save the project, starting from the name `suggested`.
     SaveProject { suggested: String },
     /// Where to export a file, starting from `suggested`, a whole path whose extension is

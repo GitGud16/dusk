@@ -124,6 +124,13 @@ pub struct App {
     pub(crate) compressing: bool,
     /// How the last export was written, where the dialog starts next time.
     pub(crate) last_export: Option<dusk_engine::ExportSettings>,
+    /// The GPL encoders of the user's own `ffmpeg`, picked in the export dialog for this
+    /// session (docs/ARCHITECTURE.md, "Optional GPL encoders").
+    pub(crate) external: Vec<dusk_engine::ExternalEncoder>,
+    /// Whether exports use that program for the codecs it has an encoder for.
+    pub(crate) use_external: bool,
+    /// What the export dialog says of that program.
+    pub(crate) external_note: String,
     pub(crate) view: View,
     /// The question on screen, if one is.
     pub(crate) question: Option<Question>,
@@ -175,6 +182,9 @@ impl App {
             compress_dialog: None,
             compressing: false,
             last_export: None,
+            external: Vec::new(),
+            use_external: false,
+            external_note: String::new(),
             view: View::new(window.get_timeline_width()),
             question: None,
             dialog_open: false,

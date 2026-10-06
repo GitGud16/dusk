@@ -18,7 +18,8 @@ use dusk_render::{Gpu, wgpu};
 
 use crate::cache::DEFAULT_CAP;
 use crate::compress::{CompressTarget, compress_project, compress_settings};
-use crate::export::{self, ExportJob};
+use crate::export::{self, ExportJob, ExportPlan};
+use crate::external::ExternalEncoder;
 use crate::settings::{ExportFormat, ExportSettings, has_sound};
 use crate::sound::{self, SoundRequest};
 use crate::thumbnail::{self, Thumbnail, ThumbnailJob};
@@ -315,7 +316,33 @@ impl Engine {
         if matches!(settings.format, ExportFormat::Sound(_)) && !has_sound(&project) {
             return Err(EngineError::NoSound);
         }
-        self.start_export(project, path, settings, None)
+        let plan = ExportPlan {
+            settings,
+            size: None,
+            external: None,
+        };
+        self.start_export(project, path, plan)
+    }
+
+    /// Exports `project` as [`export`](Self::export) does, with the video encoded by a user's
+    /// own `ffmpeg` (docs/ARCHITECTURE.md, "Optional GPL encoders"), which writes the codec of
+    /// its encoder in place of the settings' codec. A sound-only export does not use it.
+    pub fn export_external(
+        &self,
+        project: Arc<Project>,
+        path: PathBuf,
+        settings: ExportSettings,
+        external: ExternalEncoder,
+    ) -> Result<ExportJob, EngineError> {
+        if matches!(settings.format, ExportFormat::Sound(_)) && !has_sound(&project) {
+            return Err(EngineError::NoSound);
+        }
+        let plan = ExportPlan {
+            settings,
+            size: None,
+            external: Some(external),
+        };
+        self.start_export(project, path, plan)
     }
 
     /// Compresses the video at `source`, described by `info` (probed off the UI thread), into
@@ -332,16 +359,20 @@ impl Engine {
     ) -> Result<ExportJob, EngineError> {
         let (settings, size) = compress_settings(&source, &info, target)?;
         let project = compress_project(source, info)?;
-        self.start_export(Arc::new(project), path, settings, size)
+        let plan = ExportPlan {
+            settings,
+            size,
+            external: None,
+        };
+        self.start_export(Arc::new(project), path, plan)
     }
 
-    /// Starts the export thread for `project`, aiming at `size` when given.
+    /// Starts the export thread for `project`.
     fn start_export(
         &self,
         project: Arc<Project>,
         path: PathBuf,
-        settings: ExportSettings,
-        size: Option<u64>,
+        plan: ExportPlan,
     ) -> Result<ExportJob, EngineError> {
         let mut export = self.export.lock().unwrap_or_else(PoisonError::into_inner);
         if self.is_exporting() {
@@ -356,8 +387,7 @@ impl Engine {
             &self.gpu,
             project,
             path,
-            settings,
-            size,
+            plan,
             Arc::clone(&self.exporting),
             Arc::clone(&self.report),
         )?;

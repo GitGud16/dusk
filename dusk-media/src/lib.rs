@@ -23,8 +23,8 @@ pub use decode::{
 pub use encode::{AudioSettings, Timing, VideoSettings, Writer, available_encoders, sdr_to_nv12};
 pub use error::MediaError;
 pub use formats::{
-    AudioCodec, AudioFormat, Container, ENCODERS, Encoder, Quality, VideoCodec, encoder_named,
-    encoders_of,
+    AudioCodec, AudioFormat, Container, ENCODERS, EXTERNAL_ENCODERS, Encoder, Quality, VideoCodec,
+    encoder_named, encoders_of, external_encoder_named,
 };
 pub use input::quiet_logs;
 pub use probe::{ProbeInfo, StreamDetail, StreamKind, StreamSummary, probe};

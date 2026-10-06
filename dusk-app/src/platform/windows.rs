@@ -53,6 +53,11 @@ const VIDEOS: &[COMDLG_FILTERSPEC] = &[
     },
 ];
 
+const PROGRAMS: &[COMDLG_FILTERSPEC] = &[COMDLG_FILTERSPEC {
+    pszName: w!("Programs"),
+    pszSpec: w!("*.exe"),
+}];
+
 const PROJECTS: &[COMDLG_FILTERSPEC] = &[COMDLG_FILTERSPEC {
     pszName: w!("Dusk projects"),
     pszSpec: w!("*.dusk"),
@@ -88,7 +93,7 @@ unsafe fn pick(owner: Option<HWND>, dialog: &Dialog) -> windows::core::Result<Ve
     // SAFETY: plain COM calls on objects made here; COM is set up (the caller's promise).
     unsafe {
         match dialog {
-            Dialog::ImportMedia | Dialog::OpenProject | Dialog::OpenVideo => {
+            Dialog::ImportMedia | Dialog::OpenProject | Dialog::OpenVideo | Dialog::OpenProgram => {
                 let picker: IFileOpenDialog =
                     CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER)?;
                 let import = matches!(dialog, Dialog::ImportMedia);
@@ -108,6 +113,10 @@ unsafe fn pick(owner: Option<HWND>, dialog: &Dialog) -> windows::core::Result<Ve
                     Dialog::OpenVideo => {
                         picker.SetFileTypes(VIDEOS)?;
                         picker.SetTitle(w!("Compress a video"))?;
+                    }
+                    Dialog::OpenProgram => {
+                        picker.SetFileTypes(PROGRAMS)?;
+                        picker.SetTitle(w!("Your own ffmpeg.exe"))?;
                     }
                     _ => {
                         picker.SetFileTypes(PROJECTS)?;
