@@ -77,6 +77,11 @@ fn closing_the_main_window_exits_cleanly() {
     start_and_close(&[], &state, Duration::from_millis(500));
     // A clean exit leaves no autosave session behind.
     assert_eq!(files_in(&state.join("autosave")), 0);
+    // The first start writes the shortcuts and settings files, here in the test's folder
+    // rather than the user's own.
+    let settings = state.join("settings");
+    assert!(settings.join("shortcuts.txt").is_file());
+    assert!(settings.join("settings.txt").is_file());
 }
 
 #[test]
@@ -151,6 +156,7 @@ fn start(args: &[&OsStr], state: &Path) -> Child {
     Command::new(env!("CARGO_BIN_EXE_dusk"))
         .args(args)
         .env("DUSK_STATE_DIR", state)
+        .env("DUSK_SETTINGS_DIR", state.join("settings"))
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .spawn()
