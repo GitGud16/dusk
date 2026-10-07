@@ -8,15 +8,22 @@ It downloads BtbN's FFmpeg-Builds scripts at the pinned release tag, asks them w
 the win64 LGPL shared build of the pinned FFmpeg version contains (scripts/btbn-components.sh,
 which uses the scripts' own logic), and fetches each library's license files at the commit
 BtbN built from that library's own repository. Libraries sharing one text are listed together
-above it. Needs the network, bash and an authenticated `gh` (for GitHub's API); Python's
-standard library otherwise. It fails, naming them, when it finds no license file for a library.
+above it. Two of them, rav1e and librsvg, are written in Rust: for those it checks out their
+Cargo files and Rust sources at that commit, lets cargo resolve their builds for Windows into a
+CARGO_HOME of its own (fetching their crates, some tens of MB, removed afterwards), and lists
+the crates' licenses as scripts/third-party-notices.py does Dusk's. Needs the network, Git's
+bash, cargo and an authenticated `gh` (for GitHub's API); Python's standard library otherwise.
+It fails, naming them, when it finds no license text for a library or a crate.
 """
 
 import base64
+import importlib.util
 import io
 import json
+import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tarfile
@@ -45,12 +52,26 @@ EXTRA_FILES = {
 NOTICE_IN = {
     "https://github.com/FFmpeg/nv-codec-headers.git": "include/ffnvcodec/nvEncodeAPI.h",
 }
+# Libraries written in Rust, whose crates are built into the DLLs with them: the packages
+# BtbN's scripts build, with their features (cargo-c builds rav1e with `capi`, and librsvg's
+# meson build its C library with `avif`), for the GNU target BtbN builds for.
+RUST_LIBRARIES = {
+    "https://github.com/xiph/rav1e.git": [("rav1e", ["capi"])],
+    "https://github.com/GNOME/librsvg.git": [("librsvg-c", ["avif"])],
+}
+RUST_TARGET = "x86_64-pc-windows-gnu"
 
 
-def get(url):
+def get(url, tries=3):
+    """The body at `url`, asked again when a slow server times out."""
     request = urllib.request.Request(url, headers={"User-Agent": "dusk-ffmpeg-licenses"})
-    with urllib.request.urlopen(request, timeout=60) as response:
-        return response.read()
+    for attempt in range(tries):
+        try:
+            with urllib.request.urlopen(request, timeout=60) as response:
+                return response.read()
+        except (TimeoutError, urllib.error.URLError) as error:
+            if attempt == tries - 1 or (isinstance(error, urllib.error.HTTPError) and error.code < 500):
+                raise
 
 
 def gh(path, raw=False):
@@ -185,6 +206,55 @@ def license_files(url, commit, revision):
     return found
 
 
+def checkout(url, commit, folder):
+    """The Cargo manifests, lock file and Rust sources of the repository at `url`, at `commit`,
+    in `folder`: a sparse, partial clone, so its test files and pictures stay on the server."""
+
+    def git(*args):
+        subprocess.run(["git", *args], cwd=folder, check=True, capture_output=True)
+
+    folder.mkdir(parents=True)
+    git("init", "-q")
+    git("remote", "add", "origin", url)
+    git("sparse-checkout", "set", "--no-cone", "Cargo.toml", "Cargo.lock", "*.rs")
+    git("fetch", "-q", "--depth", "1", "--filter=blob:none", "origin", commit)
+    git("checkout", "-q", "FETCH_HEAD")
+
+
+def remove(folder):
+    """Removes `folder`, with git's read-only files."""
+
+    def writable(function, path, _):
+        os.chmod(path, stat.S_IWRITE)
+        function(path)
+
+    if sys.version_info >= (3, 12):
+        shutil.rmtree(folder, onexc=writable)
+    else:
+        shutil.rmtree(folder, onerror=writable)
+
+
+def rust_crates(libraries, temp):
+    """The license texts of the Rust crates built into the DLLs with the Rust libraries among
+    `libraries`, each with the crates that ship it, named with the library they are in:
+    {text: [listing, ...]}. Cargo fetches the crates into a CARGO_HOME of its own in `temp`."""
+    spec = importlib.util.spec_from_file_location("notices", ROOT / "scripts" / "third-party-notices.py")
+    notices = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(notices)
+    env = dict(os.environ, CARGO_HOME=str(Path(temp) / "cargo"))
+    groups = {}
+    for name, url, commit, _ in libraries:
+        if url not in RUST_LIBRARIES:
+            continue
+        folder = Path(temp) / name
+        checkout(url, commit, folder)
+        crates, texts = notices.crate_texts(RUST_LIBRARIES[url], RUST_TARGET, cwd=folder, env=env, offline=False)
+        for text, listings in texts.items():
+            groups.setdefault(text, []).extend(f"{listing}, in {name}" for listing in listings)
+        print(f"{name}: {len(crates)} crates")
+    return groups, notices.grouped
+
+
 def normalized(license):
     lines = [line.rstrip() for line in license.replace("\r\n", "\n").replace("\r", "\n").split("\n")]
     return "\n".join(lines).strip() + "\n"
@@ -239,12 +309,16 @@ def main():
     tag = re.search(r"^\s*Tag\s*=\s*'([^']+)'", pin, re.MULTILINE).group(1)
     file_name = re.search(r"^\s*FileName\s*=\s*'([^']+)'", pin, re.MULTILINE).group(1)
     version = re.search(r"-shared-([0-9.]+)\.zip$", file_name).group(1)
-    with tempfile.TemporaryDirectory() as temp:
+    temp = tempfile.mkdtemp(prefix="dusk-ffmpeg-licenses-")
+    try:
         archive = get(f"https://codeload.github.com/BtbN/FFmpeg-Builds/tar.gz/refs/tags/{tag}")
         with tarfile.open(fileobj=io.BytesIO(archive)) as tar:
             tar.extractall(temp, filter="data")
         builds = next(Path(temp).iterdir())
         libraries = components(builds, version)
+        crates, grouped = rust_crates(libraries, temp)
+    finally:
+        remove(temp)
 
     groups, missing = {}, []
     for name, url, commit, revision in libraries:
@@ -270,7 +344,8 @@ def main():
         "with the repository and the commit it was built from, as BtbN's build scripts for that",
         "release give them. Every library those scripts build into this FFmpeg is listed, some used",
         "only by parts of FFmpeg that Dusk does not ship, rather than risk leaving one out.",
-        "Libraries that ship the same text are listed together above it.",
+        "Libraries that ship the same text are listed together above it. The Rust crates inside",
+        "two of them, rav1e and librsvg, follow the libraries.",
         "",
     ]
     for license, sources in sorted(groups.items(), key=lambda group: group[1][0].lower()):
@@ -278,8 +353,23 @@ def main():
         out += [f"  {source}" for source in sources]
         out.append("-" * 78)
         out.append(license)
+    out += [
+        "",
+        "Rust crates in rav1e and librsvg",
+        "",
+        "rav1e and librsvg are written in Rust, and the Rust crates below are built into the DLLs",
+        "with them: every crate their builds for Windows depend on, as cargo resolves those builds",
+        "at the commits above, each under the license named beside it; where a crate offers a",
+        "choice, its every text is given. Crates that ship the same text are listed together above",
+        "it.",
+        "",
+    ]
+    out += grouped(crates)
     OUT.write_text("\n".join(out), encoding="utf-8", newline="\n")
-    print(f"{len(libraries)} libraries, {len(groups)} license texts: {OUT} ({OUT.stat().st_size} bytes)")
+    print(
+        f"{len(libraries)} libraries, {len(groups)} license texts and {len(crates)} for their Rust "
+        f"crates: {OUT} ({OUT.stat().st_size} bytes)"
+    )
 
 
 if __name__ == "__main__":
