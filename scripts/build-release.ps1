@@ -28,6 +28,13 @@ $root = Split-Path -Parent $PSScriptRoot
 Set-Location -LiteralPath $root
 . (Join-Path $PSScriptRoot 'dev-env.ps1')
 if (-not $env:FFMPEG_DIR) { throw 'The pinned FFmpeg is not installed: run scripts\setup-ffmpeg.ps1 first.' }
+# dev-env.ps1 leaves FFMPEG_DIR as it was when the pin is not installed, which an older shell
+# may have set to another build.
+$pin = Import-PowerShellDataFile -LiteralPath (Join-Path $PSScriptRoot 'ffmpeg-pin.psd1')
+$pinned = Join-Path $root ('.deps\ffmpeg\' + [IO.Path]::GetFileNameWithoutExtension($pin.FileName))
+if ($env:FFMPEG_DIR.TrimEnd('\') -ne $pinned) {
+    throw "FFMPEG_DIR is $env:FFMPEG_DIR, not the pinned FFmpeg: run scripts\setup-ffmpeg.ps1, then this script in a new shell."
+}
 
 $version = (Select-String -LiteralPath 'Cargo.toml' -Pattern '^version = "(.+)"').Matches[0].Groups[1].Value
 Write-Host "Dusk $version"
@@ -50,7 +57,6 @@ New-Item -ItemType Directory -Force -Path $licenses | Out-Null
 foreach ($exe in 'dusk.exe', 'dusq.exe') {
     Copy-Item -LiteralPath (Join-Path $root "target\release\$exe") -Destination $stage
 }
-$pin = Import-PowerShellDataFile -LiteralPath (Join-Path $PSScriptRoot 'ffmpeg-pin.psd1')
 $ffmpegBin = Join-Path $env:FFMPEG_DIR 'bin'
 foreach ($prefix in $pin.ShipDlls) {
     $dll = @(Get-ChildItem -LiteralPath $ffmpegBin -Filter "$prefix*.dll")
@@ -75,13 +81,20 @@ Invoke-Native 'Writing the third-party notices' {
     python (Join-Path $PSScriptRoot 'third-party-notices.py') (Join-Path $licenses 'THIRD-PARTY-NOTICES.txt')
 }
 # The licenses of the libraries built into FFmpeg's DLLs, which scripts\ffmpeg-licenses.py
-# fetched for the pinned build.
-Copy-Item -LiteralPath (Join-Path $root 'installer\ffmpeg-libraries.txt') -Destination (Join-Path $licenses 'FFmpeg-libraries.txt')
+# fetched for the pinned build, as the file's opening names it.
+$libraries = Join-Path $root 'installer\ffmpeg-libraries.txt'
+$opening = (Get-Content -LiteralPath $libraries -TotalCount 8) -join ' '
+if (-not $opening.Contains("$($pin.FileName) from release $($pin.Tag) ")) {
+    throw "installer\ffmpeg-libraries.txt is not for the pinned FFmpeg ($($pin.FileName)): run scripts\ffmpeg-licenses.py."
+}
+Copy-Item -LiteralPath $libraries -Destination (Join-Path $licenses 'FFmpeg-libraries.txt')
 
 # FFmpeg's notice: this build, where its source is, and how it was configured, as avutil says.
 $avutil = @(Get-ChildItem -LiteralPath $ffmpegBin -Filter 'avutil-*.dll')[0].FullName
 $text = [Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes($avutil))
+# --enable-version3 is in every build the pin allows (RequiredConfig), so it finds the line.
 $anchor = $text.IndexOf('--enable-version3')
+if ($anchor -lt 0) { throw "$avutil does not say how FFmpeg was configured with --enable-version3, which the pin requires." }
 $start = $text.LastIndexOf([char]0, $anchor) + 1
 $config = $text.Substring($start, $text.IndexOf([char]0, $anchor) - $start)
 if ($pin.FileName -notmatch '^ffmpeg-(n[0-9.]+-[0-9]+-g([0-9a-f]+))-') { throw "Cannot read FFmpeg's version from $($pin.FileName)." }
