@@ -741,14 +741,22 @@ mod tests {
             (MediaId(2), PathBuf::from("E:/day2/C0001.MP4")),
             (MediaId(3), PathBuf::from("E:/day1/C0002.MP4")),
         ];
+        let others = [(
+            MediaId(3),
+            PathBuf::from("E:/day1/C0002.MP4"),
+            PathBuf::from("F:/day1/C0002.MP4"),
+        )];
         assert_eq!(
-            same_names(&files, &wanted, &paths(&["F:/day1/c0001.mp4"])),
-            [(
-                MediaId(3),
-                PathBuf::from("E:/day1/C0002.MP4"),
-                PathBuf::from("F:/day1/C0002.MP4")
-            )]
+            same_names(&files, &wanted, &paths(&["F:/day1/C0001.MP4"])),
+            others
         );
+        // Windows' file names ignore case, so the picked file is taken in any case there.
+        if cfg!(windows) {
+            assert_eq!(
+                same_names(&files, &wanted, &paths(&["F:/day1/c0001.mp4"])),
+                others
+            );
+        }
     }
 
     #[test]

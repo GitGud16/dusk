@@ -78,12 +78,11 @@ mod tests {
 
     #[test]
     fn the_licenses_are_in_a_folder_beside_dusk() {
-        let exe = Path::new(r"C:\Users\someone\AppData\Local\Programs\Dusk\dusk.exe");
+        // Joined rather than written out, so the separators are the system's.
+        let installed = Path::new("Programs").join("Dusk");
         assert_eq!(
-            licenses_dir(exe),
-            Some(PathBuf::from(
-                r"C:\Users\someone\AppData\Local\Programs\Dusk\licenses"
-            ))
+            licenses_dir(&installed.join("dusk.exe")),
+            Some(installed.join("licenses"))
         );
         assert_eq!(
             licenses_dir(Path::new("dusk.exe")),
