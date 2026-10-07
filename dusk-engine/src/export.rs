@@ -26,7 +26,7 @@ use crate::mixer::Mixer;
 use crate::placement::placement_at;
 use crate::settings::{AUDIO_RATE, ExportFormat, ExportSettings, export_size, has_sound};
 use crate::size::corrected;
-use crate::transcode::part_path;
+use crate::transcode::{part_path, put_in_place};
 
 /// What an export reports, as [`EngineEvent::Export`].
 #[derive(Debug)]
@@ -149,7 +149,7 @@ fn export(
         }
     }
     let renamed = match outcome {
-        Ok(Some(encoder)) => match std::fs::rename(&part, path) {
+        Ok(Some(encoder)) => match put_in_place(&part, path) {
             Ok(()) => {
                 return ExportEvent::Finished {
                     path: path.to_path_buf(),
