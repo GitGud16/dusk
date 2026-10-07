@@ -169,7 +169,8 @@ fn export(
     let _ = std::fs::remove_file(&part);
     match renamed {
         Ok(()) => ExportEvent::Cancelled,
-        Err(error) => ExportEvent::Failed(error),
+        // A source on a drive that went away fails as FFmpeg failing to read it.
+        Err(error) => ExportEvent::Failed(error.or_gone(Path::is_file)),
     }
 }
 
