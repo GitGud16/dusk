@@ -92,12 +92,15 @@ impl View {
         self.scroll = Frame(new_first.round().max(0.0) as i64);
     }
 
-    /// Scrolls by `frames`, never before the start.
+    /// Scrolls by `frames`, never before the start nor past where the last frames show at
+    /// the right edge.
     pub fn scroll_by(&mut self, frames: i64, end: Frame, rate: Rational) {
         if self.zoom == Zoom::Fit {
             self.zoom = Zoom::Fixed(self.pixels_per_frame(end, rate));
         }
-        self.scroll = Frame((self.scroll.0 + frames).max(0));
+        let visible = (self.width / self.pixels_per_frame(end, rate).max(f32::MIN_POSITIVE)) as i64;
+        let most = (end.0 - visible).max(0);
+        self.scroll = Frame((self.scroll.0 + frames).clamp(0, most));
     }
 
     /// Fits the whole sequence again.
@@ -471,6 +474,19 @@ mod tests {
         assert_eq!(view.first_frame(), Frame(0));
         view.fit();
         assert_eq!(view.zoom, Zoom::Fit);
+    }
+
+    #[test]
+    fn the_view_never_scrolls_past_the_end() {
+        let fps30 = rate(30, 1);
+        let mut view = View::new(100.0);
+        view.zoom = Zoom::Fixed(1.0); // 100 frames in view
+        view.scroll_by(10_000, Frame(300), fps30);
+        // The last frames show at the right edge.
+        assert_eq!(view.first_frame(), Frame(200));
+        // A sequence shorter than the view stays at its start.
+        view.scroll_by(50, Frame(30), fps30);
+        assert_eq!(view.first_frame(), Frame(0));
     }
 
     #[test]
