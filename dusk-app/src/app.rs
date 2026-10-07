@@ -337,8 +337,14 @@ impl App {
 
     /// A key was pressed; true when it was a shortcut, or a dialog took it.
     pub fn key(&mut self, text: &str, ctrl: bool, shift: bool, alt: bool) -> bool {
-        // Slint moves the keyboard through a dialog's controls with the keys no one takes.
-        if self.main_dialog_open() && crate::keymap::moves_focus(text) {
+        // Slint moves the keyboard through a dialog's controls with the keys no one takes; the
+        // keys the shortcut list waits for are its own, Tab among them.
+        let capturing = self.question.is_none()
+            && self
+                .shortcut_dialog
+                .as_ref()
+                .is_some_and(|dialog| dialog.capturing);
+        if self.main_dialog_open() && !capturing && crate::keymap::moves_focus(text) {
             return false;
         }
         // A question shows over every dialog, so it takes the keys first.

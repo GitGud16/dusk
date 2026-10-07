@@ -43,6 +43,7 @@ pub const VK_UP: u32 = 0x26;
 pub const VK_RIGHT: u32 = 0x27;
 pub const VK_DOWN: u32 = 0x28;
 pub const VK_DELETE: u32 = 0x2E;
+pub const VK_F1: u32 = 0x70;
 
 struct Search {
     process_id: u32,
