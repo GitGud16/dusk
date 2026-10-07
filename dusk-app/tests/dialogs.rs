@@ -93,12 +93,20 @@ fn the_missing_list_waits_for_the_question_and_then_opens() {
     type_key(window, 'e');
     std::thread::sleep(std::time::Duration::from_millis(1000));
     let listed = !common::title_of(window).contains('*');
-    // Once it is closed, the same keys edit.
+    // Once it is closed, the same keys edit; a slow runner can take a while to say so.
     press(window, VK_ESCAPE, None);
     type_key(window, 'd');
     type_key(window, 'e');
-    std::thread::sleep(std::time::Duration::from_millis(1000));
-    let edited = common::title_of(window).contains('*');
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    let edited = loop {
+        if common::title_of(window).contains('*') {
+            break true;
+        }
+        if std::time::Instant::now() >= deadline {
+            break false;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    };
     let _ = dusk.kill();
     assert!(
         listed,
