@@ -6,7 +6,7 @@
 //! come into view ready.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
@@ -475,6 +475,7 @@ impl VideoThread {
         match self.shown_at(preview, frame, fetch) {
             Ok(shown) => self.present(preview, frame, shown, true),
             Err(error) => {
+                let error = self.gone_or(error);
                 self.fail(error);
                 return self.stop_at(preview, generation, frame);
             }
@@ -555,6 +556,13 @@ impl VideoThread {
     /// decoder in the pool but the one of the clip in view, so that at most two are open; a
     /// decoder of the same media kept for a clip out of view goes with it.
     fn start_upcoming(&mut self, preview: Preview, project: &Project) {
+        if let Some(media_ref) = self
+            .upcoming
+            .as_ref()
+            .and_then(|upcoming| project.media_ref(upcoming.media))
+        {
+            self.claim(media_ref.id, &media_ref.path);
+        }
         let in_view = self
             .view(preview)
             .shown_exactly
@@ -715,6 +723,10 @@ impl VideoThread {
         let Some(clip) = sequence.visible_video_at(frame) else {
             return Ok(Shown::Black);
         };
+        let media_ref = project.media_ref(clip.media_id);
+        if let Some(media_ref) = media_ref {
+            self.claim(media_ref.id, &media_ref.path);
+        }
         if self
             .upcoming
             .as_ref()
@@ -722,9 +734,7 @@ impl VideoThread {
         {
             self.take_upcoming();
         }
-        let still = project
-            .media_ref(clip.media_id)
-            .is_some_and(|media| media.info.kind == MediaKind::Still);
+        let still = media_ref.is_some_and(|media| media.info.kind == MediaKind::Still);
         if still {
             return self.still(&project, clip.media_id, fetch);
         }
@@ -866,26 +876,32 @@ impl VideoThread {
         }
     }
 
-    /// Lets go of what was decoded for a media that `project` finds in another file than the
-    /// one its frames and decoder came from: a file relinked to another place, or an id given
-    /// to new media after the media that had it went (an import undone, another made).
+    /// Lets go early of what was decoded for a media that `project` finds in another file than
+    /// the one its frames and decoder came from (a relinked file, say), as each use would.
     fn forget_changed_media(&mut self, project: &Project) {
         for media in project.media() {
-            let changed = self
-                .sources
-                .insert(media.id, media.path.clone())
-                .is_some_and(|before| before != media.path);
-            if changed {
-                self.cache.forget(media.id);
-                self.decoders.retain(|open| open.media != media.id);
-                if self
-                    .upcoming
-                    .as_ref()
-                    .is_some_and(|upcoming| upcoming.media == media.id)
-                {
-                    self.upcoming = None;
-                }
-            }
+            self.claim(media.id, &media.path);
+        }
+    }
+
+    /// Takes media `id` to be the file at `path` from now on, letting go first of what was
+    /// decoded from another file under that id: its frames and its decoder. The frame cache
+    /// and the decoders know media by id alone, while the two previews' projects can name
+    /// different files for one id: a relinked file, an id given to new media after an import
+    /// was undone, a clip editor left on a group that went.
+    fn claim(&mut self, id: MediaId, path: &Path) {
+        if self.sources.get(&id).is_some_and(|known| known == path) {
+            return;
+        }
+        self.sources.insert(id, path.to_path_buf());
+        self.cache.forget(id);
+        self.decoders.retain(|open| open.media != id);
+        if self
+            .upcoming
+            .as_ref()
+            .is_some_and(|upcoming| upcoming.media == id)
+        {
+            self.upcoming = None;
         }
         self.open_decoders
             .store(self.decoders_open(), Ordering::Relaxed);
@@ -974,9 +990,25 @@ impl VideoThread {
         (self.report)(EngineEvent::Error(error));
     }
 
+    /// `error`, or the file going away when the file it failed to read is no longer there (a
+    /// drive unplugged under its open decoder); that file's decoder is let go then, so the
+    /// next try opens it afresh and finds it missing.
+    fn gone_or(&mut self, error: EngineError) -> EngineError {
+        let error = error.or_gone(Path::is_file);
+        if let Some(path) = error.missing_file() {
+            let sources = &self.sources;
+            self.decoders
+                .retain(|open| sources.get(&open.media).is_none_or(|known| known != path));
+            self.open_decoders
+                .store(self.decoders_open(), Ordering::Relaxed);
+        }
+        error
+    }
+
     /// `frame` of `preview` cannot be shown: says why, and shows it black, as a clip whose
     /// file is missing is, rather than leaving the picture shown before.
     fn fail_at(&mut self, preview: Preview, frame: Frame, error: EngineError) {
+        let error = self.gone_or(error);
         self.fail(error);
         self.present(preview, frame, Shown::Black, true);
     }

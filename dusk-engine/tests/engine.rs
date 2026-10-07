@@ -338,6 +338,39 @@ fn a_media_id_given_to_another_file_never_shows_the_old_files_frames() {
 }
 
 #[test]
+fn two_previews_naming_one_media_id_for_two_files_never_share_its_frames() {
+    // The clip editor can keep a project in which a media id names a file the main window's
+    // project no longer does (its group was undone, and the id given to new media).
+    let running = start(project_at(Frame(0)));
+    let mut other = (*project_at(Frame(0))).clone();
+    let media = other.media()[0].clone();
+    let elsewhere = sample().with_file_name("another-file.mp4");
+    Command::RelinkMedia(RelinkMedia::new(media.id, elsewhere, media.info))
+        .apply(&mut other)
+        .unwrap();
+    running
+        .engine
+        .set_project(Preview::ClipEditor, Arc::new(other));
+    running
+        .engine
+        .set_preview_size(Preview::ClipEditor, (64, 48));
+    running.engine.show(Preview::Main, Frame(5));
+    let (_, texture) = running.next_frame();
+    assert!(!is_black(&running, &texture.expect("a picture")));
+    // The clip editor's file is not there: the main window's frames do not stand in for it.
+    running.engine.show(Preview::ClipEditor, Frame(5));
+    loop {
+        match running.events.recv_timeout(PATIENCE).expect("an event") {
+            EngineEvent::Error(_) => break,
+            EngineEvent::Frame { texture, .. } => {
+                panic!("a frame came instead of the error: {texture:?}")
+            }
+            _ => {}
+        }
+    }
+}
+
+#[test]
 fn a_gap_is_a_black_frame() {
     let running = start(project_at(Frame(15)));
     running.engine.show(Preview::Main, Frame(5));
