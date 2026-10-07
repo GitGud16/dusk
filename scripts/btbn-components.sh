@@ -3,8 +3,9 @@
 # using the scripts' own logic (generate.sh's dependency walk and each script's
 # ffbuild_enabled): one tab-separated line a script, with where its source comes from.
 #   btbn-components.sh <FFmpeg-Builds checkout> win64 lgpl-shared 8.1
+# A step that fails stops it, inside command substitutions too, so a listing is never short.
 set -e
-shopt -s globstar
+shopt -s globstar inherit_errexit
 cd "$1"
 shift
 source util/vars.sh "$@"
@@ -23,7 +24,8 @@ get_stagedeps() {
     if [[ -d "${SCRIPTDIR[0]}" ]]; then
         RESDEPS=()
         for SUBSCRIPT in "${SCRIPTDIR[0]}"/*.sh; do
-            RESDEPS+=( $(get_stagedeps "${SUBSCRIPT}") )
+            SUBDEPS="$(get_stagedeps "${SUBSCRIPT}")"
+            RESDEPS+=( $SUBDEPS )
         done
         tr ' ' '\n' <<< "${RESDEPS[@]}" | sort -u
     else
@@ -41,7 +43,9 @@ get_stagedeps() {
 }
 
 get_stagedeps_recursive_internal() {
-    local CDEPS=($(get_stagedeps "$1"))
+    local DEPS CDEPS
+    DEPS="$(get_stagedeps "$1")"
+    CDEPS=($DEPS)
     for CDEP in "${CDEPS[@]}"; do
         get_stagedeps_recursive_internal "$CDEP"
     done
@@ -50,7 +54,9 @@ get_stagedeps_recursive_internal() {
 
 get_stagedeps_recursive() {
     declare -A ALREADY_PRINTED
-    for CDEP in $(get_stagedeps_recursive_internal "$1"); do
+    local ALL
+    ALL="$(get_stagedeps_recursive_internal "$1")"
+    for CDEP in $ALL; do
         if ! [[ -v ALREADY_PRINTED["$CDEP"] ]]; then
             echo "$CDEP"
             ALREADY_PRINTED["$CDEP"]="1"
@@ -59,7 +65,8 @@ get_stagedeps_recursive() {
 }
 
 ENTRYSCRIPT="$(ls -1d scripts.d/* | tail -n 1)"
-for DEP in $(get_stagedeps_recursive "$ENTRYSCRIPT"); do
+DEPS="$(get_stagedeps_recursive "$ENTRYSCRIPT")"
+for DEP in $DEPS; do
     STAGE="$(resolvestage "$DEP")"
     if [[ -d "$STAGE" ]]; then SCRIPTS=("$STAGE"/??-*.sh); else SCRIPTS=("$STAGE"); fi
     for SCRIPT in "${SCRIPTS[@]}"; do
