@@ -353,8 +353,8 @@ pub fn problems_message(problems: &[String]) -> Option<String> {
     let (first, rest) = problems.split_first()?;
     Some(match rest.len() {
         0 => first.clone(),
-        1 => format!("{first} 1 more line could not be read."),
-        more => format!("{first} {more} more lines could not be read."),
+        1 => format!("{first} Dusk found 1 more problem in its settings files."),
+        more => format!("{first} Dusk found {more} more problems in its settings files."),
     })
 }
 
@@ -592,7 +592,20 @@ unlink =
         let three = vec![one[0].clone(), "b".to_owned(), "c".to_owned()];
         assert_eq!(
             problems_message(&three).as_deref(),
-            Some("shortcuts.txt, line 2: X; that line is skipped. 2 more lines could not be read.")
+            Some(
+                "shortcuts.txt, line 2: X; that line is skipped. Dusk found 2 more problems in \
+                 its settings files."
+            )
+        );
+        // A whole file Dusk could not read is a problem, not a line.
+        let files = vec![
+            "Dusk could not read settings.txt: denied; the default settings are used.".to_owned(),
+            "Dusk could not read shortcuts.txt: denied; the default keys are used.".to_owned(),
+        ];
+        assert!(
+            problems_message(&files)
+                .unwrap()
+                .ends_with(" Dusk found 1 more problem in its settings files.")
         );
     }
 }
