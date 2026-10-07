@@ -172,7 +172,17 @@ impl Keys {
             match modifier.to_ascii_lowercase().as_str() {
                 "ctrl" | "control" => keys.ctrl = true,
                 "alt" => keys.alt = true,
-                "shift" => keys = keys.shift(),
+                "shift" => {
+                    keys = match keys.key {
+                        // Punctuation is the character it types, which is how a press of it
+                        // arrives: Shift+/ is ?, as on a US layout.
+                        KeyName::Char(c) if c.is_ascii_punctuation() => Keys {
+                            key: KeyName::Char(us_shifted(c)),
+                            ..keys
+                        },
+                        _ => keys.shift(),
+                    }
+                }
                 _ => return Err(unknown()),
             }
         }
@@ -625,6 +635,16 @@ mod tests {
         assert_eq!(keys("Return"), keys("Enter"));
         assert_eq!(keys("Control+S"), keys("Ctrl+S"));
         assert_eq!(keys(","), keys("Comma"));
+    }
+
+    #[test]
+    fn shift_with_punctuation_in_the_file_is_what_it_types_on_a_us_layout() {
+        // As a press of Shift with that key arrives: the character it types.
+        assert_eq!(keys("Shift+/"), keys("?"));
+        assert_eq!(keys("Shift+="), keys("Plus"));
+        assert_eq!(keys("Ctrl+Shift+,"), keys("Ctrl+<"));
+        let map = Keymap::read("zoom-in = Shift+=\n").0;
+        assert_eq!(press(&map, "+", Some('='), SHIFT), Some(Action::ZoomIn));
     }
 
     #[test]
