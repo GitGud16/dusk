@@ -389,6 +389,10 @@ export component MissingDialog inherits Rectangle {
     // found files leave it.
     property <length> most: Math.max(0px, root.rows.length * root.row-height - root.list-height);
     property <length> top: Math.clamp(root.scrolled, 0px, root.most);
+    // Clamped for good as rows leave, so it does not jump back when they return.
+    changed most => {
+        root.scrolled = root.top;
+    }
 
     // The picked file stays in view as the keys move through a long list.
     changed picked => {

@@ -40,6 +40,10 @@ export component MediaBin inherits Rectangle {
     property <length> scrolled;
     property <length> most: Math.max(0px, list.preferred-height - view.height);
     property <length> top: Math.clamp(root.scrolled, 0px, root.most);
+    // Clamped for good as rows leave, so it does not jump back when they return.
+    changed most => {
+        root.scrolled = root.top;
+    }
     property <bool> dragging;
     property <length> press-x;
     property <length> press-y;

@@ -114,6 +114,10 @@ export component ShortcutDialog inherits Rectangle {
     property <length> scrolled;
     property <length> most: Math.max(0px, list.preferred-height - root.list-height);
     property <length> top: Math.clamp(root.scrolled, 0px, root.most);
+    // Clamped for good as rows leave, so it does not jump back when they return.
+    changed most => {
+        root.scrolled = root.top;
+    }
 
     pure function picked-top() -> length {
         return root.picked * root.row-height + root.headings-above * root.heading-height;
