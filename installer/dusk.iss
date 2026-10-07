@@ -1,9 +1,13 @@
 ; The Dusk installer (docs/ARCHITECTURE.md, "Release (0.1)"), for Inno Setup 6.
-; scripts\build-release.ps1 compiles it, with /DAppVersion and /DStage, the folder it installs:
-; dusk.exe, dusq.exe, the five FFmpeg DLLs beside them, and licenses\.
+; scripts\build-release.ps1 compiles it, with /DAppVersion, /DFileVersion (the version's numbers
+; alone, which Windows' file versions are) and /DStage, the folder it installs: dusk.exe,
+; dusq.exe, the five FFmpeg DLLs beside them, and licenses\.
 
 #ifndef AppVersion
   #define AppVersion "0.0.0"
+#endif
+#ifndef FileVersion
+  #define FileVersion AppVersion
 #endif
 #ifndef Stage
   #define Stage "..\target\release-stage\Dusk"
@@ -19,7 +23,7 @@ AppPublisher=The Dusk contributors
 AppPublisherURL=https://github.com/GitGud16/dusk
 AppSupportURL=https://github.com/GitGud16/dusk/issues
 AppUpdatesURL=https://github.com/GitGud16/dusk/releases
-VersionInfoVersion={#AppVersion}
+VersionInfoVersion={#FileVersion}
 VersionInfoDescription=Dusk setup
 ; For the current user, without administrator rights (%LOCALAPPDATA%\Programs\Dusk), unless
 ; the user picks every user of the computer.

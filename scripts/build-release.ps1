@@ -128,7 +128,10 @@ under its own license; FFmpeg-libraries.txt has their license texts.
 $installed = (Get-ChildItem -LiteralPath $stage -Recurse -File | Measure-Object -Property Length -Sum).Sum
 Write-Host ('Staged {0}: {1:N1} MB installed' -f $stage, ($installed / 1e6))
 
-# The installer, when Inno Setup is at hand.
+# The installer, when Inno Setup is at hand. Earlier versions' installers go first, so the
+# one left is this build's, or none.
+$out = Join-Path $root 'target\installer'
+if (Test-Path -LiteralPath $out) { Remove-Item -LiteralPath $out -Recurse -Force }
 if (-not $Iscc) {
     $found = Get-Command 'ISCC.exe' -ErrorAction SilentlyContinue
     if ($found) { $Iscc = $found.Source }
@@ -138,9 +141,10 @@ if (-not $Iscc) {
     Write-Warning 'Inno Setup 6 was not found, so only the installed folder was made. Install it, or pass -Iscc.'
     return
 }
-$out = Join-Path $root 'target\installer'
+# Windows' file versions are numbers alone, so a pre-release such as 0.1.0-rc.1 is 0.1.0 there.
+$fileVersion = ($version -split '[-+]')[0]
 Invoke-Native 'Compiling the installer' {
-    & $Iscc /Q "/DAppVersion=$version" "/DStage=$stage" "/O$out" (Join-Path $root 'installer\dusk.iss')
+    & $Iscc /Q "/DAppVersion=$version" "/DFileVersion=$fileVersion" "/DStage=$stage" "/O$out" (Join-Path $root 'installer\dusk.iss')
 }
 $setup = Join-Path $out "dusk-$version-setup.exe"
 Write-Host ('Installer {0}: {1:N1} MB' -f $setup, ((Get-Item -LiteralPath $setup).Length / 1e6))

@@ -12,16 +12,16 @@
     Dusk is installed. It prints the download and installed sizes (docs/REQUIREMENTS.md).
 
 .PARAMETER Setup
-    The installer to check; by default the one in target\installer.
+    The installer to check; by default this version's in target\installer.
 #>
 param([string]$Setup = '')
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 $stage = Join-Path $root 'target\release-stage\Dusk'
 if (-not $Setup) {
-    $found = @(Get-ChildItem -LiteralPath (Join-Path $root 'target\installer') -Filter 'dusk-*-setup.exe' -ErrorAction SilentlyContinue)
-    if ($found.Count -ne 1) { throw 'Expected one installer in target\installer: run scripts\build-release.ps1 with Inno Setup first, or pass -Setup.' }
-    $Setup = $found[0].FullName
+    $version = (Select-String -LiteralPath (Join-Path $root 'Cargo.toml') -Pattern '^version = "(.+)"').Matches[0].Groups[1].Value
+    $Setup = Join-Path $root "target\installer\dusk-$version-setup.exe"
+    if (-not (Test-Path -LiteralPath $Setup)) { throw "There is no ${Setup}: run scripts\build-release.ps1 with Inno Setup first, or pass -Setup." }
 }
 
 # The id the installer registers Dusk under, from the installer's own script.
@@ -50,55 +50,70 @@ if ($p.ExitCode -ne 0) {
 }
 $files = @(Get-ChildItem -LiteralPath $dir -Recurse -File)
 'Installed {0}: {1:N1} MB in {2} files' -f $dir, (($files | Measure-Object -Property Length -Sum).Sum / 1e6), $files.Count
+$uninstaller = Join-Path $dir 'unins000.exe'
+$dusk = $null
+$uninstalled = $false
+try {
+    # Every staged file, as staged.
+    $wrong = @()
+    foreach ($file in Get-ChildItem -LiteralPath $stage -Recurse -File) {
+        $relative = $file.FullName.Substring($stage.Length + 1)
+        $there = Join-Path $dir $relative
+        if (-not (Test-Path -LiteralPath $there) -or (Get-Item -LiteralPath $there).Length -ne $file.Length) { $wrong += $relative }
+    }
+    if ($wrong) { throw "Not installed as staged: $($wrong -join ', ')." }
 
-# Every staged file, as staged.
-$wrong = @()
-foreach ($file in Get-ChildItem -LiteralPath $stage -Recurse -File) {
-    $relative = $file.FullName.Substring($stage.Length + 1)
-    $there = Join-Path $dir $relative
-    if (-not (Test-Path -LiteralPath $there) -or (Get-Item -LiteralPath $there).Length -ne $file.Length) { $wrong += $relative }
+    # The Start menu entry and the .dusk association, for the current user.
+    $shortcut = Join-Path ([Environment]::GetFolderPath('Programs')) 'Dusk.lnk'
+    if (-not (Test-Path -LiteralPath $shortcut)) { throw "There is no Start menu entry at $shortcut." }
+    $classes = 'HKCU:\Software\Classes'
+    if ((Get-ItemProperty -LiteralPath "$classes\.dusk").'(default)' -ne 'Dusk.Project') { throw '.dusk files are not registered as Dusk projects.' }
+    $open = (Get-ItemProperty -LiteralPath "$classes\Dusk.Project\shell\open\command").'(default)'
+    if ($open -ne ('"{0}" "%1"' -f (Join-Path $dir 'dusk.exe'))) { throw "Opening a .dusk file runs $open." }
+
+    # Both programs, from the installed folder alone.
+    $env:PATH = (($env:PATH -split ';') | Where-Object { $_ -and $_ -notmatch 'ffmpeg' }) -join ';'
+    Remove-Item Env:FFMPEG_DIR -ErrorAction SilentlyContinue
+    $dusq = Join-Path $dir 'dusq.exe'
+    & $dusq --version
+    if ($LASTEXITCODE -ne 0) { throw "dusq did not start from the installed folder (exit code $LASTEXITCODE)." }
+    $compressed = Join-Path $work 'compressed.mp4'
+    & $dusq compress (Join-Path $root 'testdata\sample-h264-aac.mp4') -o $compressed --quality small
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $compressed)) { throw "dusq could not compress a video from the installed folder (exit code $LASTEXITCODE)." }
+
+    $env:DUSK_STATE_DIR = Join-Path $work 'state'
+    $env:DUSK_SETTINGS_DIR = Join-Path $work 'settings'
+    $dusk = Start-Process -FilePath (Join-Path $dir 'dusk.exe') -PassThru
+    $null = $dusk.Handle  # keeps the exit code readable once it exits, in Windows PowerShell too
+    $clock = [Diagnostics.Stopwatch]::StartNew()
+    # Its window is the one titled "Untitled — Dusk"; an untitled helper window of winit's shows first.
+    while ($dusk.MainWindowTitle -notlike '*Dusk' -and -not $dusk.HasExited -and $clock.Elapsed.TotalSeconds -lt 60) {
+        Start-Sleep -Milliseconds 100
+        $dusk.Refresh()
+    }
+    if ($dusk.HasExited) { throw "dusk.exe exited with code $($dusk.ExitCode) before showing its window." }
+    if ($dusk.MainWindowTitle -notlike '*Dusk') { $dusk.Kill(); throw 'dusk.exe showed no window within a minute.' }
+    'dusk.exe showed its window after {0:N1} s' -f $clock.Elapsed.TotalSeconds
+    $null = $dusk.CloseMainWindow()
+    if (-not $dusk.WaitForExit(30000)) { $dusk.Kill(); throw 'dusk.exe did not close when its window was closed.' }
+    if ($dusk.ExitCode -ne 0) { throw "dusk.exe closed with exit code $($dusk.ExitCode)." }
+
+    # Uninstalling. The uninstaller hands over to a copy of itself in the temporary folder, which
+    # removes the folder it ran from; wait for that.
+    $p = Start-Process -FilePath $uninstaller -Wait -PassThru -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART'
+    if ($p.ExitCode -ne 0) { throw "The uninstaller failed with exit code $($p.ExitCode)." }
+    $uninstalled = $true
+} finally {
+    # A check that failed would leave Dusk installed, and the next run would refuse to start.
+    if ($dusk -and -not $dusk.HasExited) { $dusk.Kill() }
+    if (-not $uninstalled -and (Test-Path -LiteralPath $uninstaller)) {
+        try {
+            $null = Start-Process -FilePath $uninstaller -Wait -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART'
+        } catch {
+            Write-Warning "Could not uninstall Dusk after the failed check ($_); uninstall it in Windows' settings."
+        }
+    }
 }
-if ($wrong) { throw "Not installed as staged: $($wrong -join ', ')." }
-
-# The Start menu entry and the .dusk association, for the current user.
-$shortcut = Join-Path ([Environment]::GetFolderPath('Programs')) 'Dusk.lnk'
-if (-not (Test-Path -LiteralPath $shortcut)) { throw "There is no Start menu entry at $shortcut." }
-$classes = 'HKCU:\Software\Classes'
-if ((Get-ItemProperty -LiteralPath "$classes\.dusk").'(default)' -ne 'Dusk.Project') { throw '.dusk files are not registered as Dusk projects.' }
-$open = (Get-ItemProperty -LiteralPath "$classes\Dusk.Project\shell\open\command").'(default)'
-if ($open -ne ('"{0}" "%1"' -f (Join-Path $dir 'dusk.exe'))) { throw "Opening a .dusk file runs $open." }
-
-# Both programs, from the installed folder alone.
-$env:PATH = (($env:PATH -split ';') | Where-Object { $_ -and $_ -notmatch 'ffmpeg' }) -join ';'
-Remove-Item Env:FFMPEG_DIR -ErrorAction SilentlyContinue
-$dusq = Join-Path $dir 'dusq.exe'
-& $dusq --version
-if ($LASTEXITCODE -ne 0) { throw "dusq did not start from the installed folder (exit code $LASTEXITCODE)." }
-$compressed = Join-Path $work 'compressed.mp4'
-& $dusq compress (Join-Path $root 'testdata\sample-h264-aac.mp4') -o $compressed --quality small
-if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $compressed)) { throw "dusq could not compress a video from the installed folder (exit code $LASTEXITCODE)." }
-
-$env:DUSK_STATE_DIR = Join-Path $work 'state'
-$env:DUSK_SETTINGS_DIR = Join-Path $work 'settings'
-$dusk = Start-Process -FilePath (Join-Path $dir 'dusk.exe') -PassThru
-$null = $dusk.Handle  # keeps the exit code readable once it exits, in Windows PowerShell too
-$clock = [Diagnostics.Stopwatch]::StartNew()
-# Its window is the one titled "Untitled — Dusk"; an untitled helper window of winit's shows first.
-while ($dusk.MainWindowTitle -notlike '*Dusk' -and -not $dusk.HasExited -and $clock.Elapsed.TotalSeconds -lt 60) {
-    Start-Sleep -Milliseconds 100
-    $dusk.Refresh()
-}
-if ($dusk.HasExited) { throw "dusk.exe exited with code $($dusk.ExitCode) before showing its window." }
-if ($dusk.MainWindowTitle -notlike '*Dusk') { $dusk.Kill(); throw 'dusk.exe showed no window within a minute.' }
-'dusk.exe showed its window after {0:N1} s' -f $clock.Elapsed.TotalSeconds
-$null = $dusk.CloseMainWindow()
-if (-not $dusk.WaitForExit(30000)) { $dusk.Kill(); throw 'dusk.exe did not close when its window was closed.' }
-if ($dusk.ExitCode -ne 0) { throw "dusk.exe closed with exit code $($dusk.ExitCode)." }
-
-# Uninstalling. The uninstaller hands over to a copy of itself in the temporary folder, which
-# removes the folder it ran from; wait for that.
-$p = Start-Process -FilePath (Join-Path $dir 'unins000.exe') -Wait -PassThru -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART'
-if ($p.ExitCode -ne 0) { throw "The uninstaller failed with exit code $($p.ExitCode)." }
 $clock.Restart()
 while ((Test-Path -LiteralPath $dir) -and $clock.Elapsed.TotalSeconds -lt 60) { Start-Sleep -Milliseconds 250 }
 $left = @($dir, $shortcut, "$classes\.dusk", "$classes\Dusk.Project", "HKCU:\$uninstallKey") | Where-Object { Test-Path -LiteralPath $_ }
