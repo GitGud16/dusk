@@ -99,14 +99,35 @@ fn folder_of(file: &Path) -> PathBuf {
 /// How a media path is written: relative to `folder`, with `/` between parts, when it lies
 /// inside it; as it is otherwise.
 fn saved_path(path: &Path, folder: &Path) -> String {
-    match path.strip_prefix(folder) {
-        Ok(inside) if folder.is_absolute() => {
-            let parts: Vec<_> = inside.iter().map(|part| part.to_string_lossy()).collect();
-            parts.join("/")
-        }
+    match inside(path, folder) {
+        Some(parts) if folder.is_absolute() => parts.join("/"),
         // Import only takes paths FFmpeg can open, which are Unicode, so nothing is lost.
         _ => path.to_string_lossy().into_owned(),
     }
+}
+
+/// The parts of `path` after `folder`, when it lies inside it, part by part as the system
+/// compares names: Windows' ignore case.
+fn inside(path: &Path, folder: &Path) -> Option<Vec<String>> {
+    let name = |part: std::path::Component| {
+        let name = part.as_os_str().to_string_lossy().into_owned();
+        if cfg!(windows) {
+            name.to_lowercase()
+        } else {
+            name
+        }
+    };
+    let mut parts = path.components();
+    for wanted in folder.components() {
+        if name(parts.next()?) != name(wanted) {
+            return None;
+        }
+    }
+    Some(
+        parts
+            .map(|part| part.as_os_str().to_string_lossy().into_owned())
+            .collect(),
+    )
 }
 
 /// Where a media path written as `saved` points, for a project file in `folder`.
@@ -941,6 +962,21 @@ mod tests {
             Err(FileError::Invalid(rejection)) => rejection,
             other => panic!("expected a broken timeline rule, got {other:?}"),
         }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn media_in_the_projects_folder_is_saved_relative_in_any_case() {
+        // Windows' file names ignore case: a path typed another way is still inside.
+        let folder = Path::new(r"J:\Films\Trip");
+        assert_eq!(
+            saved_path(Path::new(r"j:\films\TRIP\clips\a.mp4"), folder),
+            "clips/a.mp4"
+        );
+        assert_eq!(
+            saved_path(Path::new(r"J:\Films\Trips\a.mp4"), folder),
+            r"J:\Films\Trips\a.mp4"
+        );
     }
 
     #[test]
