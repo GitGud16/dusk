@@ -197,8 +197,8 @@ impl Settings {
                 problems.push((number, format!("{problem}; the default is used")));
             }
         }
+        let container = settings.export.container;
         if let Some((number, codec)) = codec {
-            let container = settings.export.container;
             if container.video_codecs().contains(&codec) {
                 settings.export.codec = codec;
             } else {
@@ -211,6 +211,15 @@ impl Settings {
                     ),
                 ));
             }
+        }
+        // A format that cannot hold the codec it is left with takes its first, as choosing the
+        // format in the Settings dialog does.
+        if let Some(first) = container
+            .video_codecs()
+            .first()
+            .filter(|_| !container.video_codecs().contains(&settings.export.codec))
+        {
+            settings.export.codec = *first;
         }
         problems.sort_by_key(|(number, _)| *number);
         let problems = problems
@@ -459,6 +468,18 @@ unlink =
             Some(Path::new("C:\\tools\\ffmpeg.exe"))
         );
         assert!(!settings.use_ffmpeg);
+    }
+
+    #[test]
+    fn a_format_alone_takes_its_first_codec_when_it_cannot_hold_the_default() {
+        // As choosing the format in the Settings dialog does.
+        let (settings, problems) = Settings::read("export-format = WebM\n");
+        assert!(problems.is_empty(), "{problems:?}");
+        assert_eq!(settings.export.container, Container::WebM);
+        assert_eq!(settings.export.codec, VideoCodec::Vp9);
+        // A format that holds the default keeps it.
+        let (settings, _) = Settings::read("export-format = MKV\n");
+        assert_eq!(settings.export.codec, VideoCodec::H264);
     }
 
     #[test]
