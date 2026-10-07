@@ -17,6 +17,7 @@ It fails, naming them, when it finds no license text for a library or a crate.
 """
 
 import base64
+import http.client
 import importlib.util
 import io
 import json
@@ -60,16 +61,31 @@ RUST_LIBRARIES = {
     "https://github.com/GNOME/librsvg.git": [("librsvg-c", ["avif"])],
 }
 RUST_TARGET = "x86_64-pc-windows-gnu"
+# What reading from the network can fail with: the system's errors (refused, reset, timed
+# out, and urllib's own) and the HTTP library's (a response cut short).
+NETWORK_ERRORS = (OSError, http.client.HTTPException)
+
+
+def load_notices():
+    """scripts/third-party-notices.py, whose crate listing and text handling this shares."""
+    spec = importlib.util.spec_from_file_location("notices", ROOT / "scripts" / "third-party-notices.py")
+    notices = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(notices)
+    return notices
+
+
+NOTICES = load_notices()
 
 
 def get(url, tries=3):
-    """The body at `url`, asked again when a slow server times out."""
+    """The body at `url`, asked again when the connection fails or a server errs; a page the
+    server says is not there, or forbidden, fails at once."""
     request = urllib.request.Request(url, headers={"User-Agent": "dusk-ffmpeg-licenses"})
     for attempt in range(tries):
         try:
             with urllib.request.urlopen(request, timeout=60) as response:
                 return response.read()
-        except (TimeoutError, urllib.error.URLError) as error:
+        except NETWORK_ERRORS as error:
             if attempt == tries - 1 or (isinstance(error, urllib.error.HTTPError) and error.code < 500):
                 raise
 
@@ -90,7 +106,7 @@ def license_names(entries):
     files = [
         name for name, folder in entries if not folder and LICENSE_FILE.match(name) and not NOT_LICENSE.search(name)
     ]
-    folders = [name for name, folder in entries if folder and (LICENSE_FILE.match(name) or name == "LICENSES")]
+    folders = [name for name, folder in entries if folder and LICENSE_FILE.match(name)]
     return files, folders
 
 
@@ -115,8 +131,14 @@ class GitLab:
 
     def entries(self, folder=""):
         query = f"ref={self.commit}&per_page=100" + (f"&path={urllib.parse.quote(folder)}" if folder else "")
-        items = json.loads(get(f"{self.api}/tree?{query}"))
-        return [(item["name"], item["type"] == "tree") for item in items]
+        # A page at a time, until one comes back short.
+        items, page = [], 1
+        while True:
+            listed = json.loads(get(f"{self.api}/tree?{query}&page={page}"))
+            items += listed
+            if len(listed) < 100:
+                return [(item["name"], item["type"] == "tree") for item in items]
+            page += 1
 
     def read(self, path):
         return text(get(f"{self.api}/files/{urllib.parse.quote(path, safe='')}/raw?ref={self.commit}"))
@@ -168,7 +190,9 @@ class Cgit:
         page = text(get(f"{self.base}/tree/{folder}?id={self.commit}"))
         prefix = urllib.parse.urlparse(self.base).path + "/tree/" + (folder + "/" if folder else "")
         found = re.findall(r"href='" + re.escape(prefix) + r"([^'/?]+)\?id=", page)
-        return [(name, False) for name in sorted(set(found))]
+        # cgit marks a folder's link with the class ls-dir.
+        folders = set(re.findall(r"class='ls-dir' href='" + re.escape(prefix) + r"([^'/?]+)\?id=", page))
+        return [(name, name in folders) for name in sorted(set(found))]
 
     def read(self, path):
         return text(get(f"{self.base}/plain/{path}?id={self.commit}"))
@@ -193,9 +217,11 @@ def license_files(url, commit, revision):
     files, folders = license_names(repo.entries())
     paths = list(files)
     for folder in folders:
-        inner, _ = license_names(repo.entries(folder))
-        if folder == "LICENSES":
-            inner = [name for name, is_folder in repo.entries(folder) if not is_folder]
+        entries = repo.entries(folder)
+        inner, _ = license_names(entries)
+        # A LICENSES folder (as REUSE lays them out) holds nothing but license texts.
+        if folder.upper() == "LICENSES":
+            inner = [name for name, is_folder in entries if not is_folder]
         paths += [f"{folder}/{name}" for name in inner]
     paths += EXTRA_FILES.get(url, [])
     found = [(path, repo.read(path)) for path in paths]
@@ -238,9 +264,6 @@ def rust_crates(libraries, temp):
     """The license texts of the Rust crates built into the DLLs with the Rust libraries among
     `libraries`, each with the crates that ship it, named with the library they are in:
     {text: [listing, ...]}. Cargo fetches the crates into a CARGO_HOME of its own in `temp`."""
-    spec = importlib.util.spec_from_file_location("notices", ROOT / "scripts" / "third-party-notices.py")
-    notices = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(notices)
     env = dict(os.environ, CARGO_HOME=str(Path(temp) / "cargo"))
     groups = {}
     for name, url, commit, _ in libraries:
@@ -248,16 +271,11 @@ def rust_crates(libraries, temp):
             continue
         folder = Path(temp) / name
         checkout(url, commit, folder)
-        crates, texts = notices.crate_texts(RUST_LIBRARIES[url], RUST_TARGET, cwd=folder, env=env, offline=False)
+        crates, texts = NOTICES.crate_texts(RUST_LIBRARIES[url], RUST_TARGET, cwd=folder, env=env, offline=False)
         for text, listings in texts.items():
             groups.setdefault(text, []).extend(f"{listing}, in {name}" for listing in listings)
         print(f"{name}: {len(crates)} crates")
-    return groups, notices.grouped
-
-
-def normalized(license):
-    lines = [line.rstrip() for line in license.replace("\r\n", "\n").replace("\r", "\n").split("\n")]
-    return "\n".join(lines).strip() + "\n"
+    return groups
 
 
 def bash():
@@ -316,7 +334,11 @@ def main():
             tar.extractall(temp, filter="data")
         builds = next(Path(temp).iterdir())
         libraries = components(builds, version)
-        crates, grouped = rust_crates(libraries, temp)
+        crates = rust_crates(libraries, temp)
+    except NETWORK_ERRORS as error:
+        sys.exit(f"Could not fetch BtbN's build scripts for {tag}, or the Rust libraries' sources: {error}")
+    except subprocess.CalledProcessError as error:
+        sys.exit(f"{' '.join(map(str, error.cmd))} failed: {text(error.stderr or b'').strip()}")
     finally:
         remove(temp)
 
@@ -324,13 +346,13 @@ def main():
     for name, url, commit, revision in libraries:
         try:
             files = license_files(url, commit, revision)
-        except (urllib.error.URLError, subprocess.CalledProcessError, AttributeError, KeyError, ValueError) as error:
+        except (*NETWORK_ERRORS, subprocess.CalledProcessError, AttributeError, KeyError, ValueError) as error:
             sys.exit(f"Could not read the license files of {name} ({url}): {error}")
         if not files:
             missing.append(f"{name} ({url})")
         at = f"r{revision}" if revision else commit[:12] if re.fullmatch(r"[0-9a-f]{40}", commit) else commit
         for path, license in files:
-            groups.setdefault(normalized(license), []).append(f"{name} ({url.removesuffix('.git')}, {at}): {path}")
+            groups.setdefault(NOTICES.normalized(license), []).append(f"{name} ({url.removesuffix('.git')}, {at}): {path}")
         print(f"{name}: {', '.join(path for path, _ in files) or 'none'}")
     if missing:
         sys.exit("No license file found for: " + "; ".join(missing))
@@ -348,11 +370,7 @@ def main():
         "two of them, rav1e and librsvg, follow the libraries.",
         "",
     ]
-    for license, sources in sorted(groups.items(), key=lambda group: group[1][0].lower()):
-        out.append("=" * 78)
-        out += [f"  {source}" for source in sources]
-        out.append("-" * 78)
-        out.append(license)
+    out += NOTICES.grouped(groups)
     out += [
         "",
         "Rust crates in rav1e and librsvg",
@@ -364,7 +382,7 @@ def main():
         "it.",
         "",
     ]
-    out += grouped(crates)
+    out += NOTICES.grouped(crates)
     OUT.write_text("\n".join(out), encoding="utf-8", newline="\n")
     print(
         f"{len(libraries)} libraries, {len(groups)} license texts and {len(crates)} for their Rust "
