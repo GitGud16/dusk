@@ -61,6 +61,12 @@ pub fn plan_for_size(
         return Err(SizeRefusal::NoLength);
     }
     let seconds = length.0 as f64 / 1e6;
+    // Refused by the very number it says, so a plan at the smallest size is never refused.
+    let floor = FLOOR_VIDEO + if has_sound { 48_000 } else { 0 };
+    let smallest = (floor as f64 * seconds / 8.0 / STREAMS).ceil() as u64;
+    if target < smallest {
+        return Err(SizeRefusal::TooSmall { smallest });
+    }
     let streams = (target as f64 * 8.0 * STREAMS / seconds).floor() as u64;
     // Less sound for less video, decided by what the video would have with the sound before.
     let audio = if !has_sound {
@@ -72,12 +78,8 @@ pub fn plan_for_size(
     } else {
         48_000
     };
-    let video = streams.saturating_sub(audio);
-    if video < FLOOR_VIDEO {
-        let floor = FLOOR_VIDEO + if has_sound { 48_000 } else { 0 };
-        let smallest = (floor as f64 * seconds / 8.0 / STREAMS).ceil() as u64;
-        return Err(SizeRefusal::TooSmall { smallest });
-    }
+    // At the smallest size the division can round a bit a second under the floor.
+    let video = streams.saturating_sub(audio).max(FLOOR_VIDEO);
     let short_side = LADDER
         .iter()
         .find(|(rate, _)| video >= *rate)
@@ -175,6 +177,30 @@ mod tests {
                 smallest: 1_546_392
             })
         );
+    }
+
+    #[test]
+    fn the_smallest_size_offered_is_always_taken() {
+        // Rounding once made a plan at the smallest size come out a bit/s under the floor, so
+        // the same smallest came back and dusq asked again forever.
+        let length = MediaTime(3_594_810_106);
+        let Err(SizeRefusal::TooSmall { smallest }) = plan_for_size(1_000, length, false) else {
+            panic!("a kilobyte is below the floor");
+        };
+        assert!(plan_for_size(smallest, length, false).is_ok());
+        for micros in (1_000_000..4_000_000_000).step_by(7_919_37) {
+            let length = MediaTime(micros);
+            for sound in [true, false] {
+                let Err(SizeRefusal::TooSmall { smallest }) = plan_for_size(1, length, sound)
+                else {
+                    panic!("a byte is below the floor");
+                };
+                assert!(
+                    plan_for_size(smallest, length, sound).is_ok(),
+                    "{micros} µs"
+                );
+            }
+        }
     }
 
     #[test]
