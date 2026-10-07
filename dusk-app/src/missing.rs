@@ -362,6 +362,8 @@ impl App {
                 });
             });
         if let Err(error) = spawned {
+            // Done without looking, so the next check the engine asks for can start.
+            self.media_checks.finish(check);
             self.fail(&sentence(&EngineError::Thread(error).to_string()));
         }
     }
