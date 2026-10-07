@@ -44,8 +44,12 @@ impl App {
 
     /// Licenses: the folder of license files opens in Explorer.
     pub fn about_licenses(&self) {
+        // The button shows only while the folder is there, so it went away since.
         let Some(dir) = installed_licenses() else {
-            return self.fail("The license files are installed with Dusk, beside dusk.exe.");
+            return self.fail(
+                "The licenses folder beside dusk.exe is no longer there; install Dusk again to \
+                 bring it back.",
+            );
         };
         if let Err(error) = crate::platform::show_folder(&dir) {
             self.fail(&format!(
