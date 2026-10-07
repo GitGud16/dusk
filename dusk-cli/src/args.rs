@@ -113,8 +113,18 @@ pub fn parse(args: &[String]) -> Result<Command, String> {
             "-h" | "--help" => return Ok(Command::Help),
             "-o" | "--output" => options.output = Some(PathBuf::from(value("out.mp4")?)),
             "--format" => options.format = Some(value("mp4")?),
-            "--overwrite" => options.overwrite = true,
+            "--overwrite" => {
+                alone()?;
+                options.overwrite = true;
+            }
             "--quality" if compressing => options.quality = Some(value("medium")?),
+        // An option without a value takes none: "--overwrite=no" is not an overwrite.
+        let alone = || match &inline {
+            Some(_) => Err(format!(
+                "{name} takes no value; leave out what follows the ="
+            )),
+            None => Ok(()),
+        };
             "--size" if compressing => options.size = Some(value("25MB")?),
             "--short-side" if compressing => options.short_side = Some(value("720")?),
             "--codec" if compressing => options.codec = Some(value("h264")?),
@@ -541,3 +551,25 @@ mod tests {
         assert!(error.contains("--threads"), "{error}");
     }
 }
+
+    #[test]
+    fn an_option_without_a_value_takes_none() {
+        // "--overwrite=no" must not overwrite.
+        let error = parse_line("compress a.mp4 --overwrite=no").unwrap_err();
+        assert!(error.contains("--overwrite"), "{error}");
+        assert!(parse_line("extract-audio a.mp4 --overwrite=yes").is_err());
+    }
+
+    #[test]
+    fn a_file_whose_name_starts_with_a_dash_follows_two_dashes() {
+        assert_eq!(
+            compress("compress -- -intro.mp4").input,
+            PathBuf::from("-intro.mp4")
+        );
+        assert_eq!(
+            compress("compress --quality small -- -intro.mp4").quality,
+            Quality::Level(40)
+        );
+        // After them, nothing is an option.
+        assert!(parse_line("compress -- a.mp4 --overwrite").is_err());
+    }
