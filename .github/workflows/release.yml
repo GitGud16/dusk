@@ -17,6 +17,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: The tag names the version being built
+        shell: pwsh
+        run: |
+          $version = (Select-String -LiteralPath Cargo.toml -Pattern '^version = "(.+)"').Matches[0].Groups[1].Value
+          if ("v$version" -ne $env:GITHUB_REF_NAME) {
+            throw "The tag $env:GITHUB_REF_NAME does not name the version in Cargo.toml ($version): tag v$version instead."
+          }
+          "VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Append
+
       - name: Cache the pinned FFmpeg zip
         uses: actions/cache@v4
         with:
@@ -47,7 +56,6 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          $setup = @(Get-ChildItem target/installer/*.exe)[0].FullName
-          $version = $env:GITHUB_REF_NAME.TrimStart('v')
-          gh release create $env:GITHUB_REF_NAME $setup --draft --title "Dusk $version" `
+          $setup = "target/installer/dusk-$env:VERSION-setup.exe"
+          gh release create $env:GITHUB_REF_NAME $setup --draft --title "Dusk $env:VERSION" `
             --notes "Draft: write what is new, then publish."
