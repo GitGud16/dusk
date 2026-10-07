@@ -76,6 +76,7 @@ Options for extract-audio:
       --format <f>       mp3, aac, opus or wav (default: mp3, or the output's extension)
       --overwrite        replace the output file if it exists
 
+      --                 ends the options, for a file whose name starts with -
   -h, --help             show this
   -V, --version          show dusq's version
 "#;
@@ -99,11 +100,27 @@ pub fn parse(args: &[String]) -> Result<Command, String> {
     };
     let mut options = Options::default();
     let mut rest = args[1..].iter();
+    // After "--" every argument is a file, so a name may start with a dash.
+    let mut files_only = false;
     while let Some(arg) = rest.next() {
+        if files_only || arg == "--" {
+            if files_only {
+                take_file(&mut options, arg)?;
+            }
+            files_only = true;
+            continue;
+        }
         // Long options may carry their value after an equals sign.
         let (name, inline) = match arg.split_once('=') {
             Some((name, value)) if name.starts_with("--") => (name, Some(value.to_owned())),
             _ => (arg.as_str(), None),
+        };
+        // An option without a value takes none: "--overwrite=no" is not an overwrite.
+        let alone = || match &inline {
+            Some(_) => Err(format!(
+                "{name} takes no value; leave out what follows the ="
+            )),
+            None => Ok(()),
         };
         let mut value = |example: &str| match inline.clone().or_else(|| rest.next().cloned()) {
             Some(value) => Ok(value),
@@ -118,13 +135,6 @@ pub fn parse(args: &[String]) -> Result<Command, String> {
                 options.overwrite = true;
             }
             "--quality" if compressing => options.quality = Some(value("medium")?),
-        // An option without a value takes none: "--overwrite=no" is not an overwrite.
-        let alone = || match &inline {
-            Some(_) => Err(format!(
-                "{name} takes no value; leave out what follows the ="
-            )),
-            None => Ok(()),
-        };
             "--size" if compressing => options.size = Some(value("25MB")?),
             "--short-side" if compressing => options.short_side = Some(value("720")?),
             "--codec" if compressing => options.codec = Some(value("h264")?),
@@ -140,12 +150,7 @@ pub fn parse(args: &[String]) -> Result<Command, String> {
                     "{command} has no option {option} (see dusq --help)"
                 ));
             }
-            file if options.input.is_none() => options.input = Some(PathBuf::from(file)),
-            extra => {
-                return Err(format!(
-                    "dusq takes one file at a time, and {extra} is one too many"
-                ));
-            }
+            file => take_file(&mut options, file)?,
         }
     }
     if compressing {
@@ -153,6 +158,17 @@ pub fn parse(args: &[String]) -> Result<Command, String> {
     } else {
         options.extract().map(Command::ExtractAudio)
     }
+}
+
+/// `file` is the input, which dusq takes one of.
+fn take_file(options: &mut Options, file: &str) -> Result<(), String> {
+    if options.input.is_some() {
+        return Err(format!(
+            "dusq takes one file at a time, and {file} is one too many"
+        ));
+    }
+    options.input = Some(PathBuf::from(file));
+    Ok(())
 }
 
 /// The options as given, before they are checked.
@@ -550,7 +566,6 @@ mod tests {
         let error = parse_line("extract-audio a.mp4 --threads 2").unwrap_err();
         assert!(error.contains("--threads"), "{error}");
     }
-}
 
     #[test]
     fn an_option_without_a_value_takes_none() {
@@ -573,3 +588,4 @@ mod tests {
         // After them, nothing is an option.
         assert!(parse_line("compress -- a.mp4 --overwrite").is_err());
     }
+}
