@@ -857,9 +857,8 @@ impl App {
         let Some(editor) = &self.editor else {
             return;
         };
-        if self.export.is_some() {
-            return self
-                .editor_say("An export is already running; wait for it to finish or cancel it.");
+        if self.exporting(true) {
+            return;
         }
         let project = match editor.session.export_project(&self.project) {
             Ok(project) => project,

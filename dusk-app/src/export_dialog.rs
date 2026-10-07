@@ -56,10 +56,25 @@ impl ExportDialog {
 }
 
 impl App {
+    /// Whether an export is running, which refuses another, said where it was asked for (in
+    /// the clip editor when `in_editor`): one export runs at a time.
+    pub(crate) fn exporting(&self, in_editor: bool) -> bool {
+        if self.export.is_none() {
+            return false;
+        }
+        let message = crate::app::sentence(&EngineError::ExportRunning.to_string());
+        if in_editor {
+            self.editor_fail(&message);
+        } else {
+            self.fail(&message);
+        }
+        true
+    }
+
     /// Ctrl+E, the toolbar and the File menu: the export dialog for the timeline.
     pub(crate) fn export(&mut self) {
-        if self.export.is_some() {
-            return self.say("An export is already running; wait for it to finish or cancel it.");
+        if self.exporting(false) {
+            return;
         }
         if self.project.sequence().end() == Frame(0) {
             return self.fail("Place some media on the timeline before exporting.");
@@ -378,11 +393,8 @@ impl App {
                 app.fail(message);
             }
         };
-        if self.export.is_some() {
-            return fail(
-                self,
-                "An export is already running; wait for it to finish or cancel it.",
-            );
+        if self.exporting(in_editor) {
+            return;
         }
         if self
             .project
