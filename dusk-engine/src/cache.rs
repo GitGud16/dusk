@@ -81,7 +81,33 @@ impl FrameCache {
     /// above it at once, the least recently used frames first.
     pub fn set_cap(&mut self, cap: usize) {
         self.cap = cap;
-        while self.used > self.cap && self.evict_one() {}
+        if self.used <= self.cap {
+            return;
+        }
+        // Oldest first, found in one pass rather than a scan for each frame let go.
+        let mut by_age: Vec<(u64, MediaId, MediaTime)> = self
+            .media
+            .iter()
+            .flat_map(|(media, frames)| {
+                frames
+                    .iter()
+                    .map(move |(time, entry)| (entry.last_used, *media, *time))
+            })
+            .collect();
+        by_age.sort_unstable();
+        for (_, media, time) in by_age {
+            if self.used <= self.cap {
+                break;
+            }
+            if let Some(entry) = self
+                .media
+                .get_mut(&media)
+                .and_then(|frames| frames.remove(&time))
+            {
+                self.used -= entry.picture.byte_size();
+            }
+        }
+        self.media.retain(|_, frames| !frames.is_empty());
     }
 
     /// Keeps the frame of `media` that starts at `time`, followed by `following`, and makes
