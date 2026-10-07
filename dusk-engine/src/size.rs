@@ -188,7 +188,7 @@ mod tests {
             panic!("a kilobyte is below the floor");
         };
         assert!(plan_for_size(smallest, length, false).is_ok());
-        for micros in (1_000_000..4_000_000_000).step_by(7_919_37) {
+        for micros in (1_000_000..4_000_000_000).step_by(791_937) {
             let length = MediaTime(micros);
             for sound in [true, false] {
                 let Err(SizeRefusal::TooSmall { smallest }) = plan_for_size(1, length, sound)
