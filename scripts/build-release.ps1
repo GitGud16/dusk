@@ -74,6 +74,9 @@ Copy-Item -LiteralPath (Join-Path $root 'dusk-app\ui\fonts\JetBrainsMono\OFL.txt
 Invoke-Native 'Writing the third-party notices' {
     python (Join-Path $PSScriptRoot 'third-party-notices.py') (Join-Path $licenses 'THIRD-PARTY-NOTICES.txt')
 }
+# The licenses of the libraries built into FFmpeg's DLLs, which scripts\ffmpeg-licenses.py
+# fetched for the pinned build.
+Copy-Item -LiteralPath (Join-Path $root 'installer\ffmpeg-libraries.txt') -Destination (Join-Path $licenses 'FFmpeg-libraries.txt')
 
 # FFmpeg's notice: this build, where its source is, and how it was configured, as avutil says.
 $avutil = @(Get-ChildItem -LiteralPath $ffmpegBin -Filter 'avutil-*.dll')[0].FullName
@@ -106,7 +109,7 @@ It was configured with:
 $config
 
 The libraries those options name are built into the DLLs where FFmpeg uses them, each
-under its own license, as its source gives it.
+under its own license; FFmpeg-libraries.txt has their license texts.
 "@ | Set-Content -LiteralPath (Join-Path $licenses 'FFmpeg.txt') -Encoding UTF8
 
 $installed = (Get-ChildItem -LiteralPath $stage -Recurse -File | Measure-Object -Property Length -Sum).Sum
