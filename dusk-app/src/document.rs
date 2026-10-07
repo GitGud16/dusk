@@ -236,7 +236,6 @@ impl App {
                 _ => {}
             },
         }
-        self.missing_list_waited();
     }
 
     /// Asks about changes in the clip editor not applied and unsaved changes before `next`,

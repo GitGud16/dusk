@@ -422,7 +422,8 @@ impl App {
         }
     }
 
-    /// A question was answered: the list that waited for it opens, while files are missing.
+    /// The last dialog or question over the window closed: the list that waited for it
+    /// opens, while files are missing.
     pub(crate) fn missing_list_waited(&mut self) {
         if std::mem::take(&mut self.missing_waiting) && !self.missing.is_empty() {
             self.list_missing();

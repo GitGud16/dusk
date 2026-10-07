@@ -224,6 +224,12 @@ fn connect(window: &MainWindow) {
     window.on_compress_done(|go| {
         with_app(|app| app.compress_done(go));
     });
+    window.on_dialogs_closed(|| {
+        // After the closing call that changed the window has let go of the app.
+        let _ = slint::invoke_from_event_loop(|| {
+            with_app(App::missing_list_waited);
+        });
+    });
     window.on_prompt_answered(|index| {
         with_app(|app| app.answer(usize::try_from(index).unwrap_or(usize::MAX)));
     });

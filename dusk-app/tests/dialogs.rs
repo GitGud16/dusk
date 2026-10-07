@@ -63,6 +63,51 @@ fn the_question_closing_asks_comes_before_the_missing_media_list() {
 }
 
 #[test]
+fn the_missing_list_waits_for_the_question_and_then_opens() {
+    // A Dusk that stopped without closing this project left an autosave, so starting on the
+    // project asks whether to recover it while the project's missing file is being looked for.
+    let state = state_dir("dialogs-waiting");
+    let project = project_with_a_missing_file(&state, "waiting");
+    let autosave = state.join("autosave");
+    std::fs::create_dir_all(&autosave).expect("make the autosave folder");
+    std::fs::write(
+        autosave.join("left.session"),
+        project.to_string_lossy().as_bytes(),
+    )
+    .expect("write the session record");
+    // Written after the project file, as autosaves are, so it holds something newer; a copy
+    // would keep the project file's time.
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    let text = std::fs::read(&project).expect("read the project");
+    std::fs::write(autosave.join("left.dusk.autosave"), text).expect("write the autosave");
+    let mut dusk = start(&[project.as_os_str()], &state);
+    let window = wait_for_window(&mut dusk);
+    wait_for_title(window, "the project did not open", |title| {
+        title == "waiting — Dusk"
+    });
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+    // Not now: the list that waited behind the question opens, and takes the keys.
+    press(window, VK_ESCAPE, None);
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    type_key(window, 'd');
+    type_key(window, 'e');
+    std::thread::sleep(std::time::Duration::from_millis(1000));
+    let listed = !common::title_of(window).contains('*');
+    // Once it is closed, the same keys edit.
+    press(window, VK_ESCAPE, None);
+    type_key(window, 'd');
+    type_key(window, 'e');
+    std::thread::sleep(std::time::Duration::from_millis(1000));
+    let edited = common::title_of(window).contains('*');
+    let _ = dusk.kill();
+    assert!(
+        listed,
+        "the keys edited the timeline, so the list did not open"
+    );
+    assert!(edited, "the keys did not edit once the list was closed");
+}
+
+#[test]
 fn tab_stays_in_the_question_over_a_dialog() {
     let state = state_dir("dialogs-tab");
     let project = project_with_a_missing_file(&state, "tab");

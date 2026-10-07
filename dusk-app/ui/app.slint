@@ -37,6 +37,8 @@ export component MainWindow inherits Window {
     out property <int> preview-pixel-width: Math.round(preview.width / 1phx);
     out property <int> preview-pixel-height: Math.round(preview.height / 1phx);
     callback preview-resized(width: int, height: int);
+    // The last dialog or question over the window closed.
+    callback dialogs-closed();
 
     // The media bin.
     in property <[MediaView]> media;
@@ -387,6 +389,9 @@ export component MainWindow inherits Window {
             shortcuts-dialog.focus-search();
         } else {
             keys.focus();
+        }
+        if !root.modal-open {
+            root.dialogs-closed();
         }
     }
 
