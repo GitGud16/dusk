@@ -442,7 +442,7 @@ impl App {
         if dialog.fit(rows) {
             self.refresh_missing_dialog();
         } else {
-            self.missing_close();
+            self.end_missing_list();
         }
     }
 
@@ -607,17 +607,26 @@ impl App {
         self.fit_missing_dialog();
     }
 
+    /// Close, or Escape: the list closes, and a find under way stops.
     pub fn missing_close(&mut self) {
-        self.missing_dialog = None;
-        self.missing_waiting = false;
-        // A find under way stops: what it would find was for the list.
-        if let Some(stop) = self.relink.take() {
-            stop.store(true, Ordering::Relaxed);
+        if self.end_missing_list() {
             self.say("Stopped reading the files found.");
         }
+    }
+
+    /// Closes the list, and stops a find under way, since what it would find was for the
+    /// list; true when one was stopped.
+    pub(crate) fn end_missing_list(&mut self) -> bool {
+        self.missing_dialog = None;
+        self.missing_waiting = false;
         if let Some(window) = self.window() {
             window.set_missing_open(false);
         }
+        let stop = self.relink.take();
+        if let Some(stop) = &stop {
+            stop.store(true, Ordering::Relaxed);
+        }
+        stop.is_some()
     }
 
     /// Up and Down pick a file, Enter finds it and Escape closes the list; true when the

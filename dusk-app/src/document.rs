@@ -383,7 +383,6 @@ impl App {
         }
     }
 
-    /// Makes `project`, from the file at `path`, the one being edited, with a fresh history.
     /// Makes `project`, from the file at `path` if any, the one open, as a document of its
     /// own; the check of its media files then does what `ask` says.
     pub(crate) fn replace_project(
@@ -402,7 +401,7 @@ impl App {
         self.close_editor_now();
         self.engine.pause();
         self.missing.clear();
-        self.missing_close();
+        self.end_missing_list();
         self.media_check_ask = ask;
         self.set_project(project);
     }
