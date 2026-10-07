@@ -272,6 +272,17 @@ pub struct Row {
     pub description: &'static str,
 }
 
+/// `rows` as the windows show them.
+pub fn views(rows: Vec<Row>) -> Vec<crate::ShortcutView> {
+    rows.into_iter()
+        .map(|row| crate::ShortcutView {
+            heading: row.heading.unwrap_or_default().into(),
+            keys: row.keys.into(),
+            description: row.description.into(),
+        })
+        .collect()
+}
+
 /// The keys of every action: the defaults, with the user's changes over them.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Keymap {
@@ -487,26 +498,7 @@ impl Keymap {
 
     /// The shortcut list as the windows show it: every action, with its keys, by group.
     pub fn shortcut_list(&self) -> slint::ModelRc<crate::ShortcutView> {
-        let list: Vec<crate::ShortcutView> = ACTIONS
-            .iter()
-            .enumerate()
-            .map(|(index, info)| crate::ShortcutView {
-                heading: if index == 0 || ACTIONS[index - 1].group != info.group {
-                    info.group.title().into()
-                } else {
-                    Default::default()
-                },
-                keys: self
-                    .keys_of(info.action)
-                    .iter()
-                    .map(Keys::to_string)
-                    .collect::<Vec<_>>()
-                    .join(", ")
-                    .into(),
-                description: info.description.into(),
-            })
-            .collect();
-        std::rc::Rc::new(slint::VecModel::from(list)).into()
+        std::rc::Rc::new(slint::VecModel::from(views(self.rows("")))).into()
     }
 
     /// The action a key press stands for (see [`Keys::pressed`]).

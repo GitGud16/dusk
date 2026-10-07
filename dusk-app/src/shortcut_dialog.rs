@@ -339,14 +339,7 @@ impl App {
                 .filter(|row| row.heading.is_some())
                 .count()
         });
-        let views: Vec<ShortcutView> = rows
-            .into_iter()
-            .map(|row| ShortcutView {
-                heading: row.heading.unwrap_or_default().into(),
-                keys: row.keys.into(),
-                description: row.description.into(),
-            })
-            .collect();
+        let views = crate::keymap::views(rows);
         window.set_shortcut_rows(std::rc::Rc::new(VecModel::from(views)).into());
         window.set_shortcut_picked(picked.and_then(|row| i32::try_from(row).ok()).unwrap_or(-1));
         window.set_shortcut_headings_above(i32::try_from(headings_above).unwrap_or(0));
