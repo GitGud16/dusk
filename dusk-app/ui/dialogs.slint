@@ -2,7 +2,7 @@
 
 import { AboutSlint } from "std-widgets.slint";
 import { Theme } from "theme.slint";
-import { FieldLabel, NumberField, StatusKind, ToolButton } from "widgets.slint";
+import { FieldLabel, NumberField, Status, StatusKind, ToolButton } from "widgets.slint";
 
 // The panel a dialog sits on.
 export component DialogPanel inherits Rectangle {
@@ -471,8 +471,7 @@ export component MissingDialog inherits Rectangle {
 
         if root.note != "": Text {
             text: root.note;
-            color: root.note-kind == StatusKind.error ? Theme.alert
-                : root.note-kind == StatusKind.warning ? Theme.signal : Theme.text-2;
+            color: Status.color-of(root.note-kind);
             font-size: Theme.font-tiny;
             wrap: word-wrap;
         }

@@ -1,6 +1,6 @@
 import { Palette } from "std-widgets.slint";
 import { Theme } from "theme.slint";
-import { Modal, StatusKind, Timecode, ToolButton } from "widgets.slint";
+import { Modal, Status, StatusKind, Timecode, ToolButton } from "widgets.slint";
 import { ClipView, Timeline, TickView, TrackView } from "timeline.slint";
 import { MediaBin, MediaView } from "media-bin.slint";
 import { ClipProperties, ClipProps } from "properties.slint";
@@ -680,8 +680,7 @@ export component MainWindow inherits Window {
 
                     Text {
                         text: root.status;
-                        color: root.status-kind == StatusKind.error ? Theme.alert
-                            : root.status-kind == StatusKind.warning ? Theme.signal : Theme.text-2;
+                        color: Status.color-of(root.status-kind);
                         vertical-alignment: center;
                         overflow: elide;
                         horizontal-stretch: 1;

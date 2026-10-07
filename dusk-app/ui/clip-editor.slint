@@ -4,7 +4,7 @@
 // as one undoable step.
 
 import { Theme } from "theme.slint";
-import { FieldLabel, Modal, NumberField, PanelTitle, Segmented, Slider, StatusKind, Switch, Timecode, ToolButton } from "widgets.slint";
+import { FieldLabel, Modal, NumberField, PanelTitle, Segmented, Slider, Status, StatusKind, Switch, Timecode, ToolButton } from "widgets.slint";
 import { Prompt } from "dialogs.slint";
 import { ShortcutPanel, ShortcutView } from "shortcut-list.slint";
 import { ExportDialog, ExportView } from "export-dialog.slint";
@@ -799,8 +799,7 @@ export component ClipEditorWindow inherits Window {
 
                     Text {
                         text: root.status;
-                        color: root.status-kind == StatusKind.error ? Theme.alert
-                            : root.status-kind == StatusKind.warning ? Theme.signal : Theme.text-2;
+                        color: Status.color-of(root.status-kind);
                         vertical-alignment: center;
                         overflow: elide;
                         horizontal-stretch: 1;
