@@ -2,8 +2,12 @@
 //! them, and finding one relinks it, with the other missing files that lie beside it, as one
 //! undoable edit. What is found and how it is said is worked out here, apart from the window.
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 
 use dusk_core::{Command, MediaId, MediaInfo, Project, RelinkMedia};
 use dusk_engine::{EngineError, media_info};
@@ -14,6 +18,9 @@ use crate::platform::Dialog;
 use crate::shortcuts::Action;
 use crate::{MissingView, StatusKind};
 
+/// How often a find says how many of the files beside the picked one it has read.
+const PROGRESS_EVERY: Duration = Duration::from_millis(250);
+
 /// What a check of the media files does once it knows which are missing.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Ask {
@@ -22,6 +29,8 @@ pub enum Ask {
     No,
     /// A project was opened: say so and list them, when there are any.
     Opened,
+    /// An autosave was recovered: as Opened, and say that it is to be saved.
+    Recovered,
     /// File → Find missing media: list them, or say that none is missing.
     Asked,
 }
@@ -63,6 +72,18 @@ pub struct MissingDialog {
     pub kind: StatusKind,
 }
 
+impl MissingDialog {
+    /// Keeps the pick on one of `rows` rows; false when there are none, and the list is to
+    /// close.
+    pub fn fit(&mut self, rows: usize) -> bool {
+        if rows == 0 {
+            return false;
+        }
+        self.picked = self.picked.min(rows - 1);
+        true
+    }
+}
+
 /// A file Dusk read for a missing media file: what it holds, or why it could not be read.
 pub struct Found {
     pub media: MediaId,
@@ -81,15 +102,60 @@ pub struct Relinked {
     pub kind: StatusKind,
 }
 
+/// What a find for one missing media looks for beside the file picked for it.
+#[derive(Debug)]
+pub struct Search {
+    /// Where the project says the media was.
+    pub was: PathBuf,
+    /// The other missing media that were in the same folder as it, with where each was: the
+    /// files that moved with it. A file of the same name in another folder is another file.
+    pub others: Vec<(MediaId, PathBuf)>,
+    /// Files no other media may take: the one picked, and those of the media the project finds.
+    /// A missing media's own path is not among them, so a file back where it was is found.
+    pub taken: Vec<PathBuf>,
+}
+
+/// What a find for `media` of `project`, at the file `picked`, looks for beside it, `missing`
+/// being the media the project cannot find; `None` when the project has no such media.
+pub fn search(
+    project: &Project,
+    missing: &HashSet<MediaId>,
+    media: MediaId,
+    picked: &Path,
+) -> Option<Search> {
+    let was = project.media_ref(media)?.path.clone();
+    let folder = |path: &Path| path.parent().map(Path::to_path_buf);
+    let others = project
+        .media()
+        .iter()
+        .filter(|other| other.id != media && missing.contains(&other.id))
+        .filter(|other| match (folder(&other.path), folder(&was)) {
+            (Some(theirs), Some(ours)) => same_path(&theirs, &ours),
+            _ => false,
+        })
+        .map(|other| (other.id, other.path.clone()))
+        .collect();
+    let taken = std::iter::once(picked.to_path_buf())
+        .chain(
+            project
+                .media()
+                .iter()
+                .filter(|other| !missing.contains(&other.id))
+                .map(|other| other.path.clone()),
+        )
+        .collect();
+    Some(Search { was, others, taken })
+}
+
 /// The files among `files` named as the media files `wanted` were, in any case, one for
-/// each: the other missing files beside one that was found. A file in `taken` (the one found,
-/// and those the project uses) is no other media's, and a name two of `wanted` share could be
-/// either's, so it finds neither.
+/// each, with where each media was: the other missing files beside one that was found. A file
+/// in `taken` is no other media's, and a name two of `wanted` share could be either's, so it
+/// finds neither.
 pub fn same_names(
     files: &[PathBuf],
     wanted: &[(MediaId, PathBuf)],
     taken: &[PathBuf],
-) -> Vec<(MediaId, PathBuf)> {
+) -> Vec<(MediaId, PathBuf, PathBuf)> {
     let lowercase = |path: &Path| {
         path.file_name()
             .map(|name| name.to_string_lossy().to_lowercase())
@@ -109,7 +175,7 @@ pub fn same_names(
                 lowercase(file).as_ref() == Some(&name)
                     && !taken.iter().any(|used| same_path(used, file))
             })?;
-            Some((*media, file.clone()))
+            Some((*media, was.clone(), file.clone()))
         })
         .collect()
 }
@@ -265,14 +331,20 @@ impl App {
         if !self.media_checks.finish(check) {
             return;
         }
-        self.missing = missing.into_iter().collect();
+        let missing: HashSet<MediaId> = missing.into_iter().collect();
+        // A file back where it was gets its thumbnail asked for again: none could be made
+        // while it was away.
+        for media in self.missing.difference(&missing) {
+            self.thumbnails.forget(*media);
+        }
+        self.missing = missing;
         self.refresh_bin();
         match ask {
             Ask::No => {}
-            Ask::Opened if self.missing.is_empty() => {}
-            Ask::Opened => {
+            Ask::Opened | Ask::Recovered if self.missing.is_empty() => {}
+            Ask::Opened | Ask::Recovered => {
                 let count = self.missing.len();
-                self.fail(&if count == 1 {
+                let lost = if count == 1 {
                     "A media file of this project cannot be found, so its clips stay black and \
                      silent; find it in the list."
                         .to_owned()
@@ -281,15 +353,51 @@ impl App {
                         "{count} media files of this project cannot be found, so their clips \
                          stay black and silent; find them in the list."
                     )
+                };
+                self.fail(&if ask == Ask::Recovered {
+                    format!("Recovered; save to keep it. {lost}")
+                } else {
+                    lost
                 });
-                self.open_missing_dialog();
+                self.list_missing();
             }
             Ask::Asked if self.missing.is_empty() => {
                 self.say("Every media file is where the project says.");
             }
-            Ask::Asked => self.open_missing_dialog(),
+            Ask::Asked => self.list_missing(),
         }
-        self.refresh_missing_dialog();
+        self.fit_missing_dialog();
+    }
+
+    /// Opens the list of missing files, or, while a question or another dialog is open, once
+    /// it has been answered.
+    fn list_missing(&mut self) {
+        if self.missing_dialog.is_none() && self.main_dialog_open() {
+            self.missing_waiting = true;
+        } else {
+            self.open_missing_dialog();
+        }
+    }
+
+    /// A question was answered: the list that waited for it opens, while files are missing.
+    pub(crate) fn missing_list_waited(&mut self) {
+        if std::mem::take(&mut self.missing_waiting) && !self.missing.is_empty() {
+            self.list_missing();
+        }
+    }
+
+    /// Keeps an open list in step with what is missing: its pick on a row, and closed once
+    /// nothing is.
+    fn fit_missing_dialog(&mut self) {
+        let rows = self.missing_media().len();
+        let Some(dialog) = &mut self.missing_dialog else {
+            return;
+        };
+        if dialog.fit(rows) {
+            self.refresh_missing_dialog();
+        } else {
+            self.missing_close();
+        }
     }
 
     /// File → Find missing media and its key: the list, once a check has said what is
@@ -323,13 +431,20 @@ impl App {
     }
 
     pub fn missing_pick(&mut self, row: i32) {
-        let rows = self.missing.len();
+        let rows = self.missing_media().len();
         if let (Some(dialog), Ok(row)) = (&mut self.missing_dialog, usize::try_from(row))
             && row < rows
         {
             dialog.picked = row;
+            self.show_missing_pick();
         }
-        self.refresh_missing_dialog();
+    }
+
+    /// Shows which row is picked, without listing the rows again.
+    fn show_missing_pick(&self) {
+        if let (Some(dialog), Some(window)) = (&self.missing_dialog, self.window()) {
+            window.set_missing_picked(i32::try_from(dialog.picked).unwrap_or(0));
+        }
     }
 
     /// Find…: asks for the picked file with the system's dialog, in its old folder when that
@@ -350,33 +465,29 @@ impl App {
         };
         self.show_dialog_over(window.window(), ask, move |paths| {
             if let Some(path) = paths.into_iter().next() {
-                with_app(|app| app.find_media(media, was, path));
+                with_app(|app| app.find_media(media, path));
             }
         });
     }
 
-    /// Reads the file picked for `media`, which the project said was at `was`, on a thread of
-    /// its own, and the files beside it named as the other missing ones, then relinks what
-    /// fits.
-    fn find_media(&mut self, media: MediaId, was: PathBuf, path: PathBuf) {
-        let others: Vec<(MediaId, PathBuf)> = self
-            .missing_media()
-            .into_iter()
-            .filter(|(other, _)| *other != media)
-            .collect();
-        // The file found, and the files of the project's other media, are none of the others'.
-        let mut taken: Vec<PathBuf> = self
-            .project
-            .media()
-            .iter()
-            .map(|media| media.path.clone())
-            .collect();
-        taken.push(path.clone());
-        self.say(&format!("Reading {}…", file_name(&path)));
+    /// Reads the file picked for `media` on a thread of its own, then the files beside it
+    /// named as the other missing media from its old folder, and relinks what fits. It says
+    /// how far it has got; closing the list, or another find, stops it.
+    fn find_media(&mut self, media: MediaId, path: PathBuf) {
+        let Some(search) = search(&self.project, &self.missing, media, &path) else {
+            return;
+        };
+        let stop = Arc::new(AtomicBool::new(false));
+        if let Some(earlier) = self.relink.replace(Arc::clone(&stop)) {
+            earlier.store(true, Ordering::Relaxed);
+        }
+        let name = file_name(&path);
+        self.say(&format!("Reading {name}…"));
         let spawned = std::thread::Builder::new()
             .name("dusk relink".to_owned())
             .spawn(move || {
                 let read = |path: &Path| media_info(path).map_err(|error| error.to_string());
+                let Search { was, others, taken } = search;
                 let mut found = vec![Found {
                     media,
                     was,
@@ -390,54 +501,74 @@ impl App {
                     .flatten()
                     .filter_map(|entry| Some(entry.ok()?.path()))
                     .collect();
-                for (other, file) in same_names(&beside, &others, &taken) {
-                    let Some((_, was)) = others.iter().find(|(media, _)| *media == other) else {
-                        continue;
-                    };
+                let matches = same_names(&beside, &others, &taken);
+                let total = matches.len();
+                let mut said = Instant::now();
+                for (done, (other, was, file)) in matches.into_iter().enumerate() {
+                    if stop.load(Ordering::Relaxed) {
+                        return;
+                    }
                     found.push(Found {
                         media: other,
-                        was: was.clone(),
+                        was,
                         info: read(&file),
                         path: file,
                     });
+                    if said.elapsed() >= PROGRESS_EVERY {
+                        said = Instant::now();
+                        let stop = Arc::clone(&stop);
+                        let message =
+                            format!("Reading the files beside {name}: {} of {total}…", done + 1);
+                        let _ = slint::invoke_from_event_loop(move || {
+                            if !stop.load(Ordering::Relaxed) {
+                                with_app(|app| app.say(&message));
+                            }
+                        });
+                    }
                 }
                 let _ = slint::invoke_from_event_loop(move || {
-                    with_app(|app| app.media_found(found));
+                    with_app(|app| app.media_found(found, &stop));
                 });
             });
         if let Err(error) = spawned {
+            self.relink = None;
             self.fail(&sentence(&EngineError::Thread(error).to_string()));
         }
     }
 
-    fn media_found(&mut self, found: Vec<Found>) {
+    fn media_found(&mut self, found: Vec<Found>, stop: &AtomicBool) {
+        // The list closed, or a newer find started: this one is let go.
+        if stop.load(Ordering::Relaxed) {
+            return;
+        }
+        self.relink = None;
         let relinked = relink(&self.project, found);
         if let Some(command) = relinked.command
             && self.edit(command)
         {
             for media in &relinked.relinked {
                 self.missing.remove(media);
+                // Its thumbnail could not be made while its file was away.
+                self.thumbnails.forget(*media);
             }
             self.refresh_bin();
         }
-        match relinked.kind {
-            StatusKind::Error => self.fail(&relinked.message),
-            StatusKind::Warning => self.warn(&relinked.message),
-            _ => self.say(&relinked.message),
-        }
-        if self.missing.is_empty() {
-            return self.missing_close();
-        }
+        self.status(&relinked.message, relinked.kind);
         if let Some(dialog) = &mut self.missing_dialog {
             dialog.note = relinked.message;
             dialog.kind = relinked.kind;
-            dialog.picked = dialog.picked.min(self.missing.len() - 1);
         }
-        self.refresh_missing_dialog();
+        self.fit_missing_dialog();
     }
 
     pub fn missing_close(&mut self) {
         self.missing_dialog = None;
+        self.missing_waiting = false;
+        // A find under way stops: what it would find was for the list.
+        if let Some(stop) = self.relink.take() {
+            stop.store(true, Ordering::Relaxed);
+            self.say("Stopped reading the files found.");
+        }
         if let Some(window) = self.window() {
             window.set_missing_open(false);
         }
@@ -447,7 +578,7 @@ impl App {
     /// list is open, which then takes every key.
     pub(crate) fn missing_dialog_key(&mut self, text: &str) -> bool {
         use slint::platform::Key;
-        let rows = self.missing.len();
+        let rows = self.missing_media().len();
         let Some(dialog) = &mut self.missing_dialog else {
             return false;
         };
@@ -456,12 +587,15 @@ impl App {
             dialog.picked = dialog.picked.saturating_sub(1);
         } else if named(Key::DownArrow) {
             dialog.picked = (dialog.picked + 1).min(rows.saturating_sub(1));
-        } else if named(Key::Return) {
-            self.missing_find();
-        } else if named(Key::Escape) {
-            self.missing_close();
+        } else {
+            if named(Key::Return) {
+                self.missing_find();
+            } else if named(Key::Escape) {
+                self.missing_close();
+            }
+            return true;
         }
-        self.refresh_missing_dialog();
+        self.show_missing_pick();
         true
     }
 
@@ -552,7 +686,8 @@ fn file_name(path: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dusk_core::{Frame, MediaKind, MediaTime, Orientation, Rational, import};
+    use dusk_core::{Frame, MediaKind, MediaTime, Orientation, Rational, add_media, import};
+    use std::collections::HashSet;
 
     fn info(seconds: i64) -> MediaInfo {
         MediaInfo {
@@ -610,7 +745,11 @@ mod tests {
         ];
         assert_eq!(
             same_names(&files, &wanted, &paths(&["F:/day1/c0001.mp4"])),
-            [(MediaId(3), PathBuf::from("F:/day1/C0002.MP4"))]
+            [(
+                MediaId(3),
+                PathBuf::from("E:/day1/C0002.MP4"),
+                PathBuf::from("F:/day1/C0002.MP4")
+            )]
         );
     }
 
@@ -631,6 +770,61 @@ mod tests {
         assert_eq!(
             same_names(&files, &wanted, &paths(&["F:/trip/beach.mp4"])),
             []
+        );
+    }
+
+    /// A project of a 10 s video at each of `paths`, and their ids.
+    fn project_of(paths: &[&str]) -> (Project, Vec<MediaId>) {
+        let mut project = Project::new(Rational::new(30, 1).unwrap(), (1920, 1080));
+        let ids = paths
+            .iter()
+            .map(|path| {
+                let (id, mut command) = add_media(&project, (*path).into(), info(10));
+                command.apply(&mut project).unwrap();
+                id
+            })
+            .collect();
+        (project, ids)
+    }
+
+    #[test]
+    fn only_missing_files_from_the_picked_ones_old_folder_are_looked_for() {
+        // Two cards, each with its own C0001..C0009: card 2's file is not looked for in the
+        // folder of card 1's, where a file of its name is another shot.
+        let (project, ids) = project_of(&[
+            "E:/card1/C0001.MP4",
+            "E:/card2/C0002.MP4",
+            "E:/card1/C0003.MP4",
+            "F:/music/song.m4a",
+        ]);
+        let missing: HashSet<MediaId> = ids[..3].iter().copied().collect();
+        let search = search(&project, &missing, ids[0], Path::new("F:/card1/C0001.MP4")).unwrap();
+        assert_eq!(search.was, PathBuf::from("E:/card1/C0001.MP4"));
+        assert_eq!(
+            search.others,
+            [(ids[2], PathBuf::from("E:/card1/C0003.MP4"))]
+        );
+        // The picked file and those of the media the project finds are no one else's.
+        assert_eq!(
+            search.taken,
+            paths(&["F:/card1/C0001.MP4", "F:/music/song.m4a"])
+        );
+    }
+
+    #[test]
+    fn files_back_at_their_own_paths_are_found_beside_the_picked_one() {
+        // A drive that came back: the files are where the project says.
+        let (project, ids) = project_of(&["E:/trip/a.mp4", "E:/trip/b.mp4"]);
+        let missing: HashSet<MediaId> = ids.iter().copied().collect();
+        let search = search(&project, &missing, ids[0], Path::new("E:/trip/a.mp4")).unwrap();
+        let files = paths(&["E:/trip/a.mp4", "E:/trip/b.mp4"]);
+        assert_eq!(
+            same_names(&files, &search.others, &search.taken),
+            [(
+                ids[1],
+                PathBuf::from("E:/trip/b.mp4"),
+                PathBuf::from("E:/trip/b.mp4")
+            )]
         );
     }
 
@@ -677,6 +871,22 @@ mod tests {
         );
         assert_eq!(relinked.relinked, [beach]);
         assert_eq!(relinked.message, "Found beach.mp4.");
+    }
+
+    #[test]
+    fn the_list_keeps_its_pick_on_a_row_and_closes_once_nothing_is_missing() {
+        let mut dialog = MissingDialog {
+            picked: 2,
+            note: String::new(),
+            kind: StatusKind::Info,
+        };
+        // A check found the third file back: the pick moves onto the last row left.
+        assert!(dialog.fit(2));
+        assert_eq!(dialog.picked, 1);
+        assert!(dialog.fit(2));
+        assert_eq!(dialog.picked, 1);
+        // Every file is back: the list closes.
+        assert!(!dialog.fit(0));
     }
 
     #[test]
@@ -737,8 +947,16 @@ mod tests {
         assert_eq!(
             same_names(&files, &wanted, &[]),
             [
-                (MediaId(1), PathBuf::from("F:/trip/BEACH.MP4")),
-                (MediaId(2), PathBuf::from("F:/trip/Hills.mp4")),
+                (
+                    MediaId(1),
+                    PathBuf::from("E:/trip/beach.mp4"),
+                    PathBuf::from("F:/trip/BEACH.MP4")
+                ),
+                (
+                    MediaId(2),
+                    PathBuf::from("E:/trip/hills.mp4"),
+                    PathBuf::from("F:/trip/Hills.mp4")
+                ),
             ]
         );
     }

@@ -149,6 +149,10 @@ pub struct App {
     pub(crate) media_checks: crate::missing::MediaChecks,
     /// What the next check does with what it finds: a project just opened says so.
     pub(crate) media_check_ask: crate::missing::Ask,
+    /// The list of missing media waits for a question to be answered before it opens.
+    pub(crate) missing_waiting: bool,
+    /// The find under way for a missing media file; set to stop it.
+    pub(crate) relink: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     /// The GPL encoders of the user's own `ffmpeg`, picked in the export dialog for this
     /// session (docs/ARCHITECTURE.md, "Optional GPL encoders").
     pub(crate) external: Vec<dusk_engine::ExternalEncoder>,
@@ -221,6 +225,8 @@ impl App {
             missing_dialog: None,
             media_checks: crate::missing::MediaChecks::default(),
             media_check_ask: crate::missing::Ask::No,
+            missing_waiting: false,
+            relink: None,
             external: Vec::new(),
             use_external: false,
             external_note: String::new(),
@@ -957,7 +963,7 @@ impl App {
         self.status(message, StatusKind::Error);
     }
 
-    fn status(&self, message: &str, kind: StatusKind) {
+    pub(crate) fn status(&self, message: &str, kind: StatusKind) {
         if let Some(window) = self.window() {
             window.set_status(message.into());
             window.set_status_kind(kind);

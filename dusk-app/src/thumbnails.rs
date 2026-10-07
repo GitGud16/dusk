@@ -85,6 +85,13 @@ impl<I: Clone> Thumbnails<I> {
         }
     }
 
+    /// Lets the thumbnail of `media` go, so it is asked for again: its file was away when it
+    /// was asked for, and nothing could be made of it then.
+    pub fn forget(&mut self, media: MediaId) {
+        self.remove(media);
+        self.asked.remove(&media);
+    }
+
     fn remove(&mut self, media: MediaId) {
         if let Some((_, _, bytes)) = self.images.remove(&media) {
             self.bytes -= bytes;
@@ -194,6 +201,21 @@ mod tests {
         thumbnails.insert(video, "clip.mp4".into(), 'v', 10);
         assert_eq!(thumbnails.get(video), None);
         assert_eq!(thumbnails.wanted(&moved), []);
+    }
+
+    #[test]
+    fn a_forgotten_thumbnail_is_asked_for_again() {
+        // A file that was away when its thumbnail was asked for, back where it was: nothing was
+        // made then, and its path did not change.
+        let (project, [video, _, photo]) = project();
+        let mut thumbnails = Thumbnails::<char>::new(100);
+        thumbnails.wanted(&project);
+        thumbnails.forget(video);
+        assert_eq!(thumbnails.wanted(&project), [video]);
+        thumbnails.insert(photo, "photo.jpg".into(), 'p', 10);
+        thumbnails.forget(photo);
+        assert_eq!(thumbnails.get(photo), None);
+        assert_eq!(thumbnails.wanted(&project), [photo]);
     }
 
     /// `project` with `media` found in a folder of their own.

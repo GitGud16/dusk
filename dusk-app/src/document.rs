@@ -236,6 +236,7 @@ impl App {
                 _ => {}
             },
         }
+        self.missing_list_waited();
     }
 
     /// Asks about changes in the clip editor not applied and unsaved changes before `next`,
@@ -266,7 +267,7 @@ impl App {
                 }
             }
             Next::NewProject => {
-                self.replace_project(crate::app::empty_project(), None);
+                self.replace_project(crate::app::empty_project(), None, crate::missing::Ask::No);
                 self.say("New project.");
             }
             Next::OpenProject => {
@@ -372,7 +373,7 @@ impl App {
     fn project_read(&mut self, path: PathBuf, read: Result<Project, String>) {
         match read {
             Ok(project) => {
-                self.replace_project(project, Some(path.clone()));
+                self.replace_project(project, Some(path.clone()), crate::missing::Ask::Opened);
                 self.say(&format!("Opened {}.", file_name(&path)));
             }
             Err(error) => self.fail(&format!(
@@ -384,7 +385,14 @@ impl App {
     }
 
     /// Makes `project`, from the file at `path`, the one being edited, with a fresh history.
-    pub(crate) fn replace_project(&mut self, project: Project, path: Option<PathBuf>) {
+    /// Makes `project`, from the file at `path` if any, the one open, as a document of its
+    /// own; the check of its media files then does what `ask` says.
+    pub(crate) fn replace_project(
+        &mut self,
+        project: Project,
+        path: Option<PathBuf>,
+        ask: crate::missing::Ask,
+    ) {
         self.history = crate::history::History::default();
         self.document = Document::new(path, self.history.state());
         self.record_project();
@@ -396,7 +404,7 @@ impl App {
         self.engine.pause();
         self.missing.clear();
         self.missing_close();
-        self.media_check_ask = crate::missing::Ask::Opened;
+        self.media_check_ask = ask;
         self.set_project(project);
     }
 
@@ -532,7 +540,7 @@ impl App {
     fn recovered(&mut self, path: Option<PathBuf>, read: Result<Project, String>) {
         match read {
             Ok(project) => {
-                self.replace_project(project, path);
+                self.replace_project(project, path, crate::missing::Ask::Recovered);
                 // Unsaved until saved: the recovered work exists only in memory now.
                 self.document.saved = NOT_SAVED;
                 self.refresh_title();
