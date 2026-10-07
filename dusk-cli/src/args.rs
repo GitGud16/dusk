@@ -50,16 +50,15 @@ pub struct Extract {
     pub overwrite: bool,
 }
 
-/// How to use dusq.
-pub const USAGE: &str = "\
-dusq compresses videos and takes their sound out, without opening Dusk.
+/// How to use dusq, laid out in columns: a raw string, so what it holds is what dusq prints.
+pub const USAGE: &str = r#"dusq compresses videos and takes their sound out, without opening Dusk.
 
 Usage:
   dusq compress <video> [options]
   dusq extract-audio <file> [options]
 
 Options for compress:
-  -o, --output <file>    where to write; by default \"<name> compressed.mp4\" beside the video
+  -o, --output <file>    where to write; by default "<name> compressed.mp4" beside the video
       --quality <q>      high, medium, small, or 0 to 100 (default: medium)
       --size <size>      a file size to aim at instead, such as 25MB, 800KB or 1.5GB; the
                          picture size and bitrate follow from it
@@ -73,13 +72,13 @@ Options for compress:
       --overwrite        replace the output file if it exists
 
 Options for extract-audio:
-  -o, --output <file>    where to write; by default \"<name>.mp3\" beside the file
+  -o, --output <file>    where to write; by default "<name>.mp3" beside the file
       --format <f>       mp3, aac, opus or wav (default: mp3, or the output's extension)
       --overwrite        replace the output file if it exists
 
   -h, --help             show this
   -V, --version          show dusq's version
-";
+"#;
 
 /// Reads the command line, `args` without the program's name; a message saying what is
 /// wrong when it cannot.
