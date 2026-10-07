@@ -19,9 +19,11 @@ export global Status {
 
 // Whether a dialog is open in this window: while one is, only the dialog's controls (those
 // marked `in-dialog`) take the keyboard, so Tab stays in the dialog and Enter never presses a
-// button behind it. Each window has its own.
+// button behind it. A question shows over any dialog, and while it is open only its own
+// buttons (`in-question`) take the keyboard. Each window has its own.
 export global Modal {
     in-out property <bool> open;
+    in-out property <bool> question;
 }
 
 // A button. One primary button per view; destructive ones are outlined in alert.
@@ -30,8 +32,9 @@ export component ToolButton inherits Rectangle {
     in property <bool> enabled: true;
     in property <bool> primary;
     in property <bool> destructive;
-    // Part of a dialog (see `Modal`).
+    // Part of a dialog, or of a question (see `Modal`).
     in property <bool> in-dialog;
+    in property <bool> in-question;
     callback clicked;
 
     height: Theme.control-height;
@@ -58,7 +61,7 @@ export component ToolButton inherits Rectangle {
 
     // Space or Enter presses it.
     focus := FocusScope {
-        enabled: root.enabled && (root.in-dialog || !Modal.open);
+        enabled: root.enabled && (Modal.question ? root.in-question : root.in-dialog || !Modal.open);
         focus-on-click: false;
         key-pressed(event) => {
             if event.text == Key.Space || event.text == Key.Return {
@@ -111,7 +114,7 @@ export component IconToggle inherits Rectangle {
 
     // Space or Enter turns it.
     focus := FocusScope {
-        enabled: root.in-dialog || !Modal.open;
+        enabled: !Modal.question && (root.in-dialog || !Modal.open);
         focus-on-click: false;
         key-pressed(event) => {
             if event.text == Key.Space || event.text == Key.Return {
@@ -156,7 +159,7 @@ export component Switch inherits Rectangle {
 
     // Space or Enter flips it.
     focus := FocusScope {
-        enabled: root.enabled && (root.in-dialog || !Modal.open);
+        enabled: root.enabled && !Modal.question && (root.in-dialog || !Modal.open);
         focus-on-click: false;
         key-pressed(event) => {
             if event.text == Key.Space || event.text == Key.Return {
@@ -193,7 +196,7 @@ export component Segmented inherits Rectangle {
 
     // Left and Right choose the option beside the chosen one, staying at either end.
     focus := FocusScope {
-        enabled: root.enabled && (root.in-dialog || !Modal.open);
+        enabled: root.enabled && !Modal.question && (root.in-dialog || !Modal.open);
         focus-on-click: false;
         key-pressed(event) => {
             if event.text == Key.LeftArrow {
@@ -269,7 +272,7 @@ export component Slider inherits Rectangle {
     }
 
     focus := FocusScope {
-        enabled: root.enabled && (root.in-dialog || !Modal.open);
+        enabled: root.enabled && !Modal.question && (root.in-dialog || !Modal.open);
         focus-on-click: false;
         key-pressed(event) => {
             if event.text == Key.LeftArrow || event.text == Key.DownArrow {
@@ -408,7 +411,7 @@ export component NumberField inherits Rectangle {
 
         input := TextInput {
             text: root.value;
-            enabled: root.enabled && (root.in-dialog || !Modal.open);
+            enabled: root.enabled && !Modal.question && (root.in-dialog || !Modal.open);
             color: root.enabled ? Theme.text-1 : Theme.text-3;
             selection-background-color: Theme.primary;
             font-family: Theme.font-numeric;
@@ -501,7 +504,7 @@ export component SearchField inherits Rectangle {
         padding-right: Theme.space-2;
 
         input := TextInput {
-            enabled: root.in-dialog || !Modal.open;
+            enabled: !Modal.question && (root.in-dialog || !Modal.open);
             color: Theme.text-1;
             selection-background-color: Theme.primary;
             vertical-alignment: center;

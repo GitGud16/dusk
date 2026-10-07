@@ -70,7 +70,7 @@ export component Prompt inherits Rectangle {
             spacing: Theme.space-2;
 
             for answer[index] in root.answers: ToolButton {
-                in-dialog: true;
+                in-question: true;
                 text: answer;
                 primary: index == 0 && index != root.destructive;
                 destructive: index == root.destructive;

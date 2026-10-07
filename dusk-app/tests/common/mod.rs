@@ -33,6 +33,7 @@ const WM_KEYUP: u32 = 0x0101;
 const WM_CHAR: u32 = 0x0102;
 
 /// Virtual-key codes of the named keys the tests press.
+pub const VK_TAB: u32 = 0x09;
 pub const VK_RETURN: u32 = 0x0D;
 pub const VK_ESCAPE: u32 = 0x1B;
 pub const VK_END: u32 = 0x23;

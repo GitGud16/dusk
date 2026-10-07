@@ -376,6 +376,11 @@ export component MainWindow inherits Window {
     // Whether a dialog is open over the window: only its controls take the keyboard then (see
     // `Modal`), and the keys go back to the shortcuts whenever one opens or closes.
     property <bool> modal-open: root.export-open || root.compress-open || root.prompt-open || root.sequence-settings-open || root.shortcuts-open || root.settings-open || root.about-open || root.missing-open;
+    // A question that opens over a dialog takes the keys from the dialog's controls.
+    changed prompt-open => {
+        Modal.question = root.prompt-open;
+        keys.focus();
+    }
     changed modal-open => {
         Modal.open = root.modal-open;
         if root.shortcuts-open {

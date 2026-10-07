@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use dusk_core::{Frame, Project, import};
 
 use common::{
-    VK_ESCAPE, VK_RETURN, close, menu, press, sample, start, state_dir, type_key,
+    VK_ESCAPE, VK_RETURN, VK_TAB, close, menu, press, sample, start, state_dir, type_key,
     wait_for_clean_exit, wait_for_title, wait_for_window,
 };
 
@@ -60,4 +60,37 @@ fn the_question_closing_asks_comes_before_the_missing_media_list() {
     let saved = dusk_core::file::from_json(&text, &project).expect("a project Dusk can open");
     let first = saved.sequence().tracks()[0].clips()[0].clone();
     assert!(!first.enabled, "the edit was saved");
+}
+
+#[test]
+fn tab_stays_in_the_question_over_a_dialog() {
+    let state = state_dir("dialogs-tab");
+    let project = project_with_a_missing_file(&state, "tab");
+    let mut dusk = start(&[project.as_os_str()], &state);
+    let window = wait_for_window(&mut dusk);
+    wait_for_title(window, "the project did not open", |title| {
+        title == "tab — Dusk"
+    });
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+    press(window, VK_ESCAPE, None);
+    type_key(window, 'd');
+    type_key(window, 'e');
+    wait_for_title(window, "the edit left no unsaved changes", |title| {
+        title.contains('*')
+    });
+    menu(window, "Find missing media…");
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+    close(window);
+    // Tab goes to the question's first answer, Save, not to the list's Find… behind it,
+    // which would ask for a file instead.
+    press(window, VK_TAB, None);
+    press(window, VK_RETURN, None);
+    wait_for_clean_exit(&mut dusk);
+
+    let text = std::fs::read_to_string(&project).expect("read the saved project");
+    let saved = dusk_core::file::from_json(&text, &project).expect("a project Dusk can open");
+    assert!(
+        !saved.sequence().tracks()[0].clips()[0].enabled,
+        "the question's Save was pressed"
+    );
 }
