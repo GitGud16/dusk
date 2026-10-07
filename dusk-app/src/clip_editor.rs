@@ -783,7 +783,14 @@ impl App {
             | Action::Export
             | Action::CompressVideo
             | Action::CancelExport
-            | Action::Quit => self.act(action),
+            | Action::Quit => {
+                // The main window's dialog is about the project as it is; only Quit goes on.
+                if self.main_dialog_open() && !matches!(action, Action::Quit) {
+                    self.editor_say("Finish with the dialog in the main window first.");
+                } else {
+                    self.act(action);
+                }
+            }
             Action::Split
             | Action::Delete
             | Action::RippleDelete
