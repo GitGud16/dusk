@@ -101,6 +101,14 @@ def text(data):
     return data.decode("utf-8", errors="replace")
 
 
+def command_failed(error):
+    """What to say of a program that failed: git's errors come as bytes, cargo's as text."""
+    stderr = error.stderr or ""
+    if isinstance(stderr, bytes):
+        stderr = text(stderr)
+    return f"{' '.join(map(str, error.cmd))} failed: {stderr.strip()}"
+
+
 def license_names(entries):
     """The license files among a folder's (name, is_folder) entries, and its license folders."""
     files = [
@@ -338,7 +346,7 @@ def main():
     except NETWORK_ERRORS as error:
         sys.exit(f"Could not fetch BtbN's build scripts for {tag}, or the Rust libraries' sources: {error}")
     except subprocess.CalledProcessError as error:
-        sys.exit(f"{' '.join(map(str, error.cmd))} failed: {text(error.stderr or b'').strip()}")
+        sys.exit(command_failed(error))
     finally:
         remove(temp)
 
