@@ -79,6 +79,12 @@ pub fn show(owner: Option<isize>, dialog: &Dialog) -> Vec<PathBuf> {
     }
 }
 
+/// Whether the file name `name` can be a file dialog filter that shows that file alone: a
+/// filter is a list of patterns parted by `;`, which a file name may hold.
+fn name_filters_alone(name: &str) -> bool {
+    !name.contains(';')
+}
+
 /// # Safety
 ///
 /// COM must be set up on the calling thread.
@@ -123,18 +129,22 @@ unsafe fn pick(owner: Option<HWND>, dialog: &Dialog) -> windows::core::Result<Ve
                         picker.SetTitle(w!("Your own ffmpeg.exe"))?;
                     }
                     Dialog::FindMedia { name, folder } => {
-                        // The file's own name first, so its folder shows it alone; the
-                        // strings live until the dialog has taken them.
+                        // The file's own name first, so its folder shows it alone, when the
+                        // name can be a filter; the strings live until the dialog has taken
+                        // them.
+                        let alone = name_filters_alone(name);
                         let name = HSTRING::from(name.as_str());
                         let title = HSTRING::from(format!("Find {name}"));
-                        picker.SetFileTypes(&[
-                            COMDLG_FILTERSPEC {
-                                pszName: PCWSTR(name.as_ptr()),
-                                pszSpec: PCWSTR(name.as_ptr()),
-                            },
-                            MEDIA[0],
-                            MEDIA[1],
-                        ])?;
+                        let own = COMDLG_FILTERSPEC {
+                            pszName: PCWSTR(name.as_ptr()),
+                            pszSpec: PCWSTR(name.as_ptr()),
+                        };
+                        let filters: Vec<COMDLG_FILTERSPEC> = alone
+                            .then_some(own)
+                            .into_iter()
+                            .chain(MEDIA.iter().copied())
+                            .collect();
+                        picker.SetFileTypes(&filters)?;
                         picker.SetFileName(&name)?;
                         picker.SetTitle(&title)?;
                         // Its old folder, when it is still there; otherwise the dialog's own.
@@ -279,5 +289,13 @@ mod tests {
         for code in [0x20, 0x61, 0x70] {
             assert_eq!(character_of(code), None);
         }
+    }
+
+    #[test]
+    fn a_missing_files_name_is_its_own_filter_unless_it_holds_a_semicolon() {
+        assert!(name_filters_alone("beach.mp4"));
+        assert!(name_filters_alone("day 1 (final).MOV"));
+        // A filter's patterns are parted by ";", so "a;b.mp4" would show files "a" and "b.mp4".
+        assert!(!name_filters_alone("a;b.mp4"));
     }
 }
