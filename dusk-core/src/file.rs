@@ -34,11 +34,21 @@ pub enum FileError {
         "the project file is in format version {0}, which this Dusk cannot open; a newer Dusk may"
     )]
     Version(u64),
-    /// The file breaks a timeline rule.
+    /// The file breaks a timeline rule. The rule's own advice is left out: a project that
+    /// does not open cannot be trimmed.
     #[error(
-        "the project file breaks a timeline rule ({0}); if it was changed by hand, undo that change, or open another copy of it"
+        "the project file breaks a timeline rule ({}); if it was changed by hand, undo that change, or open another copy of it",
+        .0.what()
     )]
     Invalid(#[from] Rejection),
+}
+
+impl FileError {
+    /// What is wrong with the file without what to do about it, for a file the user cannot
+    /// change or find another copy of, such as an autosave.
+    pub fn what(&self) -> String {
+        crate::command::without_advice(self.to_string())
+    }
 }
 
 /// The text of `project` saved as the project file `file`. Media paths are expected to be
@@ -931,6 +941,39 @@ mod tests {
             Err(FileError::Invalid(rejection)) => rejection,
             other => panic!("expected a broken timeline rule, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn a_refused_file_says_what_broke_without_the_advice_meant_for_an_edit() {
+        // "Trim it" or "crop less" cannot be done in a project that does not open.
+        let refused = FileError::Invalid(Rejection::SourceRange(ClipId(4))).to_string();
+        assert_eq!(
+            refused,
+            "the project file breaks a timeline rule (the clip reaches outside its source file); \
+             if it was changed by hand, undo that change, or open another copy of it"
+        );
+        let refused = FileError::Invalid(Rejection::Crop(ClipId(4))).to_string();
+        assert!(!refused.contains("crop less"), "{refused}");
+    }
+
+    #[test]
+    fn what_is_wrong_with_a_file_is_said_without_what_to_do() {
+        // For an autosave, which the user cannot change or find another copy of.
+        let invalid = FileError::Invalid(Rejection::SourceRange(ClipId(4)));
+        assert_eq!(
+            invalid.what(),
+            "the project file breaks a timeline rule (the clip reaches outside its source file)"
+        );
+        // What the JSON reader says may hold a "; " of its own.
+        let damaged = FileError::Unreadable("expected `,`; found `}` at line 3".into());
+        assert_eq!(
+            damaged.what(),
+            "the project file is damaged or is not a Dusk project (expected `,`; found `}` at line 3)"
+        );
+        assert_eq!(
+            FileError::Version(2).what(),
+            "the project file is in format version 2, which this Dusk cannot open"
+        );
     }
 
     #[test]

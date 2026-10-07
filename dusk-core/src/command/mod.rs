@@ -376,7 +376,7 @@ pub enum Rejection {
     /// No clip lies under the playhead on an unlocked track.
     #[error("move the playhead over a clip on an unlocked track to split it")]
     NothingToSplit,
-
+    /// The clip editor's link group was deleted or unlinked in the timeline.
     #[error("the clip was deleted or unlinked in the timeline; open it in the clip editor again")]
     GroupChanged,
     /// The sequence size is outside what Dusk supports.
@@ -408,6 +408,23 @@ pub enum Rejection {
         "a clip on another track overlaps the deleted range; lock that track or use plain delete"
     )]
     RippleBlocked(TrackId),
+}
+
+impl Rejection {
+    /// What went wrong without what to do about it, for where that advice cannot be
+    /// followed, such as a project file that does not open.
+    pub fn what(&self) -> String {
+        without_advice(self.to_string())
+    }
+}
+
+/// `message` without the advice that ends it after its last `; `, as messages that say what
+/// happened and what to do are written.
+pub(crate) fn without_advice(message: String) -> String {
+    match message.rsplit_once("; ") {
+        Some((what, _)) => what.to_owned(),
+        None => message,
+    }
 }
 
 /// Something a command did beyond what was asked.

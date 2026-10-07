@@ -525,7 +525,7 @@ impl App {
         self.files.run(move || {
             let read = std::fs::read_to_string(&leftover.autosave)
                 .map_err(|error| error.to_string())
-                .and_then(|text| from_json(&text, &base).map_err(|error| error.to_string()));
+                .and_then(|text| from_json(&text, &base).map_err(|error| error.what()));
             let project = leftover.project.clone();
             // The project now lives in this session; the old one's files go.
             if read.is_ok() {
@@ -546,10 +546,7 @@ impl App {
                 self.refresh_title();
                 self.say("Recovered. Save to keep it.");
             }
-            Err(error) => self.fail(&format!(
-                "Could not recover the autosave: {} Open the project's last saved file instead.",
-                sentence(&error)
-            )),
+            Err(error) => self.fail(&recovery_failed(&error, path.is_some())),
         }
     }
 
@@ -563,11 +560,51 @@ impl App {
     }
 }
 
+/// What to say when an autosave could not be read (`what` says why, without advice, since
+/// the user can neither change it nor find another copy of it): open the project's file,
+/// when it was `saved` as one.
+fn recovery_failed(what: &str, saved: bool) -> String {
+    let instead = if saved {
+        "Open the project's last saved file instead."
+    } else {
+        "The project was never saved, so no other file holds its work."
+    };
+    format!(
+        "Could not recover the autosave: {} {instead}",
+        sentence(what)
+    )
+}
+
 /// `duration` in whole minutes, for messages.
 fn minutes(duration: Duration) -> String {
     match duration.as_secs() / 60 {
         0 => "less than a minute".to_owned(),
         1 => "a minute".to_owned(),
         minutes => format!("{minutes} minutes"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_failed_recovery_points_a_saved_project_at_its_file() {
+        let what =
+            "the project file breaks a timeline rule (the clip reaches outside its source file)";
+        assert_eq!(
+            recovery_failed(what, true),
+            "Could not recover the autosave: The project file breaks a timeline rule (the clip \
+             reaches outside its source file). Open the project's last saved file instead."
+        );
+    }
+
+    #[test]
+    fn a_failed_recovery_of_an_untitled_project_has_no_file_to_point_at() {
+        assert_eq!(
+            recovery_failed("access is denied. (os error 5)", false),
+            "Could not recover the autosave: Access is denied. (os error 5). The project was \
+             never saved, so no other file holds its work."
+        );
     }
 }

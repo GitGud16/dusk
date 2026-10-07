@@ -84,13 +84,13 @@ impl MissingDialog {
     }
 }
 
-/// A file Dusk read for a missing media file: what it holds, or why it could not be read.
+/// A file Dusk read for a missing media file, and what it holds when Dusk could read it.
 pub struct Found {
     pub media: MediaId,
     /// Where the project said the media was when its file was looked for.
     pub was: PathBuf,
     pub path: PathBuf,
-    pub info: Result<MediaInfo, String>,
+    pub info: Option<MediaInfo>,
 }
 
 /// What finding a file came to: the edit that relinks the media it fits, and what to say.
@@ -238,14 +238,12 @@ pub fn relink(project: &Project, found: Vec<Found>) -> Relinked {
              used, or a copy of it."
         ));
     }
-    let info = match picked.info {
-        Ok(info) => info,
-        Err(error) => {
-            return failed(format!(
-                "Dusk could not read {name}: {error}. Pick the file the project used, or a copy \
-                 of it."
-            ));
-        }
+    // Why it could not be read does not matter here: its reader's advice (convert it, import
+    // something else) is not what a find needs, which is the file the project used.
+    let Some(info) = picked.info else {
+        return failed(format!(
+            "Dusk could not read {name}; pick the file the project used, or a copy of it."
+        ));
     };
     // Each relink is tried on a copy, after the ones before it, as the step will apply them.
     let mut scratch = project.clone();
@@ -255,7 +253,7 @@ pub fn relink(project: &Project, found: Vec<Found>) -> Relinked {
     }
     let (mut commands, mut relinked, mut misfits) = (vec![first], vec![picked.media], 0);
     for other in found.filter(|other| unchanged(other) && !used(other)) {
-        let Ok(info) = other.info else {
+        let Some(info) = other.info else {
             misfits += 1;
             continue;
         };
@@ -486,7 +484,7 @@ impl App {
         let spawned = std::thread::Builder::new()
             .name("dusk relink".to_owned())
             .spawn(move || {
-                let read = |path: &Path| media_info(path).map_err(|error| error.to_string());
+                let read = |path: &Path| media_info(path).ok();
                 let Search { was, others, taken } = search;
                 let mut found = vec![Found {
                     media,
@@ -721,7 +719,7 @@ mod tests {
     }
 
     /// What was read for `media`, still named as the project names it.
-    fn found(media: MediaId, path: &str, info: Result<MediaInfo, String>) -> Found {
+    fn found(media: MediaId, path: &str, info: Option<MediaInfo>) -> Found {
         let (project, _, _) = project();
         Found {
             media,
@@ -834,7 +832,7 @@ mod tests {
         // hills.mp4 is where the project says; picked for beach.mp4 it would play twice.
         let relinked = relink(
             &project,
-            vec![found(beach, "E:/trip/hills.mp4", Ok(info(10)))],
+            vec![found(beach, "E:/trip/hills.mp4", Some(info(10)))],
         );
         assert!(relinked.command.is_none());
         assert_eq!(relinked.kind, StatusKind::Error);
@@ -849,11 +847,11 @@ mod tests {
     fn a_media_that_changed_while_its_file_was_read_is_left_alone() {
         // Another project was opened meanwhile, whose media has the same id.
         let (project, beach, hills) = project();
-        let mut asked = found(beach, "F:/trip/beach.mp4", Ok(info(10)));
+        let mut asked = found(beach, "F:/trip/beach.mp4", Some(info(10)));
         asked.was = "E:/other project/beach.mp4".into();
         let relinked = relink(
             &project,
-            vec![asked, found(hills, "F:/trip/hills.mp4", Ok(info(10)))],
+            vec![asked, found(hills, "F:/trip/hills.mp4", Some(info(10)))],
         );
         assert!(relinked.command.is_none());
         assert_eq!(relinked.kind, StatusKind::Warning);
@@ -863,11 +861,11 @@ mod tests {
              it again."
         );
         // A file beside it whose media changed meanwhile is left too.
-        let mut beside = found(hills, "F:/trip/hills.mp4", Ok(info(10)));
+        let mut beside = found(hills, "F:/trip/hills.mp4", Some(info(10)));
         beside.was = "E:/other project/hills.mp4".into();
         let relinked = relink(
             &project,
-            vec![found(beach, "F:/trip/beach.mp4", Ok(info(10))), beside],
+            vec![found(beach, "F:/trip/beach.mp4", Some(info(10))), beside],
         );
         assert_eq!(relinked.relinked, [beach]);
         assert_eq!(relinked.message, "Found beach.mp4.");
@@ -967,8 +965,8 @@ mod tests {
         let relinked = relink(
             &project,
             vec![
-                found(beach, "F:/trip/beach.mp4", Ok(info(10))),
-                found(hills, "F:/trip/hills.mp4", Ok(info(10))),
+                found(beach, "F:/trip/beach.mp4", Some(info(10))),
+                found(hills, "F:/trip/hills.mp4", Some(info(10))),
             ],
         );
         assert_eq!(relinked.relinked, [beach, hills]);
@@ -994,9 +992,9 @@ mod tests {
         let relinked = relink(
             &project,
             vec![
-                found(beach, "F:/trip/beach.mp4", Ok(info(10))),
+                found(beach, "F:/trip/beach.mp4", Some(info(10))),
                 // Shorter than its clip.
-                found(hills, "F:/trip/hills.mp4", Ok(info(2))),
+                found(hills, "F:/trip/hills.mp4", Some(info(2))),
             ],
         );
         assert_eq!(relinked.relinked, [beach]);
@@ -1014,8 +1012,8 @@ mod tests {
         let relinked = relink(
             &project,
             vec![
-                found(beach, "F:/trip/beach.mp4", Ok(info(2))),
-                found(hills, "F:/trip/hills.mp4", Ok(info(10))),
+                found(beach, "F:/trip/beach.mp4", Some(info(2))),
+                found(hills, "F:/trip/hills.mp4", Some(info(10))),
             ],
         );
         assert!(relinked.command.is_none() && relinked.relinked.is_empty());
@@ -1028,22 +1026,16 @@ mod tests {
     }
 
     #[test]
-    fn a_picked_file_dusk_cannot_read_says_why() {
+    fn a_picked_file_dusk_cannot_read_asks_only_for_the_right_file() {
+        // The reader's own advice (convert it, import something else) is not what a find
+        // needs: the file the project used.
         let (project, beach, _) = project();
-        let relinked = relink(
-            &project,
-            vec![found(
-                beach,
-                "F:/trip/beach.mp4",
-                Err("it is not a media file".into()),
-            )],
-        );
+        let relinked = relink(&project, vec![found(beach, "F:/trip/beach.mp4", None)]);
         assert!(relinked.command.is_none());
         assert_eq!(relinked.kind, StatusKind::Error);
         assert_eq!(
             relinked.message,
-            "Dusk could not read beach.mp4: it is not a media file. Pick the file the project \
-             used, or a copy of it."
+            "Dusk could not read beach.mp4; pick the file the project used, or a copy of it."
         );
     }
 }
