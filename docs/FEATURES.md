@@ -15,6 +15,7 @@ Written as user stories. **MVP** is what the first usable version must do. **Lat
 - The sequence takes its frame rate and size from the first video clip I add (it asks me to match); I can change both later in Sequence settings.
 - A clip that doesn't match the sequence is fitted with bars by default; I can switch it to fill (crop to cover).
 - I can place, move, trim the ends of, and split clips at the playhead.
+- Media I drag onto an empty timeline starts at the beginning wherever I let go, so my first clip has no black before it; once the timeline has clips, it starts where I let go.
 - I can delete a clip with or without ripple (closing the gap across all unlocked tracks).
 - Linked video and audio move, trim, split and delete together; Alt+Delete removes just one. I can lock or mute a track.
 - Rotated phone video shows upright, and portrait clips get bars instead of stretching.
