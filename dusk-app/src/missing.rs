@@ -2,7 +2,7 @@
 //! them, and finding one relinks it, with the other missing files that lie beside it, as one
 //! undoable edit. What is found and how it is said is worked out here, apart from the window.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
@@ -13,7 +13,7 @@ use dusk_core::{Command, MediaId, MediaInfo, Project, RelinkMedia};
 use dusk_engine::{EngineError, media_info};
 use slint::{ComponentHandle, SharedString, VecModel};
 
-use crate::app::{App, sentence, with_app};
+use crate::app::{App, file_name, sentence, with_app};
 use crate::platform::Dialog;
 use crate::shortcuts::Action;
 use crate::{MissingView, StatusKind};
@@ -160,37 +160,49 @@ pub fn same_names(
         path.file_name()
             .map(|name| name.to_string_lossy().to_lowercase())
     };
-    let shared = |name: &String| {
-        wanted
-            .iter()
-            .filter(|(_, was)| lowercase(was).as_ref() == Some(name))
-            .count()
-            > 1
-    };
+    // Each looked up once: how many of `wanted` have a name, the files of each name in order,
+    // and the files taken, as the system compares them.
+    let mut named: HashMap<String, usize> = HashMap::new();
+    for name in wanted.iter().filter_map(|(_, was)| lowercase(was)) {
+        *named.entry(name).or_default() += 1;
+    }
+    let mut files_named: HashMap<String, Vec<&PathBuf>> = HashMap::new();
+    for file in files {
+        if let Some(name) = lowercase(file) {
+            files_named.entry(name).or_default().push(file);
+        }
+    }
+    let taken: HashSet<Vec<String>> = taken.iter().map(|path| path_key(path)).collect();
     wanted
         .iter()
         .filter_map(|(media, was)| {
-            let name = lowercase(was).filter(|name| !shared(name))?;
-            let file = files.iter().find(|file| {
-                lowercase(file).as_ref() == Some(&name)
-                    && !taken.iter().any(|used| same_path(used, file))
-            })?;
-            Some((*media, was.clone(), file.clone()))
+            let name = lowercase(was).filter(|name| named.get(name) == Some(&1))?;
+            let file = files_named
+                .get(&name)?
+                .iter()
+                .find(|file| !taken.contains(&path_key(file)))?;
+            Some((*media, was.clone(), (*file).clone()))
         })
         .collect()
 }
 
-/// Whether `a` and `b` name the same file: Windows' file names ignore case.
+/// `path` as the system compares file names, part by part: Windows' ignore case.
+fn path_key(path: &Path) -> Vec<String> {
+    path.components()
+        .map(|part| {
+            let part = part.as_os_str().to_string_lossy();
+            if cfg!(windows) {
+                part.to_lowercase()
+            } else {
+                part.into_owned()
+            }
+        })
+        .collect()
+}
+
+/// Whether `a` and `b` name the same file.
 fn same_path(a: &Path, b: &Path) -> bool {
-    if !cfg!(windows) {
-        return a == b;
-    }
-    let parts = |path: &Path| -> Vec<String> {
-        path.components()
-            .map(|part| part.as_os_str().to_string_lossy().to_lowercase())
-            .collect()
-    };
-    parts(a) == parts(b)
+    path_key(a) == path_key(b)
 }
 
 /// Relinks what was found for a missing media file: `found` starts with the file picked for
@@ -215,11 +227,18 @@ pub fn relink(project: &Project, found: Vec<Found>) -> Relinked {
             .media_ref(found.media)
             .is_some_and(|media| media.path == found.was)
     };
+    // The media of each file, looked up once a file found.
+    let mut users: HashMap<Vec<String>, Vec<MediaId>> = HashMap::new();
+    for media in project.media() {
+        users
+            .entry(path_key(&media.path))
+            .or_default()
+            .push(media.id);
+    }
     let used = |found: &Found| {
-        project
-            .media()
-            .iter()
-            .any(|media| media.id != found.media && same_path(&media.path, &found.path))
+        users
+            .get(&path_key(&found.path))
+            .is_some_and(|ids| ids.iter().any(|id| *id != found.media))
     };
     if !unchanged(&picked) {
         return Relinked {
@@ -674,11 +693,6 @@ pub fn gone_message(project: &Project, path: &Path, hint: &str) -> Option<String
         "{} cannot be found, so its clips are black and silent; {hint}.",
         file_name(&media.path)
     ))
-}
-
-fn file_name(path: &Path) -> String {
-    path.file_name()
-        .map_or_else(String::new, |name| name.to_string_lossy().into_owned())
 }
 
 #[cfg(test)]
