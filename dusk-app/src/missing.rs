@@ -40,8 +40,12 @@ pub enum Ask {
 #[derive(Debug, Default)]
 pub struct MediaChecks {
     count: u64,
+    /// The newest check done.
+    done: u64,
     /// What the check under way is to do.
     pending: Ask,
+    /// Whether a check is wanted after the one under way, which may have looked too early.
+    again: bool,
 }
 
 impl MediaChecks {
@@ -49,6 +53,7 @@ impl MediaChecks {
     /// or what the overtaken check was to do when `ask` asks nothing.
     pub fn start(&mut self, ask: Ask) -> (u64, Ask) {
         self.count += 1;
+        self.again = false;
         if ask != Ask::No {
             self.pending = ask;
         }
@@ -59,9 +64,26 @@ impl MediaChecks {
     pub fn finish(&mut self, check: u64) -> bool {
         let newest = check == self.count;
         if newest {
+            self.done = check;
             self.pending = Ask::No;
         }
         newest
+    }
+
+    /// A check is wanted for something that just happened (the engine found a file gone):
+    /// true when none is under way, so one is to start now; otherwise one more follows the
+    /// check under way, however often this is asked meanwhile.
+    pub fn want(&mut self) -> bool {
+        if self.done == self.count {
+            return true;
+        }
+        self.again = true;
+        false
+    }
+
+    /// Whether a check was wanted while the one just done ran; it is then to start.
+    pub fn take_again(&mut self) -> bool {
+        std::mem::take(&mut self.again)
     }
 }
 
@@ -384,6 +406,10 @@ impl App {
             Ask::Asked => self.list_missing(),
         }
         self.fit_missing_dialog();
+        // The engine found a file gone while this check ran, which may have looked before.
+        if self.media_checks.take_again() {
+            self.check_media(Ask::No);
+        }
     }
 
     /// Opens the list of missing files, or, while a question or another dialog is open, once
@@ -667,7 +693,9 @@ impl App {
                 .media()
                 .iter()
                 .any(|media| media.path == path && self.missing.contains(&media.id));
-            if !known {
+            // One check at a time: a drive that went away keeps each waiting, while the
+            // engine reports the file again at every frame it cannot show.
+            if !known && self.media_checks.want() {
                 self.check_media(Ask::No);
             }
             return self.fail(&message);
@@ -907,6 +935,28 @@ mod tests {
         assert_eq!(dialog.picked, 1);
         // Every file is back: the list closes.
         assert!(!dialog.fit(0));
+    }
+
+    #[test]
+    fn reports_while_a_check_is_under_way_ask_for_one_more_after_it() {
+        // A drive that went away keeps a check waiting, while the engine reports the file
+        // gone again and again: one check runs at a time, and one more follows it.
+        let mut checks = MediaChecks::default();
+        assert!(checks.want());
+        let (first, _) = checks.start(Ask::No);
+        assert!(!checks.want());
+        assert!(!checks.want());
+        assert!(checks.finish(first));
+        assert!(checks.take_again());
+        assert!(!checks.take_again());
+        // A check that starts after the reports looks after them.
+        let (second, _) = checks.start(Ask::No);
+        assert!(!checks.want());
+        let (third, _) = checks.start(Ask::Asked);
+        assert!(!checks.finish(second));
+        assert!(checks.finish(third));
+        assert!(!checks.take_again());
+        assert!(checks.want());
     }
 
     #[test]
