@@ -18,15 +18,23 @@ unsafe extern "system" {
     fn GetWindowTextW(window: isize, text: *mut u16, capacity: i32) -> i32;
     fn PostMessageW(window: isize, message: u32, wparam: usize, lparam: isize) -> i32;
     fn MapVirtualKeyW(code: u32, map_type: u32) -> u32;
+    fn GetMenu(window: isize) -> isize;
+    fn GetMenuItemCount(menu: isize) -> i32;
+    fn GetSubMenu(menu: isize, position: i32) -> isize;
+    fn GetMenuItemID(menu: isize, position: i32) -> u32;
+    fn GetMenuStringW(menu: isize, item: u32, text: *mut u16, capacity: i32, flags: u32) -> i32;
 }
 
 const WM_CLOSE: u32 = 0x0010;
+const WM_COMMAND: u32 = 0x0111;
+const MF_BYPOSITION: u32 = 0x0400;
 const WM_KEYDOWN: u32 = 0x0100;
 const WM_KEYUP: u32 = 0x0101;
 const WM_CHAR: u32 = 0x0102;
 
 /// Virtual-key codes of the named keys the tests press.
 pub const VK_RETURN: u32 = 0x0D;
+pub const VK_ESCAPE: u32 = 0x1B;
 pub const VK_END: u32 = 0x23;
 pub const VK_HOME: u32 = 0x24;
 pub const VK_LEFT: u32 = 0x25;
@@ -103,6 +111,48 @@ fn main_window_of(process_id: u32) -> Option<isize> {
 pub fn close(window: isize) {
     // SAFETY: posting a message to a window handle is safe even if the window is gone.
     unsafe { PostMessageW(window, WM_CLOSE, 0, 0) };
+}
+
+/// Chooses the menu item of `window` whose text, without its keys, is `item`, as a click on
+/// it does.
+pub fn menu(window: isize, item: &str) {
+    fn find(menu: isize, item: &str) -> Option<u32> {
+        // SAFETY: plain Win32 queries on a menu handle, writing into a local buffer.
+        let count = unsafe { GetMenuItemCount(menu) };
+        for position in 0..count {
+            let sub = unsafe { GetSubMenu(menu, position) };
+            if sub != 0 {
+                if let Some(id) = find(sub, item) {
+                    return Some(id);
+                }
+                continue;
+            }
+            let mut text = [0u16; 256];
+            // SAFETY: as above; at most `text.len()` characters are written.
+            let length = unsafe {
+                GetMenuStringW(
+                    menu,
+                    position as u32,
+                    text.as_mut_ptr(),
+                    text.len() as i32,
+                    MF_BYPOSITION,
+                )
+            };
+            let text = String::from_utf16_lossy(&text[..usize::try_from(length).unwrap_or(0)]);
+            let name = text.split('\t').next().unwrap_or("").replace('&', "");
+            if name == item {
+                // SAFETY: as above.
+                return Some(unsafe { GetMenuItemID(menu, position) });
+            }
+        }
+        None
+    }
+    // SAFETY: a plain Win32 query on the window handle.
+    let bar = unsafe { GetMenu(window) };
+    let id = find(bar, item).unwrap_or_else(|| panic!("no menu item {item:?}"));
+    // SAFETY: posting a message to a window handle is safe even if the window is gone.
+    unsafe { PostMessageW(window, WM_COMMAND, id as usize, 0) };
+    sleep(Duration::from_millis(100));
 }
 
 /// Presses and lets go of the key `vk` in `window`, typing `typed` as a letter key does.

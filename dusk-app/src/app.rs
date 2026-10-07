@@ -335,6 +335,11 @@ impl App {
         if self.main_dialog_open() && crate::keymap::moves_focus(text) {
             return false;
         }
+        // A question shows over every dialog, so it takes the keys first.
+        if self.question.is_some() {
+            self.answer_with_key(text);
+            return true;
+        }
         if self.shortcut_dialog.is_some() {
             let key = crate::platform::pressed_key();
             return self.shortcut_dialog_key(text, key, ctrl, shift, alt);
@@ -343,10 +348,6 @@ impl App {
             return true;
         }
         if self.compress_dialog_key(text) || self.export_dialog_key(text, false) {
-            return true;
-        }
-        if self.question.is_some() {
-            self.answer_with_key(text);
             return true;
         }
         if self.sequence_settings_open {
@@ -394,9 +395,11 @@ impl App {
             || self.missing_dialog.is_some()
     }
 
-    /// Does what a shortcut, a menu item or a button stands for.
+    /// Does what a shortcut, a menu item or a button stands for. The menu bar is the system's,
+    /// so its items still reach here while a dialog is open: then only Quit goes on, to the
+    /// question about unsaved changes, and nothing while a question is open.
     pub fn act(&mut self, action: Action) {
-        if self.question.is_some() {
+        if self.question.is_some() || (self.main_dialog_open() && !matches!(action, Action::Quit)) {
             return;
         }
         match action {

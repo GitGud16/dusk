@@ -749,16 +749,6 @@ export component MainWindow inherits Window {
             }
         }
 
-        if root.prompt-open: Prompt {
-            title: root.prompt-title;
-            message: root.prompt-message;
-            answers: root.prompt-answers;
-            destructive: root.prompt-destructive;
-            answered(index) => {
-                root.prompt-answered(index);
-            }
-        }
-
         if root.compress-open: CompressDialog {
             view: root.compress-view;
             changed(what, value) => {
@@ -877,6 +867,18 @@ export component MainWindow inherits Window {
             }
             finished => {
                 keys.focus();
+            }
+        }
+
+        // Last, so a question (closing with unsaved changes, say) shows over any dialog open
+        // at the time; it takes the keys first too.
+        if root.prompt-open: Prompt {
+            title: root.prompt-title;
+            message: root.prompt-message;
+            answers: root.prompt-answers;
+            destructive: root.prompt-destructive;
+            answered(index) => {
+                root.prompt-answered(index);
             }
         }
     }

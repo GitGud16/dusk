@@ -32,6 +32,10 @@ impl App {
 
     /// Files were dropped on the window: a project file is opened, anything else imported.
     pub fn import_dropped(&mut self, paths: Vec<PathBuf>) {
+        // A dialog or a question is about the project as it is; a drop waits for it.
+        if self.main_dialog_open() {
+            return self.say("Finish with the open dialog, then drop the files again.");
+        }
         let project = paths.iter().find(|path| {
             path.extension()
                 .is_some_and(|ext| ext.eq_ignore_ascii_case("dusk"))
