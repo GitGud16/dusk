@@ -5,7 +5,6 @@
 
 use slint::{SharedString, VecModel};
 
-use crate::ShortcutView;
 use crate::app::{App, with_app};
 use crate::keymap::{Keymap, Keys};
 use crate::settings;
@@ -127,12 +126,13 @@ impl ShortcutDialog {
 
     /// Remove keys: the picked action has none. True when the keymap changed.
     pub fn remove(&mut self, map: &mut Keymap) -> bool {
-        let Some(action) = self
-            .selected
-            .filter(|action| !map.keys_of(*action).is_empty())
-        else {
+        let Some(action) = self.selected else {
             return false;
         };
+        if map.keys_of(action).is_empty() {
+            self.note = format!("“{}” has no keys to remove.", described(action));
+            return false;
+        }
         map.set_keys(action, Vec::new());
         self.stop_capture();
         self.note = format!("“{}” has no keys now.", described(action));
@@ -145,6 +145,7 @@ impl ShortcutDialog {
             return false;
         };
         if map.keys_of(info.action) == info.keys {
+            self.note = format!("“{}” has its default keys already.", info.description);
             return false;
         }
         let losers = map.restore(info.action);
@@ -476,5 +477,21 @@ mod tests {
         assert!(dialog.restore_all(&mut map));
         assert_eq!(map, Keymap::default());
         assert!(!dialog.restore_all(&mut map));
+    }
+
+    #[test]
+    fn default_and_remove_keys_say_when_there_is_nothing_to_do() {
+        let mut map = Keymap::default();
+        let mut dialog = ShortcutDialog::open(&map);
+        dialog.search(&map, "split");
+        let split = "“Split at the playhead: the selected clip, or every clip there”";
+        assert!(!dialog.restore(&mut map));
+        assert_eq!(
+            dialog.note,
+            format!("{split} has its default keys already.")
+        );
+        assert!(dialog.remove(&mut map));
+        assert!(!dialog.remove(&mut map));
+        assert_eq!(dialog.note, format!("{split} has no keys to remove."));
     }
 }
