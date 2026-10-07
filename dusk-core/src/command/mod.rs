@@ -461,6 +461,87 @@ mod tests {
     use crate::model::TrackKind;
     use crate::time::MediaTime;
 
+    /// Every refusal, so a test sees each one's message. A new kind has to join the list: the
+    /// match below has no catch-all.
+    fn every_rejection() -> Vec<Rejection> {
+        let (track, clip, media) = (TrackId(1), ClipId(1), MediaId(1));
+        let all = vec![
+            Rejection::UnknownTrack(track),
+            Rejection::UnknownClip(clip),
+            Rejection::UnknownMedia(media),
+            Rejection::DuplicateId,
+            Rejection::TrackLocked(track),
+            Rejection::WrongTrackKind(clip),
+            Rejection::Overlap(track),
+            Rejection::SourceRange(clip),
+            Rejection::TooShort(clip),
+            Rejection::BeforeStart(clip),
+            Rejection::Speed(clip),
+            Rejection::Length(clip),
+            Rejection::LinkMismatch(clip),
+            Rejection::NotLinked(clip),
+            Rejection::NotAudio(clip),
+            Rejection::NotVideo(clip),
+            Rejection::Fades(clip),
+            Rejection::Volume(clip),
+            Rejection::Crop(clip),
+            Rejection::SplitOutside(clip),
+            Rejection::NothingToSplit,
+            Rejection::GroupChanged,
+            Rejection::Resolution,
+            Rejection::RelinkKind(media),
+            Rejection::RelinkNoSound(media),
+            Rejection::RelinkTooShort(media),
+            Rejection::RelinkCropSize(media),
+            Rejection::RippleBlocked(track),
+        ];
+        for rejection in &all {
+            match rejection {
+                Rejection::UnknownTrack(_)
+                | Rejection::UnknownClip(_)
+                | Rejection::UnknownMedia(_)
+                | Rejection::DuplicateId
+                | Rejection::TrackLocked(_)
+                | Rejection::WrongTrackKind(_)
+                | Rejection::Overlap(_)
+                | Rejection::SourceRange(_)
+                | Rejection::TooShort(_)
+                | Rejection::BeforeStart(_)
+                | Rejection::Speed(_)
+                | Rejection::Length(_)
+                | Rejection::LinkMismatch(_)
+                | Rejection::NotLinked(_)
+                | Rejection::NotAudio(_)
+                | Rejection::NotVideo(_)
+                | Rejection::Fades(_)
+                | Rejection::Volume(_)
+                | Rejection::Crop(_)
+                | Rejection::SplitOutside(_)
+                | Rejection::NothingToSplit
+                | Rejection::GroupChanged
+                | Rejection::Resolution
+                | Rejection::RelinkKind(_)
+                | Rejection::RelinkNoSound(_)
+                | Rejection::RelinkTooShort(_)
+                | Rejection::RelinkCropSize(_)
+                | Rejection::RippleBlocked(_) => {}
+            }
+        }
+        all
+    }
+
+    #[test]
+    fn every_refusal_says_what_happened_before_any_advice() {
+        // `what` cuts a message at its last "; ", where its advice starts, so what happened
+        // never holds one itself.
+        for rejection in every_rejection() {
+            let message = rejection.to_string();
+            assert!(message.matches("; ").count() <= 1, "{message}");
+            assert!(message.starts_with(&rejection.what()), "{message}");
+            assert!(!rejection.what().is_empty(), "{rejection:?}");
+        }
+    }
+
     #[test]
     fn adding_media_lists_it_once_and_reverts() {
         let empty = Project::new(fps30(), (1920, 1080));
