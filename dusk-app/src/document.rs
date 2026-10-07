@@ -5,7 +5,7 @@
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
-use dusk_core::file::{from_json, to_json};
+use dusk_core::file::{FileError, from_json, to_json};
 use dusk_core::{MediaId, Project, Rational};
 use slint::{ComponentHandle, Model};
 
@@ -523,8 +523,11 @@ impl App {
             .unwrap_or_else(|| leftover.autosave.clone());
         self.files.run(move || {
             let read = std::fs::read_to_string(&leftover.autosave)
-                .map_err(|error| error.to_string())
-                .and_then(|text| from_json(&text, &base).map_err(|error| error.what()));
+                .map_err(|error| Unrecovered {
+                    what: error.to_string(),
+                    newer: false,
+                })
+                .and_then(|text| from_json(&text, &base).map_err(Unrecovered::from));
             let project = leftover.project.clone();
             // The project now lives in this session; the old one's files go.
             if read.is_ok() {
@@ -536,7 +539,7 @@ impl App {
         });
     }
 
-    fn recovered(&mut self, path: Option<PathBuf>, read: Result<Project, String>) {
+    fn recovered(&mut self, path: Option<PathBuf>, read: Result<Project, Unrecovered>) {
         match read {
             Ok(project) => {
                 self.replace_project(project, path, crate::missing::Ask::Recovered);
@@ -559,18 +562,44 @@ impl App {
     }
 }
 
-/// What to say when an autosave could not be read (`what` says why, without advice, since
-/// the user can neither change it nor find another copy of it): open the project's file,
-/// when it was `saved` as one.
-fn recovery_failed(what: &str, saved: bool) -> String {
-    let instead = if saved {
+/// Why an autosave could not be recovered: what is wrong with it, without the advice for a
+/// file the user picked, since they can neither change an autosave nor find another copy of
+/// it; and whether a newer Dusk wrote it, which can still recover it.
+#[derive(Debug)]
+struct Unrecovered {
+    what: String,
+    newer: bool,
+}
+
+impl From<FileError> for Unrecovered {
+    fn from(error: FileError) -> Unrecovered {
+        match error {
+            // Its advice, a newer Dusk, holds for an autosave too.
+            FileError::Version(_) => Unrecovered {
+                what: error.to_string(),
+                newer: true,
+            },
+            error => Unrecovered {
+                what: error.what(),
+                newer: false,
+            },
+        }
+    }
+}
+
+/// What to say when an autosave could not be recovered: keep one a newer Dusk wrote, which
+/// stays to be offered again, or else open the project's file, when it was `saved` as one.
+fn recovery_failed(unrecovered: &Unrecovered, saved: bool) -> String {
+    let instead = if unrecovered.newer {
+        "Choose Not now when Dusk asks again, to keep it for a newer Dusk."
+    } else if saved {
         "Open the project's last saved file instead."
     } else {
         "The project was never saved, so no other file holds its work."
     };
     format!(
         "Could not recover the autosave: {} {instead}",
-        sentence(what)
+        sentence(&unrecovered.what)
     )
 }
 
@@ -589,19 +618,43 @@ mod tests {
 
     #[test]
     fn a_failed_recovery_points_a_saved_project_at_its_file() {
-        let what =
-            "the project file breaks a timeline rule (the clip reaches outside its source file)";
+        let broken = Unrecovered::from(FileError::Invalid(dusk_core::Rejection::SourceRange(
+            dusk_core::ClipId(4),
+        )));
         assert_eq!(
-            recovery_failed(what, true),
+            recovery_failed(&broken, true),
             "Could not recover the autosave: The project file breaks a timeline rule (the clip \
              reaches outside its source file). Open the project's last saved file instead."
         );
     }
 
     #[test]
+    fn an_autosave_from_a_newer_dusk_is_kept_for_it() {
+        // The autosave stays, and Dusk offers it again at its next start.
+        let newer = Unrecovered {
+            what: "the project file is in format version 2, which this Dusk cannot open; a newer \
+                   Dusk may"
+                .to_owned(),
+            newer: true,
+        };
+        assert_eq!(
+            recovery_failed(&newer, false),
+            "Could not recover the autosave: The project file is in format version 2, which \
+             this Dusk cannot open; a newer Dusk may. Choose Not now when Dusk asks again, to \
+             keep it for a newer Dusk."
+        );
+    }
+
+    #[test]
     fn a_failed_recovery_of_an_untitled_project_has_no_file_to_point_at() {
         assert_eq!(
-            recovery_failed("access is denied. (os error 5)", false),
+            recovery_failed(
+                &Unrecovered {
+                    what: "access is denied. (os error 5)".to_owned(),
+                    newer: false,
+                },
+                false
+            ),
             "Could not recover the autosave: Access is denied. (os error 5). The project was \
              never saved, so no other file holds its work."
         );
