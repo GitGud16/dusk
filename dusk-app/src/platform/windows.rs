@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use windows::Win32::Foundation::HWND;
 use windows::Win32::System::Com::{
     CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE, CoCreateInstance,
-    CoInitializeEx, CoTaskMemFree, CoUninitialize,
+    CoInitializeEx, CoTaskMemFree, CoUninitialize, IBindCtx,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetKeyboardLayout, MAPVK_VSC_TO_VK_EX, MapVirtualKeyExW,
@@ -17,7 +17,7 @@ use windows::Win32::UI::Shell::Common::COMDLG_FILTERSPEC;
 use windows::Win32::UI::Shell::{
     FILEOPENDIALOGOPTIONS, FOS_ALLOWMULTISELECT, FOS_FILEMUSTEXIST, FOS_FORCEFILESYSTEM,
     FOS_OVERWRITEPROMPT, FOS_PATHMUSTEXIST, FileOpenDialog, FileSaveDialog, IFileOpenDialog,
-    IFileSaveDialog, IShellItem, SIGDN_FILESYSPATH,
+    IFileSaveDialog, IShellItem, SHCreateItemFromParsingName, SIGDN_FILESYSPATH,
 };
 use windows::core::{HSTRING, w};
 
@@ -43,6 +43,11 @@ const MEDIA: &[COMDLG_FILTERSPEC] = &[
 const PROJECTS: &[COMDLG_FILTERSPEC] = &[COMDLG_FILTERSPEC {
     pszName: w!("Dusk projects"),
     pszSpec: w!("*.dusk"),
+}];
+
+const MP4: &[COMDLG_FILTERSPEC] = &[COMDLG_FILTERSPEC {
+    pszName: w!("MP4 video"),
+    pszSpec: w!("*.mp4"),
 }];
 
 /// Shows `dialog` owned by the window `owner` and waits for it; what was picked, or nothing.
@@ -103,16 +108,41 @@ unsafe fn pick(owner: Option<HWND>, dialog: &Dialog) -> windows::core::Result<Ve
                     .map(|index| path_of(&items.GetItemAt(index)?))
                     .collect()
             }
-            Dialog::SaveProject { suggested } => {
+            Dialog::SaveProject { .. } | Dialog::ExportClip { .. } => {
                 let picker: IFileSaveDialog =
                     CoCreateInstance(&FileSaveDialog, None, CLSCTX_INPROC_SERVER)?;
                 picker.SetOptions(FILEOPENDIALOGOPTIONS(
                     picker.GetOptions()?.0 | options(&[FOS_OVERWRITEPROMPT]).0,
                 ))?;
-                picker.SetFileTypes(PROJECTS)?;
-                picker.SetDefaultExtension(w!("dusk"))?;
-                picker.SetFileName(&HSTRING::from(suggested.as_str()))?;
-                picker.SetTitle(w!("Save project"))?;
+                match dialog {
+                    Dialog::ExportClip { suggested } => {
+                        picker.SetFileTypes(MP4)?;
+                        picker.SetDefaultExtension(w!("mp4"))?;
+                        if let Some(name) = suggested.file_name() {
+                            picker.SetFileName(&HSTRING::from(name))?;
+                        }
+                        // The folder it suggests; a folder that is gone leaves the choice to
+                        // the dialog.
+                        if let Some(folder) = suggested.parent()
+                            && let Ok(folder) = SHCreateItemFromParsingName::<_, _, IShellItem>(
+                                &HSTRING::from(folder),
+                                None::<&IBindCtx>,
+                            )
+                        {
+                            picker.SetFolder(&folder)?;
+                        }
+                        picker.SetTitle(w!("Export the clip as a file"))?;
+                    }
+                    _ => {
+                        let Dialog::SaveProject { suggested } = dialog else {
+                            return Ok(Vec::new());
+                        };
+                        picker.SetFileTypes(PROJECTS)?;
+                        picker.SetDefaultExtension(w!("dusk"))?;
+                        picker.SetFileName(&HSTRING::from(suggested.as_str()))?;
+                        picker.SetTitle(w!("Save project"))?;
+                    }
+                }
                 if picker.Show(owner).is_err() {
                     return Ok(Vec::new());
                 }

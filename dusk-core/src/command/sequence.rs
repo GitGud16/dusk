@@ -104,8 +104,8 @@ fn convert(
             }
         }
         if let ClipEdits::Audio(edits) = &mut clip.edits {
-            edits.fade_in = at_new(edits.fade_in).min(clip.length);
-            edits.fade_out = at_new(edits.fade_out).min(clip.length - edits.fade_in);
+            (edits.fade_in, edits.fade_out) = (at_new(edits.fade_in), at_new(edits.fade_out));
+            edits.fit_into(clip.length);
         }
     }
     // Each clip that kept a frame pushes every clip that started where it ended, on every

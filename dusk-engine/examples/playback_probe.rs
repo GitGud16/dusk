@@ -19,7 +19,7 @@ fn main() {
     use std::time::{Duration, Instant};
 
     use dusk_core::{Frame, Project, import};
-    use dusk_engine::{Engine, EngineEvent, EngineOptions, Gpu, media_info};
+    use dusk_engine::{Engine, EngineEvent, EngineOptions, Gpu, Preview, media_info};
 
     let mut args = std::env::args_os().skip(1);
     let path = PathBuf::from(args.next().expect("usage: playback_probe <clip> [seconds]"));
@@ -52,8 +52,8 @@ fn main() {
         .apply(&mut project)
         .expect("the clip imports");
     let end = project.sequence().end();
-    engine.set_project(Arc::new(project));
-    engine.set_preview_size((1280, 720));
+    engine.set_project(Preview::Main, Arc::new(project));
+    engine.set_preview_size(Preview::Main, (1280, 720));
 
     // Waits for the frame event of `frame`, reporting errors on the way.
     let wait_for = |frame: Frame| loop {
@@ -65,7 +65,7 @@ fn main() {
         }
     };
 
-    engine.show(Frame(0));
+    engine.show(Preview::Main, Frame(0));
     wait_for(Frame(0));
     // Decoders close after 5 s unused: what stays is the idle cost of an open project.
     std::thread::sleep(Duration::from_secs(6));
@@ -75,7 +75,7 @@ fn main() {
         end.0 as f64 * f64::from(rate.den()) / f64::from(rate.num()) - 1.0,
     ));
     let started = Instant::now();
-    engine.play(Frame(0), 1.0);
+    engine.play(Preview::Main, Frame(0), 1.0);
     let mut shown: Vec<(Instant, Frame)> = Vec::new();
     let mut peak = 0.0f64;
     let mut next_sample = started + Duration::from_secs(30);
@@ -83,7 +83,7 @@ fn main() {
         match events.recv_timeout(Duration::from_millis(100)) {
             Ok((at, EngineEvent::Frame { frame, .. })) => shown.push((at, frame)),
             Ok((_, EngineEvent::Error(error))) => eprintln!("error: {error}"),
-            Ok((_, EngineEvent::Stopped { frame })) => {
+            Ok((_, EngineEvent::Stopped { frame, .. })) => {
                 println!("stopped by itself at {frame:?}");
                 break;
             }
@@ -100,7 +100,7 @@ fn main() {
             next_sample += Duration::from_secs(30);
         }
     }
-    let stopped_at = engine.pause();
+    let stopped_at = engine.pause().map(|(_, frame)| frame);
     let during = private_mb();
     peak = peak.max(during);
     println!("at the end of playback:   {during:7.1} MB (peak sampled {peak:.1} MB)");
@@ -142,7 +142,7 @@ fn main() {
             .wrapping_add(1);
         let frame = Frame((state >> 33) as i64 % end.0.max(1));
         let asked = Instant::now();
-        engine.show(frame);
+        engine.show(Preview::Main, frame);
         latencies.push((wait_for(frame) - asked).as_secs_f64() * 1000.0);
     }
     latencies.sort_by(f64::total_cmp);
@@ -157,7 +157,7 @@ fn main() {
     let mut answered = 0;
     let first = Frame(end.0 / 2);
     for step in 0..60 {
-        engine.scrub(first + Frame(step));
+        engine.scrub(Preview::Main, first + Frame(step));
         std::thread::sleep(Duration::from_millis(16));
         while let Ok((_, event)) = events.try_recv() {
             if matches!(event, EngineEvent::Frame { .. }) {
@@ -166,7 +166,7 @@ fn main() {
         }
     }
     let last = first + Frame(59);
-    engine.show(last);
+    engine.show(Preview::Main, last);
     let settled = wait_for(last);
     println!(
         "drag over 60 frames in {:.0} ms: {answered} frames drawn on the way, the last one \

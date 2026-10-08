@@ -27,21 +27,46 @@ use crate::{EngineError, ExportEvent};
 /// pool").
 pub const DECODER_IDLE: Duration = Duration::from_secs(5);
 
+/// Which of the two previews a request or an event is about (docs/ARCHITECTURE.md,
+/// "Pop-out clip editor"). Each shows a project of its own, through one frame cache and one
+/// decoder pool, and only one plays at a time.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Preview {
+    /// The main window's: the whole sequence.
+    Main,
+    /// The clip editor's: one clip and its linked partner, as drafted.
+    ClipEditor,
+}
+
+impl Preview {
+    /// Both previews, in the order of [`Preview::index`].
+    pub const ALL: [Preview; 2] = [Preview::Main, Preview::ClipEditor];
+
+    /// The preview's place in [`Preview::ALL`], for keeping something per preview.
+    pub fn index(self) -> usize {
+        self as usize
+    }
+}
+
 /// What the engine reports. The callback runs on the engine's threads, so it should hand the
 /// event to the UI thread and return.
 #[derive(Debug)]
 pub enum EngineEvent {
-    /// The preview shows timeline frame `frame` now: the sequence's frame as large as fits in
+    /// `preview` shows timeline frame `frame` now: the sequence's frame as large as fits in
     /// the preview, black where no video clip is visible.
     Frame {
+        /// The preview drawn.
+        preview: Preview,
         /// The timeline frame.
         frame: Frame,
         /// The frame drawn, or `None` when there is nothing to show.
         texture: Option<wgpu::Texture>,
     },
-    /// Playback reached the end of the sequence (or its start, playing backwards) and
-    /// stopped there.
+    /// Playback in `preview` reached the end of its sequence (or its start, playing
+    /// backwards) and stopped there.
     Stopped {
+        /// The preview that played.
+        preview: Preview,
         /// Where the playhead stopped.
         frame: Frame,
     },
@@ -85,9 +110,22 @@ pub(crate) struct Transport {
     pub generation: u64,
     /// The playback factor while playing (negative backwards); `None` while stopped.
     pub playing: Option<f64>,
-    /// The sequence's frame rate and end.
-    pub rate: Rational,
-    pub end: Frame,
+    /// The preview playing, or that played last; the clock counts its sequence's time.
+    pub preview: Preview,
+    /// Each preview's sequence frame rate and end, by [`Preview::index`].
+    pub timing: [(Rational, Frame); 2],
+}
+
+impl Transport {
+    /// The frame rate of the playing preview's sequence.
+    pub fn rate(&self) -> Rational {
+        self.timing[self.preview.index()].0
+    }
+
+    /// The end of the playing preview's sequence.
+    pub fn end(&self) -> Frame {
+        self.timing[self.preview.index()].1
+    }
 }
 
 pub(crate) type SharedTransport = Arc<Mutex<Transport>>;
@@ -127,9 +165,9 @@ impl Engine {
             clock: PlaybackClock::stopped(0),
             generation: 0,
             playing: None,
+            preview: Preview::Main,
             // 30 fps, the default sequence rate, until a project arrives.
-            rate: STANDARD_RATES[4],
-            end: Frame(0),
+            timing: [(STANDARD_RATES[4], Frame(0)); 2],
         }));
         let open_decoders = Arc::new(AtomicUsize::new(0));
         let exporting = Arc::new(AtomicBool::new(false));
@@ -167,71 +205,94 @@ impl Engine {
         let _ = self.thumbnails.send(ThumbnailJob { media, path, info });
     }
 
-    /// Uses `project` from now on. The preview is not redrawn until the next request.
-    pub fn set_project(&self, project: Arc<Project>) {
+    /// Shows `project` in `preview` from now on. The preview is not redrawn until the next
+    /// request.
+    pub fn set_project(&self, preview: Preview, project: Arc<Project>) {
         {
             let mut transport = lock(&self.transport);
-            transport.rate = project.sequence().frame_rate();
-            transport.end = project.sequence().end();
+            let sequence = project.sequence();
+            transport.timing[preview.index()] = (sequence.frame_rate(), sequence.end());
         }
         // Sending fails only when a thread has ended, which happens only as the engine drops.
-        let _ = self.video.send(VideoRequest::Project(Arc::clone(&project)));
-        let _ = self.sound.send(SoundRequest::Project(project));
+        let _ = self
+            .video
+            .send(VideoRequest::Project(preview, Arc::clone(&project)));
+        let _ = self.sound.send(SoundRequest::Project(preview, project));
     }
 
-    /// Draws the preview at `size` (width, height) in pixels from now on, and redraws it.
-    pub fn set_preview_size(&self, size: (u32, u32)) {
-        let _ = self.video.send(VideoRequest::Size(size));
+    /// Draws `preview` at `size` (width, height) in pixels from now on, and redraws it.
+    pub fn set_preview_size(&self, preview: Preview, size: (u32, u32)) {
+        let _ = self.video.send(VideoRequest::Size(preview, size));
     }
 
-    /// Stops playing, if it was, and shows exactly timeline frame `frame`.
-    pub fn show(&self, frame: Frame) {
+    /// Lets go of what `preview` shows and draws with, once its window closed; playback in it
+    /// stops. Setting its project and size again brings it back.
+    pub fn close_preview(&self, preview: Preview) {
+        if self
+            .playing()
+            .is_some_and(|(playing, _)| playing == preview)
+        {
+            self.stop();
+        }
+        let _ = self.video.send(VideoRequest::Close(preview));
+        let _ = self.sound.send(SoundRequest::Close(preview));
+    }
+
+    /// Stops playing, if anything was, and shows exactly timeline frame `frame` in `preview`.
+    pub fn show(&self, preview: Preview, frame: Frame) {
         self.stop();
-        let _ = self.video.send(VideoRequest::Show(frame));
+        let _ = self.video.send(VideoRequest::Show(preview, frame));
     }
 
-    /// Stops playing, if it was, and shows timeline frame `frame` while the playhead is
-    /// dragged: the nearest cached frame at once, the exact one at most every 16 ms
-    /// (docs/ARCHITECTURE.md, "Scrubbing"). End a drag with [`show`](Self::show).
-    pub fn scrub(&self, frame: Frame) {
+    /// Stops playing, if anything was, and shows timeline frame `frame` in `preview` while
+    /// its playhead is dragged: the nearest cached frame at once, the exact one at most every
+    /// 16 ms (docs/ARCHITECTURE.md, "Scrubbing"). End a drag with [`show`](Self::show).
+    pub fn scrub(&self, preview: Preview, frame: Frame) {
         self.stop();
-        let _ = self.video.send(VideoRequest::Scrub(frame));
+        let _ = self.video.send(VideoRequest::Scrub(preview, frame));
     }
 
-    /// Plays from `from` at `factor` times normal speed, backwards when negative. Sound plays
-    /// from 0.25x to 4x forwards and from 0.25x to 2x backwards; outside that, playback is
-    /// silent. Nothing plays while an export runs.
-    pub fn play(&self, from: Frame, factor: f64) {
+    /// Plays `preview` from `from` at `factor` times normal speed, backwards when negative,
+    /// stopping playback in the other preview: one plays at a time. Sound plays from 0.25x to
+    /// 4x forwards and from 0.25x to 2x backwards; outside that, playback is silent. Nothing
+    /// plays while an export runs.
+    pub fn play(&self, preview: Preview, from: Frame, factor: f64) {
         if self.is_exporting() {
             return;
         }
         let (generation, from) = {
             let mut transport = lock(&self.transport);
             transport.generation += 1;
-            let at = frame_to_media(from, transport.rate);
+            transport.preview = preview;
+            let at = frame_to_media(from, transport.rate());
             transport.clock = PlaybackClock::stopped(at.0);
             transport.playing = Some(factor);
             (transport.generation, at)
         };
-        let _ = self.video.send(VideoRequest::Play { generation });
+        let _ = self.video.send(VideoRequest::Play {
+            preview,
+            generation,
+        });
         let _ = self.sound.send(SoundRequest::Play {
+            preview,
             generation,
             from,
             factor,
         });
     }
 
-    /// Stops playing and returns the frame it stopped at, which the preview then shows;
-    /// `None` when it was not playing.
-    pub fn pause(&self) -> Option<Frame> {
-        let frame = self.stop()?;
-        let _ = self.video.send(VideoRequest::Show(frame));
-        Some(frame)
+    /// Stops playing and returns the preview that played and the frame it stopped at, which
+    /// that preview then shows; `None` when nothing was playing.
+    pub fn pause(&self) -> Option<(Preview, Frame)> {
+        let (preview, frame) = self.stop()?;
+        let _ = self.video.send(VideoRequest::Show(preview, frame));
+        Some((preview, frame))
     }
 
-    /// The playback factor while playing, `None` while stopped.
-    pub fn playing(&self) -> Option<f64> {
-        lock(&self.transport).playing
+    /// The preview playing and its playback factor, `None` while stopped.
+    pub fn playing(&self) -> Option<(Preview, f64)> {
+        let transport = lock(&self.transport);
+        transport.playing.map(|factor| (transport.preview, factor))
     }
 
     /// How many video decoders are open; each holds memory until it is closed after
@@ -269,19 +330,21 @@ impl Engine {
         self.exporting.load(Ordering::Relaxed)
     }
 
-    /// Stops the clock and the sound, if playing, and returns the frame it stopped at.
-    fn stop(&self) -> Option<Frame> {
-        let frame = {
+    /// Stops the clock and the sound, if playing, and returns the preview that played and the
+    /// frame it stopped at.
+    fn stop(&self) -> Option<(Preview, Frame)> {
+        let stopped = {
             let mut transport = lock(&self.transport);
             transport.playing?;
             transport.generation += 1;
             transport.playing = None;
             let at = transport.clock.stop(Instant::now());
-            let last = (transport.end - Frame(1)).max(Frame(0));
-            frame_at(MediaTime(at), transport.rate).clamp(Frame(0), last)
+            let last = (transport.end() - Frame(1)).max(Frame(0));
+            let frame = frame_at(MediaTime(at), transport.rate()).clamp(Frame(0), last);
+            (transport.preview, frame)
         };
         let _ = self.sound.send(SoundRequest::Stop);
-        Some(frame)
+        Some(stopped)
     }
 }
 

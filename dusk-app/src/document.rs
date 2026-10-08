@@ -10,6 +10,7 @@ use dusk_core::{MediaId, Project, Rational};
 use slint::{ComponentHandle, Model};
 
 use crate::app::{App, file_name, sentence, with_app};
+use crate::clip_editor::AfterDraft;
 use crate::files::write_atomically;
 use crate::platform::{self, Dialog};
 use crate::recovery::{self, Leftover, Session};
@@ -233,8 +234,12 @@ impl App {
         }
     }
 
-    /// Asks about unsaved changes before `next`, or goes straight on without any.
-    fn after_unsaved_changes(&mut self, next: Next) {
+    /// Asks about changes in the clip editor not applied and unsaved changes before `next`,
+    /// or goes straight on without any.
+    pub(crate) fn after_unsaved_changes(&mut self, next: Next) {
+        if self.draft_pending() {
+            return self.ask_about_draft(AfterDraft::Then(next));
+        }
         if !self.is_dirty() {
             return self.proceed(next);
         }
@@ -251,6 +256,7 @@ impl App {
     fn proceed(&mut self, next: Next) {
         match next {
             Next::Quit => {
+                self.close_editor_now();
                 if let Some(window) = self.window() {
                     let _ = window.hide();
                 }
@@ -298,10 +304,12 @@ impl App {
             }
             None => {}
         }
-        if self.is_dirty() {
+        if self.draft_pending() || self.is_dirty() {
             self.after_unsaved_changes(Next::Quit);
             return false;
         }
+        // The clip editor closes with the main window.
+        self.close_editor_now();
         true
     }
 
@@ -319,14 +327,24 @@ impl App {
         dialog: Dialog,
         done: impl FnOnce(Vec<PathBuf>) + Send + 'static,
     ) {
+        if let Some(window) = self.window() {
+            self.show_dialog_over(window.window(), dialog, done);
+        }
+    }
+
+    /// Shows a file dialog over `owner` unless one is open already, and calls `done` with
+    /// what was picked.
+    pub(crate) fn show_dialog_over(
+        &mut self,
+        owner: &slint::Window,
+        dialog: Dialog,
+        done: impl FnOnce(Vec<PathBuf>) + Send + 'static,
+    ) {
         if self.dialog_open {
             return;
         }
-        let Some(window) = self.window() else {
-            return;
-        };
         self.dialog_open = true;
-        platform::show_dialog(window.window(), dialog, move |paths| {
+        platform::show_dialog(owner, dialog, move |paths| {
             with_app(|app| app.dialog_open = false);
             done(paths);
         });
@@ -391,6 +409,7 @@ impl App {
         self.selected_media = None;
         self.playhead = dusk_core::Frame(0);
         self.view.fit();
+        self.close_editor_now();
         self.engine.pause();
         self.set_project(project);
     }

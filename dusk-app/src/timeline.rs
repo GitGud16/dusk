@@ -249,7 +249,7 @@ pub fn clip_rows(project: &Project) -> Vec<ClipRow> {
     clips
 }
 
-fn media_name(project: &Project, media: MediaId) -> String {
+pub(crate) fn media_name(project: &Project, media: MediaId) -> String {
     project
         .media_ref(media)
         .and_then(|media| media.path.file_name())

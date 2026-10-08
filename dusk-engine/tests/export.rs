@@ -7,7 +7,10 @@ use std::sync::Arc;
 use std::sync::mpsc;
 use std::time::Duration;
 
-use dusk_core::{Command, Edge, Frame, MediaTime, Project, TrimClips, import};
+use dusk_core::{
+    ClipEditSession, Command, Edge, Frame, MediaTime, Project, Rational, Rect, Rotation, TrimClips,
+    import,
+};
 use dusk_engine::{Engine, EngineEvent, EngineOptions, ExportEvent, Gpu, media_info};
 use dusk_media::{Acceleration, StreamKind, VideoDecoder, probe};
 
@@ -99,6 +102,76 @@ fn a_clip_exports_to_a_playable_mp4() {
     let mut decoder = VideoDecoder::open(&path, Acceleration::Software).unwrap();
     let frame = decoder.frame_at(MediaTime(500_000)).unwrap().unwrap();
     assert_eq!((frame.picture.width, frame.picture.height), (320, 240));
+}
+
+#[test]
+fn a_clip_from_the_clip_editor_exports_at_its_own_rate_and_shape() {
+    // A 25 fps 1280x720 sequence; the 30 fps sample is cropped and turned a quarter.
+    let info = media_info(&sample()).unwrap();
+    let mut project = Project::new(Rational::new(25, 1).unwrap(), (1280, 720));
+    import(&project, sample(), info.clone(), Frame(0))
+        .apply(&mut project)
+        .unwrap();
+    let clip = project.sequence().tracks()[0].clips()[0].id;
+    let mut session = ClipEditSession::open(&project, clip).unwrap();
+    let edits = session.draft.video.as_mut().unwrap();
+    // An odd size, which the encoder rounds down to even.
+    edits.crop = Some(Rect {
+        x: 20,
+        y: 10,
+        width: 201,
+        height: 121,
+    });
+    edits.rotate = Rotation::Quarter;
+    let export = session.export_project(&project).unwrap();
+    assert_eq!(export.sequence().resolution(), (121, 201));
+    let (engine, events) = engine();
+    let path = output("clip-editor.mp4");
+    let _job = engine.export(Arc::new(export), path.clone()).unwrap();
+    assert!(matches!(outcome(&events).0, ExportEvent::Finished { .. }));
+    let written = media_info(&path).unwrap();
+    assert_eq!((written.width, written.height), (120, 200));
+    assert_eq!(written.frame_rate, info.frame_rate);
+    assert!(written.has_audio);
+    let duration = duration_of(&path);
+    assert!((950_000..=1_100_000).contains(&duration), "{duration} µs");
+    // The picture fills its frame: no bar where the size was rounded.
+    let mut decoder = VideoDecoder::open(&path, Acceleration::Software).unwrap();
+    let frame = decoder.frame_at(MediaTime(500_000)).unwrap().unwrap();
+    let luma = &frame.picture.luma;
+    let width = frame.picture.width as usize;
+    let height = frame.picture.height as usize;
+    let row_mean = |row: usize| {
+        luma[row * width..(row + 1) * width]
+            .iter()
+            .map(|code| u32::from(*code))
+            .sum::<u32>()
+            / width as u32
+    };
+    let column_mean = |column: usize| {
+        (0..height)
+            .map(|row| u32::from(luma[row * width + column]))
+            .sum::<u32>()
+            / height as u32
+    };
+    let edges = [
+        row_mean(0),
+        row_mean(height - 1),
+        column_mean(0),
+        column_mean(width - 1),
+    ];
+    let inside = [
+        row_mean(1),
+        row_mean(height - 2),
+        column_mean(1),
+        column_mean(width - 2),
+    ];
+    for (edge, inside) in edges.iter().zip(inside) {
+        assert!(
+            edge.abs_diff(inside) <= 12,
+            "edges {edges:?}, beside one of them {inside}"
+        );
+    }
 }
 
 #[test]

@@ -135,8 +135,7 @@ impl TrimClips {
             clip.length = length;
             // Fades longer than the trimmed clip are shortened to fit, fade-in first.
             if let ClipEdits::Audio(edits) = &mut clip.edits {
-                edits.fade_in = edits.fade_in.min(length);
-                edits.fade_out = edits.fade_out.min(length - edits.fade_in);
+                edits.fit_into(length);
             }
         }
         Ok(())

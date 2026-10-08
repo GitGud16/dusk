@@ -43,6 +43,27 @@ pub enum Action {
     CancelExport,
     Quit,
     ShortcutList,
+    /// Fits the picture with bars or fills the frame: the selected clip's, or the clip
+    /// editor's draft.
+    ToggleFill,
+    /// Opens the selected clip in the clip editor.
+    OpenClipEditor,
+    /// The clip editor's own: start or end the clip at the playhead, turn and mirror the
+    /// picture, apply the draft to the project, close the window.
+    MarkIn,
+    MarkOut,
+    TurnLeft,
+    TurnRight,
+    MirrorLeftRight,
+    MirrorTopBottom,
+    ApplyClip,
+    CloseClipEditor,
+    /// When the clip changed in the main window: the clip editor takes it as it is now,
+    /// or keeps its draft to apply over it.
+    ReloadClip,
+    KeepDraft,
+    /// The clip editor's Export as file.
+    ExportClip,
 }
 
 /// A key as Slint reports it: a character (lowercase for letters) or a named key.
@@ -182,6 +203,71 @@ pub const SHORTCUTS: &[Shortcut] = &[
         Action::Place,
         "Place the selected media at the playhead",
     ),
+    char_key(
+        'f',
+        Action::ToggleFill,
+        "Fit the picture with bars, or fill the frame and crop",
+    ),
+    key(
+        KeyName::Named(Key::Return),
+        Action::OpenClipEditor,
+        "Open the selected clip in the clip editor",
+    ),
+    char_key(
+        'i',
+        Action::MarkIn,
+        "Clip editor: start the clip at the playhead",
+    ),
+    char_key(
+        'o',
+        Action::MarkOut,
+        "Clip editor: end the clip at the playhead",
+    ),
+    char_key(
+        'r',
+        Action::TurnRight,
+        "Clip editor: turn the picture right",
+    ),
+    shift(char_key(
+        'r',
+        Action::TurnLeft,
+        "Clip editor: turn the picture left",
+    )),
+    char_key(
+        'h',
+        Action::MirrorLeftRight,
+        "Clip editor: mirror the picture left to right",
+    ),
+    char_key(
+        'v',
+        Action::MirrorTopBottom,
+        "Clip editor: mirror the picture top to bottom",
+    ),
+    ctrl(key(
+        KeyName::Named(Key::Return),
+        Action::ApplyClip,
+        "Clip editor: apply the changes to the project",
+    )),
+    ctrl(char_key(
+        'w',
+        Action::CloseClipEditor,
+        "Close the clip editor",
+    )),
+    ctrl(char_key(
+        'r',
+        Action::ReloadClip,
+        "Clip editor: the clip changed in the main window; take it as it is now",
+    )),
+    ctrl(char_key(
+        'k',
+        Action::KeepDraft,
+        "Clip editor: the clip changed in the main window; keep the draft",
+    )),
+    ctrl(shift(char_key(
+        'e',
+        Action::ExportClip,
+        "Clip editor: export the clip as a file of its own",
+    ))),
     alt(char_key('1', Action::ToggleMute(0), "Hide or show V1")),
     alt(char_key('2', Action::ToggleMute(1), "Hide or show V2")),
     alt(char_key('3', Action::ToggleMute(2), "Mute or unmute A1")),
@@ -242,6 +328,7 @@ impl Shortcut {
             KeyName::Named(Key::LeftArrow) => "Left".to_owned(),
             KeyName::Named(Key::RightArrow) => "Right".to_owned(),
             KeyName::Named(Key::Escape) => "Esc".to_owned(),
+            KeyName::Named(Key::Return) => "Enter".to_owned(),
             KeyName::Named(named) => format!("{named:?}"),
         };
         let ctrl = if self.ctrl { "Ctrl+" } else { "" };
@@ -295,7 +382,20 @@ pub fn action_for_key(
     }
 }
 
-/// The action a menu item or button names (see `root.action(...)` in ui/app.slint).
+/// The shortcut list as the windows show it.
+pub fn shortcut_list() -> slint::ModelRc<crate::ShortcutView> {
+    let list: Vec<crate::ShortcutView> = SHORTCUTS
+        .iter()
+        .map(|shortcut| crate::ShortcutView {
+            keys: shortcut.keys().into(),
+            description: shortcut.description.into(),
+        })
+        .collect();
+    std::rc::Rc::new(slint::VecModel::from(list)).into()
+}
+
+/// The action a menu item or button names (see `root.action(...)` in the windows' .slint
+/// files).
 pub fn action_named(name: &str) -> Option<Action> {
     Some(match name {
         "new" => Action::NewProject,
@@ -319,6 +419,12 @@ pub fn action_named(name: &str) -> Option<Action> {
         "zoom-in" => Action::ZoomIn,
         "zoom-out" => Action::ZoomOut,
         "zoom-fit" => Action::ZoomFit,
+        "toggle-fill" => Action::ToggleFill,
+        "open-clip-editor" => Action::OpenClipEditor,
+        "apply-clip" => Action::ApplyClip,
+        "reload-clip" => Action::ReloadClip,
+        "keep-draft" => Action::KeepDraft,
+        "export-clip" => Action::ExportClip,
         _ => return None,
     })
 }
@@ -397,6 +503,49 @@ mod tests {
             action_for_key(&named(Key::Delete), None, false, false, false),
             action_for(&named(Key::Delete), false, false, false)
         );
+    }
+
+    #[test]
+    fn the_clip_editor_has_keys_of_its_own() {
+        let enter = named(Key::Return);
+        assert_eq!(
+            action_for(&enter, false, false, false),
+            Some(Action::OpenClipEditor)
+        );
+        assert_eq!(
+            action_for(&enter, true, false, false),
+            Some(Action::ApplyClip)
+        );
+        assert_eq!(action_for("i", false, false, false), Some(Action::MarkIn));
+        assert_eq!(action_for("o", false, false, false), Some(Action::MarkOut));
+        assert_eq!(
+            action_for("r", false, false, false),
+            Some(Action::TurnRight)
+        );
+        assert_eq!(action_for("R", false, true, false), Some(Action::TurnLeft));
+        assert_eq!(
+            action_for("h", false, false, false),
+            Some(Action::MirrorLeftRight)
+        );
+        assert_eq!(
+            action_for("v", false, false, false),
+            Some(Action::MirrorTopBottom)
+        );
+        assert_eq!(
+            action_for("f", false, false, false),
+            Some(Action::ToggleFill)
+        );
+        assert_eq!(
+            action_for("w", true, false, false),
+            Some(Action::CloseClipEditor)
+        );
+        assert_eq!(
+            action_for("r", true, false, false),
+            Some(Action::ReloadClip)
+        );
+        assert_eq!(action_for("k", true, false, false), Some(Action::KeepDraft));
+        assert_eq!(action_for("e", true, true, false), Some(Action::ExportClip));
+        assert_eq!(action_for("e", true, false, false), Some(Action::Export));
     }
 
     #[test]
@@ -489,15 +638,23 @@ mod tests {
         }
     }
 
+    /// The actions the windows' menu items and buttons name.
+    fn named_in_the_windows() -> Vec<&'static str> {
+        [
+            include_str!("../ui/app.slint"),
+            include_str!("../ui/clip-editor.slint"),
+        ]
+        .into_iter()
+        .flat_map(|ui| ui.split("root.action(\"").skip(1))
+        .filter_map(|rest| rest.split('"').next())
+        .collect()
+    }
+
     #[test]
-    fn every_action_the_window_names_exists() {
-        let ui = include_str!("../ui/app.slint");
-        let names: Vec<&str> = ui
-            .split("root.action(\"")
-            .skip(1)
-            .filter_map(|rest| rest.split('"').next())
-            .collect();
+    fn every_action_the_windows_name_exists() {
+        let names = named_in_the_windows();
         assert!(names.len() > 15, "{names:?}");
+        assert!(names.contains(&"apply-clip"), "{names:?}");
         for name in names {
             assert!(action_named(name).is_some(), "{name}");
         }
@@ -505,9 +662,8 @@ mod tests {
 
     #[test]
     fn every_named_action_has_a_shortcut() {
-        let ui = include_str!("../ui/app.slint");
-        for name in ui.split("root.action(\"").skip(1) {
-            let action = name.split('"').next().and_then(action_named).unwrap();
+        for name in named_in_the_windows() {
+            let action = action_named(name).unwrap();
             assert!(
                 SHORTCUTS.iter().any(|shortcut| shortcut.action == action),
                 "{action:?} has no shortcut"

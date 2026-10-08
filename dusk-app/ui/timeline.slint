@@ -56,6 +56,7 @@ export component Timeline inherits Rectangle {
     callback scrub-end(frame: int);
     // A clip was clicked, or empty track space (-1).
     callback select-clip(clip: int);
+    callback open-clip(clip: int);
     // A trim handle was let go: the clip, whether its start edge, and the frame.
     callback trim(clip: int, start: bool, frame: int);
     // Where `clip` would start if dropped at `frame` on `row`: the nearest free frame, or -1.
@@ -334,6 +335,9 @@ export component Timeline inherits Rectangle {
                             root.drag-mode = 0;
                             root.drag-clip = -1;
                         }
+                    }
+                    double-clicked => {
+                        root.open-clip(clip.id);
                     }
                     moved => {
                         let x = self.absolute-position.x + self.mouse-x;
