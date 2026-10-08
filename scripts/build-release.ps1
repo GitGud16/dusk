@@ -35,6 +35,12 @@ $pinned = Join-Path $root ('.deps\ffmpeg\' + [IO.Path]::GetFileNameWithoutExtens
 if ($env:FFMPEG_DIR.TrimEnd('\') -ne $pinned) {
     throw "FFMPEG_DIR is $env:FFMPEG_DIR, not the pinned FFmpeg: run scripts\setup-ffmpeg.ps1, then this script in a new shell."
 }
+# Rebuilds of one FFmpeg commit share a file name, and so a folder: only setup-ffmpeg.ps1's mark
+# says which build the folder holds.
+$marker = Join-Path $pinned '.dusk-pin-sha256'
+if (-not (Test-Path -LiteralPath $marker) -or ([string](Get-Content -LiteralPath $marker -Raw)).Trim() -ne $pin.Sha256) {
+    throw "$pinned does not hold the pinned FFmpeg ($($pin.FileName) from $($pin.Tag)): run scripts\setup-ffmpeg.ps1."
+}
 
 $version = (Select-String -LiteralPath 'Cargo.toml' -Pattern '^version = "(.+)"').Matches[0].Groups[1].Value
 Write-Host "Dusk $version"

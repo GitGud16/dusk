@@ -2,16 +2,16 @@
 # scripts/setup-ffmpeg.ps1 and scripts/dev-env.ps1; docs/SETUP.md mirrors it.
 # Changing any value here is a documented decision (see docs/ARCHITECTURE.md, "FFmpeg (Windows)").
 @{
-    # BtbN/FFmpeg-Builds release tag and asset. This is the first 8.1 build with lcms2
-    # (enabled in BtbN commit 793eb5e7, 2026-10-02). BtbN keeps only its 14 newest builds,
-    # plus the last build of each month for two years, so this one disappears in about two
-    # weeks. Move to the 8.1 asset of the last October 2026 build (normally
-    # autobuild-2026-10-31-*) once it is published.
-    Tag      = 'autobuild-2026-10-03-18-14'
+    # BtbN/FFmpeg-Builds release tag and asset. 8.1 builds have lcms2 since BtbN commit
+    # 793eb5e7 (2026-10-02). BtbN keeps only its 14 newest builds, plus the last build of each
+    # month for two years, so a daily build disappears about two weeks after it is published.
+    # The pin moves along until it can rest on the last October 2026 build, on the dates in
+    # docs/SETUP.md, "FFmpeg (pinned)": move 1 of 3, downloadable until about 2026-10-21.
+    Tag      = 'autobuild-2026-10-07-13-07'
     FileName = 'ffmpeg-n8.1.3-14-g330caae0c1-win64-lgpl-shared-8.1.zip'
-    Url      = 'https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-10-03-18-14/ffmpeg-n8.1.3-14-g330caae0c1-win64-lgpl-shared-8.1.zip'
-    Size     = 80991898
-    Sha256   = '11a4b44bc69721274909619a779d82544c8b83a6557c5b1be92dce9a41a968be'
+    Url      = 'https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-10-07-13-07/ffmpeg-n8.1.3-14-g330caae0c1-win64-lgpl-shared-8.1.zip'
+    Size     = 80993041
+    Sha256   = '30fdaaeb116730fdd6432c2663af0e9ecdf1d6cc387ac085cc1faf8494942510'
 
     # Configure flags the build must contain (checked in avutil's embedded configuration
     # string, without running any FFmpeg executable).

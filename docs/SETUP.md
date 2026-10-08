@@ -21,14 +21,22 @@ Dusk links one exact FFmpeg build. The pin lives in `scripts/ffmpeg-pin.psd1`, w
 | | |
 |---|---|
 | Source | [BtbN/FFmpeg-Builds](https://github.com/BtbN/FFmpeg-Builds), win64, LGPL, shared |
-| Release tag | `autobuild-2026-10-03-18-14` |
+| Release tag | `autobuild-2026-10-07-13-07` |
 | File | `ffmpeg-n8.1.3-14-g330caae0c1-win64-lgpl-shared-8.1.zip` |
-| Size | 80,991,898 bytes |
-| SHA-256 | `11a4b44bc69721274909619a779d82544c8b83a6557c5b1be92dce9a41a968be` |
+| Size | 80,993,041 bytes |
+| SHA-256 | `30fdaaeb116730fdd6432c2663af0e9ecdf1d6cc387ac085cc1faf8494942510` |
 | License | LGPL-3.0-or-later (BtbN configures with `--enable-version3`) |
 | NVENC driver floor | 570 (GTX 900/1000 cards still qualify; their last driver branch is 580) |
 
-Why this file: it is the first 8.1 build with `lcms2`, which photo color needs (BtbN enabled it on 2026-10-02). BtbN keeps only its 14 newest builds, plus the last build of each month for two years, so this file disappears around 2026-10-17. Keep the downloaded copy (the setup script leaves it in `%LOCALAPPDATA%\dusk\ffmpeg-cache\`), and move the pin to the 8.1 asset of the last October 2026 build (normally `autobuild-2026-10-31-*`) once it is published.
+Why this file: 8.1 builds have `lcms2`, which photo color needs, since BtbN enabled it on 2026-10-02 (the first was `autobuild-2026-10-03-18-14`). BtbN keeps only its 14 newest builds, plus the last build of each month for two years, so a daily build disappears about two weeks after it is published, and October's last build is published on its last day. Until then the pin moves along, each time to the newest 8.1 build before the pinned one disappears, and then rests on October's last:
+
+| Move | When | Pin to | Downloadable until about |
+|---|---|---|---|
+| 1 (done) | 2026-10-08 | `autobuild-2026-10-07-13-07` | 2026-10-21 |
+| 2 | 2026-10-19 or 20 | the newest 8.1 build that day | 2026-11-02 |
+| 3, last | 2026-11-01 or 02, once November's first build shows which October build was the last | the last October build (normally `autobuild-2026-10-31-*`) | 2028-10-31 |
+
+The dates assume one build a day, as BtbN usually makes: a day without a build makes a file last longer, a second build in a day shorter, so look at the releases page before each move. Each move follows "Changing the FFmpeg pin" below. Builds of one FFmpeg commit share a file name: the October builds up to move 1 are the same FFmpeg (`n8.1.3-14-g330caae0c1`) built from the same BtbN scripts (commit `9acad4a9ef`) with the same options, and differ only in the build date FFmpeg records (`--extra-version`). Keep the downloaded copy of the pinned build (the setup script leaves it in `%LOCALAPPDATA%\dusk\ffmpeg-cache\`, and replaces it with the next pin's file of the same name): with it, `-ZipPath` installs the build after BtbN has deleted it.
 
 The setup script refuses any file whose size or SHA-256 differs, and refuses a build that lacks `--enable-lcms2`, `--enable-libopenh264`, `--enable-libkvazaar`, `--enable-libsvtav1`, `--enable-libvpx` or `--enable-version3`, or that contains `--enable-gpl`, `--enable-libx264` or `--enable-libx265`. It reads these from the configuration string compiled into `avutil`; it never runs an FFmpeg executable.
 
@@ -57,7 +65,7 @@ If the execution policy blocks it, run `Set-ExecutionPolicy -Scope Process Bypas
 Dusk links FFmpeg dynamically, so `avcodec`, `avformat`, `avutil`, `swscale` and `swresample` must be found when a Dusk binary starts. Windows looks in the executable's own folder first, then in the Windows system folders and the current directory, then in the folders on PATH.
 
 - **Development**: `dev-env.ps1` puts the pinned build's `bin\` first on PATH for that shell, and `cargo run` and `cargo test` inherit it. Without it, binaries fail to start with a missing-DLL error.
-- **IDEs and other launchers**: start them from a shell that ran `dev-env.ps1` (for example `code .`). To make it permanent for your user instead, run this once from the repository root (Dusk's scripts never change persistent settings). It keeps your user PATH as an expandable value and does not add the folder twice. Run it again after every pin change, because the folder name changes:
+- **IDEs and other launchers**: start them from a shell that ran `dev-env.ps1` (for example `code .`). To make it permanent for your user instead, run this once from the repository root (Dusk's scripts never change persistent settings). It keeps your user PATH as an expandable value and does not add the folder twice. Run it again after a pin change that renames the folder (a newer FFmpeg; a rebuild of the same one keeps the name):
 
   ```powershell
   $dir = (Resolve-Path '.deps\ffmpeg\ffmpeg-n8.1.3-14-g330caae0c1-win64-lgpl-shared-8.1').Path
@@ -74,10 +82,11 @@ Dusk links FFmpeg dynamically, so `avcodec`, `avformat`, `avutil`, `swscale` and
 
 Changing the pin is a documented decision, not a bump.
 
-1. Pick the new asset on the BtbN releases page; prefer the last build of a month (normally `autobuild-YYYY-MM-<last day>-*`), which BtbN keeps for two years, over a daily build, which it deletes after about two weeks.
+1. Pick the new asset on the BtbN releases page; prefer the last build of a month (normally `autobuild-YYYY-MM-<last day>-*`), which BtbN keeps for two years, over a daily build, which it deletes after about two weeks (a daily build is pinned only on the way to a month's last, as in the moves above).
 2. Update `Tag`, `FileName`, `Url`, `Size` and `Sha256` in `scripts/ffmpeg-pin.psd1`. GitHub shows each asset's `sha256` digest on the release page and in the releases API.
-3. Run `scripts\setup-ffmpeg.ps1`; it rejects the build if a required library is missing.
-4. Update the table above, the NVENC driver floor (BtbN builds after 8.1 use newer NVENC headers that need driver 610 or newer), and the "FFmpeg (Windows)" section of `docs/ARCHITECTURE.md`.
+3. Run `scripts\setup-ffmpeg.ps1`, in every checkout; it rejects the build if a required library is missing. Until it has run, `dev-env.ps1` warns and the release script refuses, even when the folder keeps its name.
+4. Run `python scripts\ffmpeg-licenses.py` and commit `installer\ffmpeg-libraries.txt` with the pin (see "Release").
+5. Update the table above, the NVENC driver floor (BtbN builds after 8.1 use newer NVENC headers that need driver 610 or newer), and the "FFmpeg (Windows)" section of `docs/ARCHITECTURE.md`.
 
 ## CI
 
@@ -89,7 +98,7 @@ CI runs the same `scripts\setup-ffmpeg.ps1`, caching `%LOCALAPPDATA%\dusk\ffmpeg
 powershell -ExecutionPolicy Bypass -File scripts\build-release.ps1
 ```
 
-This builds `dusk.exe` and `dusq.exe` in release (dusq on its own), stages `target\release-stage\Dusk`, the folder the installer installs (the two programs, the five FFmpeg DLLs and `licenses\`), and, when [Inno Setup 6](https://jrsoftware.org/isinfo.php) is installed (`winget install JRSoftware.InnoSetup`), compiles `installer\dusk.iss` into `target\installer\dusk-<version>-setup.exe`. It needs Python 3, which writes `licenses\THIRD-PARTY-NOTICES.txt` from cargo's own record of the crates in both programs (`scripts\third-party-notices.py`), and it copies `installer\ffmpeg-libraries.txt`, the licenses of the libraries built into FFmpeg's DLLs, to `licenses\FFmpeg-libraries.txt`. It refuses to go on when the shell's `FFMPEG_DIR` names another build than the pinned one (a shell set up for an older pin), or when `ffmpeg-libraries.txt` was written for another build. It removes earlier installers from `target\installer` first, and without Inno Setup it stops after staging, which is enough to measure the installed size and to run Dusk the way the installer leaves it. The version is the workspace's, in `Cargo.toml`; a pre-release such as `0.1.0-rc.1` keeps its numbers alone as the installer's file version, which Windows wants as numbers.
+This builds `dusk.exe` and `dusq.exe` in release (dusq on its own), stages `target\release-stage\Dusk`, the folder the installer installs (the two programs, the five FFmpeg DLLs and `licenses\`), and, when [Inno Setup 6](https://jrsoftware.org/isinfo.php) is installed (`winget install JRSoftware.InnoSetup`), compiles `installer\dusk.iss` into `target\installer\dusk-<version>-setup.exe`. It needs Python 3, which writes `licenses\THIRD-PARTY-NOTICES.txt` from cargo's own record of the crates in both programs (`scripts\third-party-notices.py`), and it copies `installer\ffmpeg-libraries.txt`, the licenses of the libraries built into FFmpeg's DLLs, to `licenses\FFmpeg-libraries.txt`. It refuses to go on when the shell's `FFMPEG_DIR` names another build than the pinned one (a shell set up for an older pin), when that folder holds another build of the same FFmpeg (rebuilds of one FFmpeg commit share a file name, so a checkout where `setup-ffmpeg.ps1` has not run since the pin moved still has the old one), or when `ffmpeg-libraries.txt` was written for another build. It removes earlier installers from `target\installer` first, and without Inno Setup it stops after staging, which is enough to measure the installed size and to run Dusk the way the installer leaves it. The version is the workspace's, in `Cargo.toml`; a pre-release such as `0.1.0-rc.1` keeps its numbers alone as the installer's file version, which Windows wants as numbers.
 
 `scripts\check-installer.ps1` then tries the installer as a user would: it installs it silently into a folder of its own, checks that every staged file arrived, that the Start menu has Dusk and that `.dusk` files open with it, runs `dusq` (a small compression) and `dusk.exe` from there with no FFmpeg on the path, uninstalls, and checks that nothing is left. It tries the installer of the version in `Cargo.toml` (or `-Setup`), prints the download and installed sizes, and uninstalls Dusk on its way out when a check fails. Since it ends by uninstalling Dusk, it refuses to run on a computer where Dusk is installed; CI builds and tries the installer for every push to a branch.
 
