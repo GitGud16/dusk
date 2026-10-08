@@ -1,12 +1,12 @@
 use std::fmt;
 use std::path::Path;
-use std::sync::Once;
 
 use ffmpeg_next as ffmpeg;
 use ffmpeg_next::media::Type as Medium;
 
 use crate::MediaError;
 use crate::ffi;
+use crate::input::open_input;
 
 /// What a media file contains, read from its container without decoding any frames.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -60,6 +60,11 @@ pub enum StreamDetail {
         height: u32,
         /// Average frame rate as numerator and denominator, if known.
         frame_rate: Option<(i32, i32)>,
+        /// The base frame rate FFmpeg guesses from the timestamps (`r_frame_rate`), if known.
+        /// It differs from the average when the frame rate varies.
+        base_frame_rate: Option<(i32, i32)>,
+        /// Whether the stream is an attached picture (cover art) rather than video.
+        cover_art: bool,
     },
     /// An audio stream.
     Audio {
@@ -74,31 +79,9 @@ pub enum StreamDetail {
 
 /// Reads the container and stream information of the local file at `path`.
 ///
-/// Only local files are opened: FFmpeg's protocol whitelist is set to `file`, so no network
-/// protocol is ever used, even for a URL passed in by mistake.
+/// Only local files are opened, never a URL (see [`crate::input`]).
 pub fn probe(path: &Path) -> Result<ProbeInfo, MediaError> {
-    // Only existing local files reach FFmpeg, which also keeps URLs away from it.
-    if !path.is_file() {
-        return Err(MediaError::NotAFile {
-            path: path.to_path_buf(),
-        });
-    }
-    // ffmpeg-next panics on paths that are not valid Unicode, so check first.
-    let path_str = path.to_str().ok_or_else(|| MediaError::NonUnicodePath {
-        path: path.to_path_buf(),
-    })?;
-    init();
-
-    // Defense in depth: whatever the string looks like, FFmpeg may only use the file protocol.
-    let mut options = ffmpeg::Dictionary::new();
-    options.set("protocol_whitelist", "file");
-    let input = ffmpeg::format::input_with_dictionary(path_str, options).map_err(|source| {
-        MediaError::Open {
-            path: path.to_path_buf(),
-            source,
-        }
-    })?;
-
+    let input = open_input(path)?;
     Ok(ProbeInfo {
         format: input.format().name().to_owned(),
         // FFmpeg reports durations in AV_TIME_BASE units, which are microseconds; an unknown
@@ -106,17 +89,6 @@ pub fn probe(path: &Path) -> Result<ProbeInfo, MediaError> {
         duration_us: Some(input.duration()).filter(|us| *us >= 0),
         streams: input.streams().map(summarize).collect(),
     })
-}
-
-/// One-time FFmpeg setup for this process.
-fn init() {
-    static INIT: Once = Once::new();
-    INIT.call_once(|| {
-        // With FFmpeg 5 and later this only registers error strings; it always returns Ok.
-        let _ = ffmpeg::init();
-        // FFmpeg logs to stderr by default; keep errors only until Dusk routes its logs.
-        ffmpeg::util::log::set_level(ffmpeg::util::log::Level::Error);
-    });
 }
 
 fn summarize(stream: ffmpeg::format::stream::Stream<'_>) -> StreamSummary {
@@ -132,12 +104,18 @@ fn summarize(stream: ffmpeg::format::stream::Stream<'_>) -> StreamSummary {
     let fields = ffi::codec_fields(&parameters);
     let detail = match kind {
         StreamKind::Video => {
-            let rate = stream.avg_frame_rate();
+            let known = |rate: ffmpeg::Rational| {
+                (rate.numerator() > 0 && rate.denominator() > 0)
+                    .then(|| (rate.numerator(), rate.denominator()))
+            };
             StreamDetail::Video {
                 width: u32::try_from(fields.width).unwrap_or(0),
                 height: u32::try_from(fields.height).unwrap_or(0),
-                frame_rate: (rate.numerator() > 0 && rate.denominator() > 0)
-                    .then(|| (rate.numerator(), rate.denominator())),
+                frame_rate: known(stream.avg_frame_rate()),
+                base_frame_rate: known(stream.rate()),
+                cover_art: stream
+                    .disposition()
+                    .contains(ffmpeg::format::stream::Disposition::ATTACHED_PIC),
             }
         }
         StreamKind::Audio => StreamDetail::Audio {
@@ -176,6 +154,7 @@ impl fmt::Display for StreamSummary {
                 width,
                 height,
                 frame_rate,
+                ..
             } => {
                 write!(f, " {width}x{height}")?;
                 if let Some((numerator, denominator)) = frame_rate {

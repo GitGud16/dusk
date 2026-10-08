@@ -6,3 +6,12 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 publish.workspace = true
+
+[features]
+# The audio device and its real-time ring buffer; the app has it, dusq does not.
+output = ["dep:cpal", "dep:rtrb"]
+
+[dependencies]
+cpal = { workspace = true, optional = true }
+rtrb = { workspace = true, optional = true }
+thiserror.workspace = true

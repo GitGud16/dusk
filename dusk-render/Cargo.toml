@@ -6,3 +6,9 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 publish.workspace = true
+
+[dependencies]
+dusk-core.workspace = true
+# Default features are off workspace-wide; name the backends this crate creates devices on.
+wgpu = { workspace = true, features = ["std", "vulkan", "dx12", "wgsl"] }
+thiserror.workspace = true
