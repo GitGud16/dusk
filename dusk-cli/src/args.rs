@@ -50,16 +50,15 @@ pub struct Extract {
     pub overwrite: bool,
 }
 
-/// How to use dusq.
-pub const USAGE: &str = "\
-dusq compresses videos and takes their sound out, without opening Dusk.
+/// How to use dusq, laid out in columns: a raw string, so what it holds is what dusq prints.
+pub const USAGE: &str = r#"dusq compresses videos and takes their sound out, without opening Dusk.
 
 Usage:
   dusq compress <video> [options]
   dusq extract-audio <file> [options]
 
 Options for compress:
-  -o, --output <file>    where to write; by default \"<name> compressed.mp4\" beside the video
+  -o, --output <file>    where to write; by default "<name> compressed.mp4" beside the video
       --quality <q>      high, medium, small, or 0 to 100 (default: medium)
       --size <size>      a file size to aim at instead, such as 25MB, 800KB or 1.5GB; the
                          picture size and bitrate follow from it
@@ -73,13 +72,14 @@ Options for compress:
       --overwrite        replace the output file if it exists
 
 Options for extract-audio:
-  -o, --output <file>    where to write; by default \"<name>.mp3\" beside the file
+  -o, --output <file>    where to write; by default "<name>.mp3" beside the file
       --format <f>       mp3, aac, opus or wav (default: mp3, or the output's extension)
       --overwrite        replace the output file if it exists
 
+      --                 ends the options, for a file whose name starts with -
   -h, --help             show this
   -V, --version          show dusq's version
-";
+"#;
 
 /// Reads the command line, `args` without the program's name; a message saying what is
 /// wrong when it cannot.
@@ -100,11 +100,27 @@ pub fn parse(args: &[String]) -> Result<Command, String> {
     };
     let mut options = Options::default();
     let mut rest = args[1..].iter();
+    // After "--" every argument is a file, so a name may start with a dash.
+    let mut files_only = false;
     while let Some(arg) = rest.next() {
+        if files_only || arg == "--" {
+            if files_only {
+                take_file(&mut options, arg)?;
+            }
+            files_only = true;
+            continue;
+        }
         // Long options may carry their value after an equals sign.
         let (name, inline) = match arg.split_once('=') {
             Some((name, value)) if name.starts_with("--") => (name, Some(value.to_owned())),
             _ => (arg.as_str(), None),
+        };
+        // An option without a value takes none: "--overwrite=no" is not an overwrite.
+        let alone = || match &inline {
+            Some(_) => Err(format!(
+                "{name} takes no value; leave out what follows the ="
+            )),
+            None => Ok(()),
         };
         let mut value = |example: &str| match inline.clone().or_else(|| rest.next().cloned()) {
             Some(value) => Ok(value),
@@ -114,7 +130,10 @@ pub fn parse(args: &[String]) -> Result<Command, String> {
             "-h" | "--help" => return Ok(Command::Help),
             "-o" | "--output" => options.output = Some(PathBuf::from(value("out.mp4")?)),
             "--format" => options.format = Some(value("mp4")?),
-            "--overwrite" => options.overwrite = true,
+            "--overwrite" => {
+                alone()?;
+                options.overwrite = true;
+            }
             "--quality" if compressing => options.quality = Some(value("medium")?),
             "--size" if compressing => options.size = Some(value("25MB")?),
             "--short-side" if compressing => options.short_side = Some(value("720")?),
@@ -131,12 +150,7 @@ pub fn parse(args: &[String]) -> Result<Command, String> {
                     "{command} has no option {option} (see dusq --help)"
                 ));
             }
-            file if options.input.is_none() => options.input = Some(PathBuf::from(file)),
-            extra => {
-                return Err(format!(
-                    "dusq takes one file at a time, and {extra} is one too many"
-                ));
-            }
+            file => take_file(&mut options, file)?,
         }
     }
     if compressing {
@@ -144,6 +158,17 @@ pub fn parse(args: &[String]) -> Result<Command, String> {
     } else {
         options.extract().map(Command::ExtractAudio)
     }
+}
+
+/// `file` is the input, which dusq takes one of.
+fn take_file(options: &mut Options, file: &str) -> Result<(), String> {
+    if options.input.is_some() {
+        return Err(format!(
+            "dusq takes one file at a time, and {file} is one too many"
+        ));
+    }
+    options.input = Some(PathBuf::from(file));
+    Ok(())
 }
 
 /// The options as given, before they are checked.
@@ -540,5 +565,27 @@ mod tests {
         assert!(error.contains("b.mp4"), "{error}");
         let error = parse_line("extract-audio a.mp4 --threads 2").unwrap_err();
         assert!(error.contains("--threads"), "{error}");
+    }
+
+    #[test]
+    fn an_option_without_a_value_takes_none() {
+        // "--overwrite=no" must not overwrite.
+        let error = parse_line("compress a.mp4 --overwrite=no").unwrap_err();
+        assert!(error.contains("--overwrite"), "{error}");
+        assert!(parse_line("extract-audio a.mp4 --overwrite=yes").is_err());
+    }
+
+    #[test]
+    fn a_file_whose_name_starts_with_a_dash_follows_two_dashes() {
+        assert_eq!(
+            compress("compress -- -intro.mp4").input,
+            PathBuf::from("-intro.mp4")
+        );
+        assert_eq!(
+            compress("compress --quality small -- -intro.mp4").quality,
+            Quality::Level(40)
+        );
+        // After them, nothing is an option.
+        assert!(parse_line("compress -- a.mp4 --overwrite").is_err());
     }
 }

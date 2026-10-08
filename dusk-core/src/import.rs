@@ -92,6 +92,22 @@ pub fn nearest_free_place(
     nearest_free_position(&trial, first, wanted, None)
 }
 
+/// Where media `media` dragged onto tracks `video` and `audio` starts when let go at frame
+/// `wanted`: at the beginning while the timeline is empty, so a first clip has no black before
+/// it, and otherwise the nearest place it fits ([`nearest_free_place`]). `None` where it cannot
+/// go on those tracks.
+pub fn drop_place(
+    project: &Project,
+    media: MediaId,
+    wanted: Frame,
+    video: TrackId,
+    audio: TrackId,
+) -> Option<Frame> {
+    let empty = project.sequence().end() == Frame(0);
+    let wanted = if empty { Frame(0) } else { wanted };
+    nearest_free_place(project, media, wanted, video, audio)
+}
+
 /// The clips that show all of `media` from `position`, on track `video` and track `audio`.
 fn placements(
     project: &Project,
@@ -405,5 +421,48 @@ mod tests {
         assert_eq!(nearest_free_place(&project, media, Frame(10), v2, a2), None);
         // Nothing of the project changed.
         assert_eq!(project.sequence().tracks()[0].clips().len(), 1);
+    }
+
+    #[test]
+    fn media_dragged_onto_an_empty_timeline_starts_at_the_beginning() {
+        // Wherever it is let go, so a first clip has no black before it.
+        let mut project = Project::new(fps30(), (1920, 1080));
+        let media = add(&mut project, info(true, true));
+        let ids: Vec<TrackId> = project.sequence().tracks().iter().map(|t| t.id()).collect();
+        let (v1, v2, a1, a2) = (ids[0], ids[1], ids[2], ids[3]);
+        assert_eq!(
+            drop_place(&project, media, Frame(240), v1, a1),
+            Some(Frame(0))
+        );
+        assert_eq!(
+            drop_place(&project, media, Frame(8), v2, a2),
+            Some(Frame(0))
+        );
+        // A locked track still takes nothing.
+        Command::SetTrackLocked(crate::command::SetTrackLocked::new(v1, true))
+            .apply(&mut project)
+            .unwrap();
+        assert_eq!(drop_place(&project, media, Frame(240), v1, a1), None);
+    }
+
+    #[test]
+    fn media_dragged_onto_a_timeline_with_clips_starts_where_it_is_let_go() {
+        let mut project = occupied(); // MediaId(1) on V1 and A1, frames 0..60
+        let media = add(&mut project, info(true, true));
+        let ids: Vec<TrackId> = project.sequence().tracks().iter().map(|t| t.id()).collect();
+        let (v1, v2, a1, a2) = (ids[0], ids[1], ids[2], ids[3]);
+        assert_eq!(
+            drop_place(&project, media, Frame(240), v1, a1),
+            Some(Frame(240))
+        );
+        // Tracks of its own are not an empty timeline, and a taken place snaps as before.
+        assert_eq!(
+            drop_place(&project, media, Frame(240), v2, a2),
+            Some(Frame(240))
+        );
+        assert_eq!(
+            drop_place(&project, media, Frame(30), v1, a1),
+            Some(Frame(60))
+        );
     }
 }

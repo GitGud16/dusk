@@ -9,8 +9,8 @@ use dusk_core::time::{STANDARD_RATES, frame_to_media, media_to_frame};
 use dusk_core::{
     ClipEdits, ClipId, Command, Edge, Frame, MediaId, MediaInfo, MediaKind, Project, Rational,
     RemoveClips, SetAudioEdits, SetClipEnabled, SetSequenceSettings, SetTrackLocked, SetTrackMuted,
-    SetVideoEdits, TrackId, TrackKind, TrimClips, Unlink, add_media, nearest_free_place,
-    nearest_free_position, place, place_where_free, remove_one, split_at,
+    SetVideoEdits, TrackId, TrackKind, TrimClips, Unlink, add_media, drop_place,
+    nearest_free_place, nearest_free_position, place, place_where_free, remove_one, split_at,
 };
 use dusk_engine::{EngineError, media_info};
 
@@ -32,6 +32,10 @@ impl App {
 
     /// Files were dropped on the window: a project file is opened, anything else imported.
     pub fn import_dropped(&mut self, paths: Vec<PathBuf>) {
+        // A dialog or a question is about the project as it is; a drop waits for it.
+        if self.main_dialog_open() {
+            return self.say("Finish with the open dialog, then drop the files again.");
+        }
         let project = paths.iter().find(|path| {
             path.extension()
                 .is_some_and(|ext| ext.eq_ignore_ascii_case("dusk"))
@@ -292,7 +296,8 @@ impl App {
         }
     }
 
-    /// Where the media dragged from the bin would start if dropped on `row` at `frame`; -1
+    /// Where the media dragged from the bin would start if dropped on `row` at `frame`, which
+    /// the outline shows and the drop takes: the beginning while the timeline is empty; -1
     /// where it cannot go.
     pub fn snap_place(&self, media: i32, row: i32, frame: i32) -> i32 {
         let (Ok(media), Ok(row)) = (u64::try_from(media), usize::try_from(row)) else {
@@ -301,7 +306,7 @@ impl App {
         let Some((video, audio)) = tracks_for_row(&self.project, row) else {
             return -1;
         };
-        nearest_free_place(
+        drop_place(
             &self.project,
             MediaId(media),
             Frame(frame.into()),

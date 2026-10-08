@@ -5,7 +5,7 @@
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
-use dusk_core::file::{from_json, to_json};
+use dusk_core::file::{FileError, from_json, to_json};
 use dusk_core::{MediaId, Project, Rational};
 use slint::{ComponentHandle, Model};
 
@@ -113,11 +113,15 @@ impl App {
         match session {
             Ok(mut session) => {
                 if let Err(error) = session.record_project(self.document.path.as_deref()) {
-                    self.fail(&format!("Autosave is off: {error}."));
+                    self.fail(&format!(
+                        "Autosave is off: {error}. Save your work yourself until Dusk starts again."
+                    ));
                 }
                 self.session = Some(session);
             }
-            Err(error) => self.fail(&format!("Autosave is off: {error}.")),
+            Err(error) => self.fail(&format!(
+                "Autosave is off: {error}. Save your work yourself until Dusk starts again."
+            )),
         }
         self.open_command_line(files);
         // The newest leftover is offered now; any older ones at the next start.
@@ -262,7 +266,7 @@ impl App {
                 }
             }
             Next::NewProject => {
-                self.replace_project(crate::app::empty_project(), None);
+                self.replace_project(crate::app::empty_project(), None, crate::missing::Ask::No);
                 self.say("New project.");
             }
             Next::OpenProject => {
@@ -357,40 +361,19 @@ impl App {
             let read = std::fs::read_to_string(&path)
                 .map_err(|error| error.to_string())
                 .and_then(|text| from_json(&text, &path).map_err(|error| error.to_string()));
-            // Missing media is reported, never dropped (docs/REQUIREMENTS.md, "Robust").
-            let missing: Vec<String> = match &read {
-                Ok(project) => project
-                    .media()
-                    .iter()
-                    .filter(|media| !media.path.exists())
-                    .map(|media| file_name(&media.path))
-                    .collect(),
-                Err(_) => Vec::new(),
-            };
             let _ = slint::invoke_from_event_loop(move || {
-                with_app(|app| app.project_read(path, read, missing));
+                with_app(|app| app.project_read(path, read));
             });
         });
     }
 
-    fn project_read(&mut self, path: PathBuf, read: Result<Project, String>, missing: Vec<String>) {
+    /// The project file at `path` was read. Missing media is reported, never dropped
+    /// (docs/REQUIREMENTS.md, "Robust"): the check that follows lists it to be found.
+    fn project_read(&mut self, path: PathBuf, read: Result<Project, String>) {
         match read {
             Ok(project) => {
-                self.replace_project(project, Some(path.clone()));
-                if missing.is_empty() {
-                    self.say(&format!("Opened {}.", file_name(&path)));
-                } else {
-                    self.fail(&format!(
-                        "Opened {}, but {} cannot be found: {}. Their clips stay black and silent.",
-                        file_name(&path),
-                        if missing.len() == 1 {
-                            "a media file"
-                        } else {
-                            "some media files"
-                        },
-                        missing.join(", ")
-                    ));
-                }
+                self.replace_project(project, Some(path.clone()), crate::missing::Ask::Opened);
+                self.say(&format!("Opened {}.", file_name(&path)));
             }
             Err(error) => self.fail(&format!(
                 "Could not open {}: {}",
@@ -400,8 +383,14 @@ impl App {
         }
     }
 
-    /// Makes `project`, from the file at `path`, the one being edited, with a fresh history.
-    pub(crate) fn replace_project(&mut self, project: Project, path: Option<PathBuf>) {
+    /// Makes `project`, from the file at `path` if any, the one open, as a document of its
+    /// own; the check of its media files then does what `ask` says.
+    pub(crate) fn replace_project(
+        &mut self,
+        project: Project,
+        path: Option<PathBuf>,
+        ask: crate::missing::Ask,
+    ) {
         self.history = crate::history::History::default();
         self.document = Document::new(path, self.history.state());
         self.record_project();
@@ -411,6 +400,9 @@ impl App {
         self.view.fit();
         self.close_editor_now();
         self.engine.pause();
+        self.missing.clear();
+        self.end_missing_list();
+        self.media_check_ask = ask;
         self.set_project(project);
     }
 
@@ -421,7 +413,8 @@ impl App {
             && let Err(error) = session.record_project(path.as_deref())
         {
             self.fail(&format!(
-                "Autosave may not find this project after a crash: {error}."
+                "Autosave may not find this project after a crash: {error}. Save often until \
+                 Dusk starts again."
             ));
         }
     }
@@ -529,8 +522,11 @@ impl App {
             .unwrap_or_else(|| leftover.autosave.clone());
         self.files.run(move || {
             let read = std::fs::read_to_string(&leftover.autosave)
-                .map_err(|error| error.to_string())
-                .and_then(|text| from_json(&text, &base).map_err(|error| error.to_string()));
+                .map_err(|error| Unrecovered {
+                    what: error.to_string(),
+                    newer: false,
+                })
+                .and_then(|text| from_json(&text, &base).map_err(Unrecovered::from));
             let project = leftover.project.clone();
             // The project now lives in this session; the old one's files go.
             if read.is_ok() {
@@ -542,19 +538,16 @@ impl App {
         });
     }
 
-    fn recovered(&mut self, path: Option<PathBuf>, read: Result<Project, String>) {
+    fn recovered(&mut self, path: Option<PathBuf>, read: Result<Project, Unrecovered>) {
         match read {
             Ok(project) => {
-                self.replace_project(project, path);
+                self.replace_project(project, path, crate::missing::Ask::Recovered);
                 // Unsaved until saved: the recovered work exists only in memory now.
                 self.document.saved = NOT_SAVED;
                 self.refresh_title();
                 self.say("Recovered. Save to keep it.");
             }
-            Err(error) => self.fail(&format!(
-                "Could not recover the autosave: {}",
-                sentence(&error)
-            )),
+            Err(error) => self.fail(&recovery_failed(&error, path.is_some())),
         }
     }
 
@@ -568,11 +561,101 @@ impl App {
     }
 }
 
+/// Why an autosave could not be recovered: what is wrong with it, without the advice for a
+/// file the user picked, since they can neither change an autosave nor find another copy of
+/// it; and whether a newer Dusk wrote it, which can still recover it.
+#[derive(Debug)]
+struct Unrecovered {
+    what: String,
+    newer: bool,
+}
+
+impl From<FileError> for Unrecovered {
+    fn from(error: FileError) -> Unrecovered {
+        match error {
+            // Its advice, a newer Dusk, holds for an autosave too.
+            FileError::Version(_) => Unrecovered {
+                what: error.to_string(),
+                newer: true,
+            },
+            error => Unrecovered {
+                what: error.what(),
+                newer: false,
+            },
+        }
+    }
+}
+
+/// What to say when an autosave could not be recovered: keep one a newer Dusk wrote, which
+/// stays to be offered again, or else open the project's file, when it was `saved` as one.
+fn recovery_failed(unrecovered: &Unrecovered, saved: bool) -> String {
+    let instead = if unrecovered.newer {
+        "Choose Not now when Dusk asks again, to keep it for a newer Dusk."
+    } else if saved {
+        "Open the project's last saved file instead."
+    } else {
+        "The project was never saved, so no other file holds its work."
+    };
+    format!(
+        "Could not recover the autosave: {} {instead}",
+        sentence(&unrecovered.what)
+    )
+}
+
 /// `duration` in whole minutes, for messages.
 fn minutes(duration: Duration) -> String {
     match duration.as_secs() / 60 {
         0 => "less than a minute".to_owned(),
         1 => "a minute".to_owned(),
         minutes => format!("{minutes} minutes"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_failed_recovery_points_a_saved_project_at_its_file() {
+        let broken = Unrecovered::from(FileError::Invalid(dusk_core::Rejection::SourceRange(
+            dusk_core::ClipId(4),
+        )));
+        assert_eq!(
+            recovery_failed(&broken, true),
+            "Could not recover the autosave: The project file breaks a timeline rule (the clip \
+             reaches outside its source file). Open the project's last saved file instead."
+        );
+    }
+
+    #[test]
+    fn an_autosave_from_a_newer_dusk_is_kept_for_it() {
+        // The autosave stays, and Dusk offers it again at its next start.
+        let newer = Unrecovered {
+            what: "the project file is in format version 2, which this Dusk cannot open; a newer \
+                   Dusk may"
+                .to_owned(),
+            newer: true,
+        };
+        assert_eq!(
+            recovery_failed(&newer, false),
+            "Could not recover the autosave: The project file is in format version 2, which \
+             this Dusk cannot open; a newer Dusk may. Choose Not now when Dusk asks again, to \
+             keep it for a newer Dusk."
+        );
+    }
+
+    #[test]
+    fn a_failed_recovery_of_an_untitled_project_has_no_file_to_point_at() {
+        assert_eq!(
+            recovery_failed(
+                &Unrecovered {
+                    what: "access is denied. (os error 5)".to_owned(),
+                    newer: false,
+                },
+                false
+            ),
+            "Could not recover the autosave: Access is denied. (os error 5). The project was \
+             never saved, so no other file holds its work."
+        );
     }
 }

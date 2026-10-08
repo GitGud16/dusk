@@ -4,7 +4,7 @@
 // as one undoable step.
 
 import { Theme } from "theme.slint";
-import { FieldLabel, Modal, NumberField, PanelTitle, Segmented, Slider, Switch, Timecode, ToolButton } from "widgets.slint";
+import { FieldLabel, Modal, NumberField, PanelTitle, Segmented, Slider, Status, StatusKind, Switch, Timecode, ToolButton } from "widgets.slint";
 import { Prompt } from "dialogs.slint";
 import { ShortcutPanel, ShortcutView } from "shortcut-list.slint";
 import { ExportDialog, ExportView } from "export-dialog.slint";
@@ -110,7 +110,7 @@ component TrimBar inherits Rectangle {
         width: 4px;
         y: (parent.height - self.height) / 2;
         height: 24px;
-        border-radius: 2px;
+        border-radius: self.width / 2;
         background: Theme.signal;
     }
 
@@ -184,6 +184,7 @@ component SideField inherits VerticalLayout {
 
 export component ClipEditorWindow inherits Window {
     title: root.window-title;
+    icon: @image-url("../assets/dusk.svg");
     preferred-width: 1040px;
     preferred-height: 700px;
     min-width: 760px;
@@ -227,7 +228,7 @@ export component ClipEditorWindow inherits Window {
 
     // The status line: what just happened, or why a change was refused.
     in property <string> status;
-    in property <bool> status-is-error;
+    in property <StatusKind> status-kind;
     // An export runs, so another cannot start.
     in property <bool> exporting;
     // The export dialog, for the clip alone.
@@ -264,6 +265,11 @@ export component ClipEditorWindow inherits Window {
     // Whether a dialog is open over the window: only its controls take the keyboard then (see
     // `Modal`), and the keys go back to the shortcuts whenever one opens or closes.
     property <bool> modal-open: root.export-open || root.prompt-open;
+    // A question that opens over a dialog takes the keys from the dialog's controls.
+    changed prompt-open => {
+        Modal.question = root.prompt-open;
+        keys.focus();
+    }
     changed modal-open => {
         Modal.open = root.modal-open;
         keys.focus();
@@ -798,7 +804,7 @@ export component ClipEditorWindow inherits Window {
 
                     Text {
                         text: root.status;
-                        color: root.status-is-error ? Theme.alert : Theme.text-2;
+                        color: Status.color-of(root.status-kind);
                         vertical-alignment: center;
                         overflow: elide;
                         horizontal-stretch: 1;

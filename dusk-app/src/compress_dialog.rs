@@ -25,8 +25,8 @@ pub struct CompressDialog {
 impl App {
     /// Ctrl+M and the File menu: asks for a video, then opens the compress dialog for it.
     pub(crate) fn compress_video(&mut self) {
-        if self.export.is_some() {
-            return self.say("An export is already running.");
+        if self.exporting(false) {
+            return;
         }
         if self.compress_dialog.is_some() || self.export_dialog.is_some() {
             return;
@@ -146,8 +146,8 @@ impl App {
         path: PathBuf,
         target: CompressTarget,
     ) {
-        if self.export.is_some() {
-            return self.fail("An export is already running.");
+        if self.exporting(false) {
+            return;
         }
         let over_media = same_file(&source, &path)
             || self
@@ -263,7 +263,8 @@ fn compress_view(dialog: &CompressDialog) -> CompressView {
             i32::try_from(megabytes).unwrap_or(i32::MAX),
         ),
         Outcome::NoLength => (
-            "This video does not say how long it is, so it cannot be made to a size; compress              it at a quality."
+            "This video does not say how long it is, so it cannot be made to a size; compress \
+             it at a quality."
                 .to_owned(),
             true,
             0,

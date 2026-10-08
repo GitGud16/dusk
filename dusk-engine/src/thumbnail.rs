@@ -61,6 +61,7 @@ pub(crate) fn spawn(
                 if let Ok(Some(thumbnail)) = thumbnail_of(&job.path, &job.info) {
                     report(EngineEvent::Thumbnail {
                         media: job.media,
+                        path: job.path,
                         thumbnail,
                     });
                 }

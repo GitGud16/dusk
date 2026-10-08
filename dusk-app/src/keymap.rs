@@ -172,7 +172,17 @@ impl Keys {
             match modifier.to_ascii_lowercase().as_str() {
                 "ctrl" | "control" => keys.ctrl = true,
                 "alt" => keys.alt = true,
-                "shift" => keys = keys.shift(),
+                "shift" => {
+                    keys = match keys.key {
+                        // Punctuation is the character it types, which is how a press of it
+                        // arrives: Shift+/ is ?, as on a US layout.
+                        KeyName::Char(c) if c.is_ascii_punctuation() => Keys {
+                            key: KeyName::Char(us_shifted(c)),
+                            ..keys
+                        },
+                        _ => keys.shift(),
+                    }
+                }
                 _ => return Err(unknown()),
             }
         }
@@ -260,6 +270,17 @@ pub struct Row {
     /// Its keys as the list writes them, such as `Ctrl+Shift+Z, Ctrl+Y`.
     pub keys: String,
     pub description: &'static str,
+}
+
+/// `rows` as the windows show them.
+pub fn views(rows: Vec<Row>) -> Vec<crate::ShortcutView> {
+    rows.into_iter()
+        .map(|row| crate::ShortcutView {
+            heading: row.heading.unwrap_or_default().into(),
+            keys: row.keys.into(),
+            description: row.description.into(),
+        })
+        .collect()
 }
 
 /// The keys of every action: the defaults, with the user's changes over them.
@@ -405,7 +426,7 @@ impl Keymap {
     }
 
     /// The keys of `action` as the list writes them.
-    fn keys_text(&self, action: Action) -> String {
+    pub(crate) fn keys_text(&self, action: Action) -> String {
         self.keys_of(action)
             .iter()
             .map(Keys::to_string)
@@ -477,26 +498,7 @@ impl Keymap {
 
     /// The shortcut list as the windows show it: every action, with its keys, by group.
     pub fn shortcut_list(&self) -> slint::ModelRc<crate::ShortcutView> {
-        let list: Vec<crate::ShortcutView> = ACTIONS
-            .iter()
-            .enumerate()
-            .map(|(index, info)| crate::ShortcutView {
-                heading: if index == 0 || ACTIONS[index - 1].group != info.group {
-                    info.group.title().into()
-                } else {
-                    Default::default()
-                },
-                keys: self
-                    .keys_of(info.action)
-                    .iter()
-                    .map(Keys::to_string)
-                    .collect::<Vec<_>>()
-                    .join(", ")
-                    .into(),
-                description: info.description.into(),
-            })
-            .collect();
-        std::rc::Rc::new(slint::VecModel::from(list)).into()
+        std::rc::Rc::new(slint::VecModel::from(views(self.rows("")))).into()
     }
 
     /// The action a key press stands for (see [`Keys::pressed`]).
@@ -515,6 +517,63 @@ impl Keymap {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The shortcut reference, `docs/SHORTCUTS.md`: every action with its keys, by group,
+    /// and its name in the shortcuts file.
+    fn reference(keymap: &Keymap) -> String {
+        let mut text = String::from(
+            "# Keyboard shortcuts\n\
+             \n\
+             Every action in Dusk has keys; these are the ones it starts with. In Dusk, `?` or F1 \
+             opens this list, to search it and to change keys. Changed keys are kept in \
+             `shortcuts.txt` in Dusk's settings folder (`%APPDATA%\\Dusk` on Windows), one \
+             action a line under the names below, such as `split = S`, or \
+             `redo = Ctrl+Shift+Z, Ctrl+Y` for two keys.\n\
+             \n\
+             Letter and digit keys go by their place on the keyboard, so they work under any \
+             layout. This file is written from Dusk's own table of shortcuts, and a test keeps \
+             the two the same.\n",
+        );
+        for row in keymap.rows("") {
+            if let Some(heading) = row.heading {
+                text.push_str(&format!(
+                    "\n## {heading}\n\n| Keys | What it does | In `shortcuts.txt` |\n|---|---|---|\n"
+                ));
+            }
+            let keys = if row.keys.is_empty() {
+                "none".to_owned()
+            } else {
+                row.keys
+                    .split(", ")
+                    .map(|keys| format!("`{keys}`"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            };
+            let name = row.action.info().map_or("", |info| info.name);
+            text.push_str(&format!("| {keys} | {} | `{name}` |\n", row.description));
+        }
+        text
+    }
+
+    #[test]
+    fn the_shortcut_reference_is_the_tables() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../docs/SHORTCUTS.md");
+        let reference = reference(&Keymap::default());
+        // After a change to the table, run this test with DUSK_WRITE_SHORTCUTS set to write it.
+        if std::env::var_os("DUSK_WRITE_SHORTCUTS").is_some() {
+            std::fs::write(&path, &reference).expect("write docs/SHORTCUTS.md");
+        }
+        let written = std::fs::read_to_string(&path)
+            .unwrap_or_default()
+            .replace("\r\n", "\n");
+        assert!(
+            written == reference,
+            "docs/SHORTCUTS.md is not the shortcut table's; write it again by running \
+             `cargo test -p dusk-app reference` with DUSK_WRITE_SHORTCUTS set \
+             (`$env:DUSK_WRITE_SHORTCUTS = 1` in PowerShell)"
+        );
+        assert!(reference.contains("| `Ctrl+Shift+M` | Find the media files"));
+    }
 
     fn keys(text: &str) -> Keys {
         Keys::parse(text).unwrap_or_else(|why| panic!("{text}: {why}"))
@@ -568,6 +627,16 @@ mod tests {
         assert_eq!(keys("Return"), keys("Enter"));
         assert_eq!(keys("Control+S"), keys("Ctrl+S"));
         assert_eq!(keys(","), keys("Comma"));
+    }
+
+    #[test]
+    fn shift_with_punctuation_in_the_file_is_what_it_types_on_a_us_layout() {
+        // As a press of Shift with that key arrives: the character it types.
+        assert_eq!(keys("Shift+/"), keys("?"));
+        assert_eq!(keys("Shift+="), keys("Plus"));
+        assert_eq!(keys("Ctrl+Shift+,"), keys("Ctrl+<"));
+        let map = Keymap::read("zoom-in = Shift+=\n").0;
+        assert_eq!(press(&map, "+", Some('='), SHIFT), Some(Action::ZoomIn));
     }
 
     #[test]
@@ -740,6 +809,11 @@ mod tests {
         assert_eq!(press(&map, "o", Some('o'), PLAIN), Some(Action::MarkOut));
         // Settings, as most programs open theirs.
         assert_eq!(press(&map, ",", Some(','), CTRL), Some(Action::Settings));
+        // F1, where people look for help, opens the shortcut list, and Shift+F1 says what
+        // Dusk is.
+        let f1 = named(Key::F1);
+        assert_eq!(press(&map, &f1, None, PLAIN), Some(Action::ShortcutList));
+        assert_eq!(press(&map, &f1, None, SHIFT), Some(Action::About));
     }
 
     #[test]

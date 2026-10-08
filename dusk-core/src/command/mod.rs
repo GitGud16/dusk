@@ -7,6 +7,7 @@ use std::fmt;
 mod clip;
 mod edits;
 mod insert;
+mod media;
 mod moves;
 mod remove;
 mod sequence;
@@ -26,6 +27,7 @@ use crate::time::{Frame, MediaTime, length_for};
 pub use clip::{SetClipEnabled, Unlink};
 pub use edits::{SetAudioEdits, SetVideoEdits};
 pub use insert::InsertClips;
+pub use media::RelinkMedia;
 pub use moves::{MoveClips, nearest_free_position};
 pub use remove::{RemoveClips, remove_one};
 pub use sequence::{SEQUENCE_SIDES, SetSequenceSettings};
@@ -39,6 +41,8 @@ pub use trim::{Edge, TrimClips};
 pub enum Command {
     /// Adds a media file to the project.
     AddMedia(MediaRef),
+    /// Points a media file at another path, such as where a moved file went.
+    RelinkMedia(RelinkMedia),
     /// Places clips on tracks.
     InsertClips(InsertClips),
     /// Moves the start or the end of a clip and its linked partners.
@@ -80,6 +84,7 @@ impl Command {
                 project.media.push(media.clone());
                 Ok(())
             }
+            Command::RelinkMedia(relink) => relink.apply(project),
             Command::InsertClips(insert) => insert.apply(project),
             Command::TrimClips(trim) => trim.apply(project),
             Command::MoveClips(moves) => moves.apply(project),
@@ -111,6 +116,7 @@ impl Command {
     pub fn revert(&mut self, project: &mut Project) {
         match self {
             Command::AddMedia(media) => project.media.retain(|other| other.id != media.id),
+            Command::RelinkMedia(relink) => relink.revert(project),
             Command::InsertClips(insert) => insert.revert(project),
             Command::TrimClips(trim) => trim.revert(project),
             Command::MoveClips(moves) => moves.revert(project),
@@ -140,6 +146,7 @@ impl Command {
             Command::ApplyClipSession(session) => session.notices.clone(),
             Command::Batch(commands) => commands.iter().flat_map(Command::notices).collect(),
             Command::AddMedia(_)
+            | Command::RelinkMedia(_)
             | Command::InsertClips(_)
             | Command::MoveClips(_)
             | Command::SplitClips(_)
@@ -328,7 +335,7 @@ pub enum Rejection {
     #[error("the clip would overlap another clip; make room first")]
     Overlap(TrackId),
     /// A clip's source range does not lie within its media file.
-    #[error("the clip reaches outside its source file")]
+    #[error("the clip reaches outside its source file; trim it to lie within the file")]
     SourceRange(ClipId),
     /// The edit would leave a clip shorter than one frame.
     #[error("a clip must be at least one frame long")]
@@ -361,7 +368,7 @@ pub enum Rejection {
     #[error("the volume must be between -60 and +12 dB")]
     Volume(ClipId),
     /// The crop is empty or reaches outside the picture.
-    #[error("the crop must lie inside the picture")]
+    #[error("the crop must lie inside the picture; crop less")]
     Crop(ClipId),
     /// A split was asked for at a frame that is not strictly inside the clip.
     #[error("move the playhead inside the clip to split it")]
@@ -369,17 +376,55 @@ pub enum Rejection {
     /// No clip lies under the playhead on an unlocked track.
     #[error("move the playhead over a clip on an unlocked track to split it")]
     NothingToSplit,
-
+    /// The clip editor's link group was deleted or unlinked in the timeline.
     #[error("the clip was deleted or unlinked in the timeline; open it in the clip editor again")]
     GroupChanged,
     /// The sequence size is outside what Dusk supports.
     #[error("the sequence must be 16 to 8192 pixels on each side")]
     Resolution,
+    /// A media file was to be relinked to a file of another kind: a video, a sound or a
+    /// picture where the project used another.
+    #[error(
+        "that file is not the same kind of media as the one the project used; pick that file, or a copy of it"
+    )]
+    RelinkKind(MediaId),
+    /// A media file was to be relinked to a file without sound, while a clip plays its sound.
+    #[error(
+        "that file has no sound, and the project plays the sound of the one it used; pick that file, or a copy of it"
+    )]
+    RelinkNoSound(MediaId),
+    /// A media file was to be relinked to a file shorter than the clips that use it.
+    #[error(
+        "that file is shorter than the clips that use it; pick the file the project used, or a copy of it"
+    )]
+    RelinkTooShort(MediaId),
+    /// A media file was to be relinked to a file whose picture a clip's crop reaches outside.
+    #[error(
+        "that file's picture is too small for a crop of it; pick the file the project used, or a copy of it"
+    )]
+    RelinkCropSize(MediaId),
     /// A ripple delete would move clips onto a clip that overlaps the deleted range.
     #[error(
         "a clip on another track overlaps the deleted range; lock that track or use plain delete"
     )]
     RippleBlocked(TrackId),
+}
+
+impl Rejection {
+    /// What went wrong without what to do about it, for where that advice cannot be
+    /// followed, such as a project file that does not open.
+    pub fn what(&self) -> String {
+        without_advice(self.to_string())
+    }
+}
+
+/// `message` without the advice that ends it after its last `; `, as messages that say what
+/// happened and what to do are written.
+pub(crate) fn without_advice(message: String) -> String {
+    match message.rsplit_once("; ") {
+        Some((what, _)) => what.to_owned(),
+        None => message,
+    }
 }
 
 /// Something a command did beyond what was asked.
@@ -415,6 +460,87 @@ mod tests {
     use crate::command::testing::*;
     use crate::model::TrackKind;
     use crate::time::MediaTime;
+
+    /// Every refusal, so a test sees each one's message. A new kind has to join the list: the
+    /// match below has no catch-all.
+    fn every_rejection() -> Vec<Rejection> {
+        let (track, clip, media) = (TrackId(1), ClipId(1), MediaId(1));
+        let all = vec![
+            Rejection::UnknownTrack(track),
+            Rejection::UnknownClip(clip),
+            Rejection::UnknownMedia(media),
+            Rejection::DuplicateId,
+            Rejection::TrackLocked(track),
+            Rejection::WrongTrackKind(clip),
+            Rejection::Overlap(track),
+            Rejection::SourceRange(clip),
+            Rejection::TooShort(clip),
+            Rejection::BeforeStart(clip),
+            Rejection::Speed(clip),
+            Rejection::Length(clip),
+            Rejection::LinkMismatch(clip),
+            Rejection::NotLinked(clip),
+            Rejection::NotAudio(clip),
+            Rejection::NotVideo(clip),
+            Rejection::Fades(clip),
+            Rejection::Volume(clip),
+            Rejection::Crop(clip),
+            Rejection::SplitOutside(clip),
+            Rejection::NothingToSplit,
+            Rejection::GroupChanged,
+            Rejection::Resolution,
+            Rejection::RelinkKind(media),
+            Rejection::RelinkNoSound(media),
+            Rejection::RelinkTooShort(media),
+            Rejection::RelinkCropSize(media),
+            Rejection::RippleBlocked(track),
+        ];
+        for rejection in &all {
+            match rejection {
+                Rejection::UnknownTrack(_)
+                | Rejection::UnknownClip(_)
+                | Rejection::UnknownMedia(_)
+                | Rejection::DuplicateId
+                | Rejection::TrackLocked(_)
+                | Rejection::WrongTrackKind(_)
+                | Rejection::Overlap(_)
+                | Rejection::SourceRange(_)
+                | Rejection::TooShort(_)
+                | Rejection::BeforeStart(_)
+                | Rejection::Speed(_)
+                | Rejection::Length(_)
+                | Rejection::LinkMismatch(_)
+                | Rejection::NotLinked(_)
+                | Rejection::NotAudio(_)
+                | Rejection::NotVideo(_)
+                | Rejection::Fades(_)
+                | Rejection::Volume(_)
+                | Rejection::Crop(_)
+                | Rejection::SplitOutside(_)
+                | Rejection::NothingToSplit
+                | Rejection::GroupChanged
+                | Rejection::Resolution
+                | Rejection::RelinkKind(_)
+                | Rejection::RelinkNoSound(_)
+                | Rejection::RelinkTooShort(_)
+                | Rejection::RelinkCropSize(_)
+                | Rejection::RippleBlocked(_) => {}
+            }
+        }
+        all
+    }
+
+    #[test]
+    fn every_refusal_says_what_happened_before_any_advice() {
+        // `what` cuts a message at its last "; ", where its advice starts, so what happened
+        // never holds one itself.
+        for rejection in every_rejection() {
+            let message = rejection.to_string();
+            assert!(message.matches("; ").count() <= 1, "{message}");
+            assert!(message.starts_with(&rejection.what()), "{message}");
+            assert!(!rejection.what().is_empty(), "{rejection:?}");
+        }
+    }
 
     #[test]
     fn adding_media_lists_it_once_and_reverts() {

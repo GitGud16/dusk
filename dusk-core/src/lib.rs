@@ -15,12 +15,14 @@ mod session;
 pub mod time;
 
 pub use command::{
-    ApplyClipSession, Command, Edge, InsertClips, MoveClips, Notice, Rejection, RemoveClips,
-    SEQUENCE_SIDES, SetAudioEdits, SetClipEnabled, SetSequenceSettings, SetTrackLocked,
-    SetTrackMuted, SetVideoEdits, SplitClips, TrimClips, Unlink, nearest_free_position, remove_one,
-    split_at,
+    ApplyClipSession, Command, Edge, InsertClips, MoveClips, Notice, Rejection, RelinkMedia,
+    RemoveClips, SEQUENCE_SIDES, SetAudioEdits, SetClipEnabled, SetSequenceSettings,
+    SetTrackLocked, SetTrackMuted, SetVideoEdits, SplitClips, TrimClips, Unlink,
+    nearest_free_position, remove_one, split_at,
 };
-pub use import::{STILL_LENGTH, add_media, import, nearest_free_place, place, place_where_free};
+pub use import::{
+    STILL_LENGTH, add_media, drop_place, import, nearest_free_place, place, place_where_free,
+};
 pub use model::{
     AudioEdits, Clip, ClipEdits, ClipId, Fit, FreshIds, LinkId, MediaId, MediaInfo, MediaKind,
     MediaRef, Project, Rect, Rotation, Sequence, Track, TrackId, TrackKind, VideoEdits,

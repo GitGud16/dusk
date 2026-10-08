@@ -27,7 +27,9 @@ use crate::speed::{SpeedKey, next_factor};
 use crate::stats::Stats;
 use crate::thumbnails::{THUMBNAIL_CAP, Thumbnails};
 use crate::timeline::{self, View};
-use crate::{ClipEditorWindow, ClipProps, ClipView, MainWindow, MediaView, TickView, TrackView};
+use crate::{
+    ClipEditorWindow, ClipProps, ClipView, MainWindow, MediaView, StatusKind, TickView, TrackView,
+};
 
 thread_local! {
     /// The editor, owned by the UI thread.
@@ -137,6 +139,20 @@ pub struct App {
     pub(crate) settings: crate::settings::Settings,
     /// The Settings dialog is open.
     pub(crate) settings_open: bool,
+    /// The About dialog is open.
+    pub(crate) about_open: bool,
+    /// The project's media files that are not where it says, as the last check found.
+    pub(crate) missing: std::collections::HashSet<MediaId>,
+    /// The list of missing media files, while it is open.
+    pub(crate) missing_dialog: Option<crate::missing::MissingDialog>,
+    /// The checks for missing media, so that a check overtaken by a newer one changes nothing.
+    pub(crate) media_checks: crate::missing::MediaChecks,
+    /// What the next check does with what it finds: a project just opened says so.
+    pub(crate) media_check_ask: crate::missing::Ask,
+    /// The list of missing media waits for a question to be answered before it opens.
+    pub(crate) missing_waiting: bool,
+    /// The find under way for a missing media file; set to stop it.
+    pub(crate) relink: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     /// The GPL encoders of the user's own `ffmpeg`, picked in the export dialog for this
     /// session (docs/ARCHITECTURE.md, "Optional GPL encoders").
     pub(crate) external: Vec<dusk_engine::ExternalEncoder>,
@@ -155,7 +171,7 @@ pub struct App {
     pub(crate) sequence_settings_open: bool,
     models: Models,
     /// The media bin's thumbnails.
-    thumbnails: Thumbnails<slint::Image>,
+    pub(crate) thumbnails: Thumbnails<slint::Image>,
     /// Preview statistics, when `DUSK_STATS` is set.
     stats: Option<Stats>,
     /// The clip editor's work, while it is open.
@@ -204,6 +220,13 @@ impl App {
             settings_dir: None,
             settings: crate::settings::Settings::default(),
             settings_open: false,
+            about_open: false,
+            missing: std::collections::HashSet::new(),
+            missing_dialog: None,
+            media_checks: crate::missing::MediaChecks::default(),
+            media_check_ask: crate::missing::Ask::No,
+            missing_waiting: false,
+            relink: None,
             external: Vec::new(),
             use_external: false,
             external_note: String::new(),
@@ -230,7 +253,14 @@ impl App {
     pub(crate) fn set_project(&mut self, project: Project) {
         let project = Arc::new(project);
         self.engine.set_project(Preview::Main, Arc::clone(&project));
+        // Media added, gone or relinked: which files are missing is checked again.
+        let moved =
+            crate::missing::media_paths(&self.project) != crate::missing::media_paths(&project);
         self.project = project;
+        let ask = std::mem::take(&mut self.media_check_ask);
+        if moved || ask != crate::missing::Ask::No {
+            self.check_media(ask);
+        }
         if self
             .selected_clip
             .is_some_and(|clip| self.project.find_clip(clip).is_none())
@@ -253,8 +283,12 @@ impl App {
     /// why it was refused. True when it was applied.
     pub(crate) fn edit(&mut self, command: Command) -> bool {
         match self.try_edit(command) {
+            Ok(notices) if notices.is_empty() => {
+                self.say("");
+                true
+            }
             Ok(notices) => {
-                self.say(&notices);
+                self.warn(&notices);
                 true
             }
             Err(reason) => {
@@ -303,19 +337,29 @@ impl App {
 
     /// A key was pressed; true when it was a shortcut, or a dialog took it.
     pub fn key(&mut self, text: &str, ctrl: bool, shift: bool, alt: bool) -> bool {
-        // Slint moves the keyboard through a dialog's controls with the keys no one takes.
-        if self.main_dialog_open() && crate::keymap::moves_focus(text) {
+        // Slint moves the keyboard through a dialog's controls with the keys no one takes; the
+        // keys the shortcut list waits for are its own, Tab among them.
+        let capturing = self.question.is_none()
+            && self
+                .shortcut_dialog
+                .as_ref()
+                .is_some_and(|dialog| dialog.capturing);
+        if self.main_dialog_open() && !capturing && crate::keymap::moves_focus(text) {
             return false;
+        }
+        // A question shows over every dialog, so it takes the keys first.
+        if self.question.is_some() {
+            self.answer_with_key(text);
+            return true;
         }
         if self.shortcut_dialog.is_some() {
             let key = crate::platform::pressed_key();
             return self.shortcut_dialog_key(text, key, ctrl, shift, alt);
         }
-        if self.compress_dialog_key(text) || self.export_dialog_key(text, false) {
+        if self.missing_dialog_key(text) {
             return true;
         }
-        if self.question.is_some() {
-            self.answer_with_key(text);
+        if self.compress_dialog_key(text) || self.export_dialog_key(text, false) {
             return true;
         }
         if self.sequence_settings_open {
@@ -327,6 +371,16 @@ impl App {
         if self.settings_open {
             if text == SharedString::from(slint::platform::Key::Escape).as_str() {
                 self.settings_close();
+            }
+            return true;
+        }
+        if self.about_open {
+            use slint::platform::Key;
+            if [Key::Escape, Key::Return]
+                .into_iter()
+                .any(|key| text == SharedString::from(key).as_str())
+            {
+                self.about_close();
             }
             return true;
         }
@@ -349,11 +403,15 @@ impl App {
             || self.sequence_settings_open
             || self.shortcut_dialog.is_some()
             || self.settings_open
+            || self.about_open
+            || self.missing_dialog.is_some()
     }
 
-    /// Does what a shortcut, a menu item or a button stands for.
+    /// Does what a shortcut, a menu item or a button stands for. The menu bar is the system's,
+    /// so its items still reach here while a dialog is open: then only Quit goes on, to the
+    /// question about unsaved changes, and nothing while a question is open.
     pub fn act(&mut self, action: Action) {
-        if self.question.is_some() {
+        if self.question.is_some() || (self.main_dialog_open() && !matches!(action, Action::Quit)) {
             return;
         }
         match action {
@@ -403,9 +461,11 @@ impl App {
             Action::Settings => self.open_settings(),
             Action::Export => self.export(),
             Action::CompressVideo => self.compress_video(),
+            Action::FindMissingMedia => self.find_missing_media(),
             Action::CancelExport => self.cancel_export(),
             Action::Quit => self.quit(),
             Action::ShortcutList => self.open_shortcut_list(),
+            Action::About => self.open_about(),
             Action::ToggleFill => self.toggle_fill(),
             Action::OpenClipEditor => self.open_selected_clip(),
             // The clip editor's own keys mean nothing in the main window.
@@ -685,14 +745,18 @@ impl App {
                 self.stopped(preview, frame);
                 self.refresh_transport();
             }
-            EngineEvent::Error(error) => self.fail(&error.to_string()),
+            EngineEvent::Error(error) => self.engine_failed(&error),
             EngineEvent::Frame {
                 preview,
                 frame,
                 texture,
             } => self.show_frame(preview, frame, texture),
             EngineEvent::Export(event) => self.export_event(event),
-            EngineEvent::Thumbnail { media, thumbnail } => {
+            EngineEvent::Thumbnail {
+                media,
+                path,
+                thumbnail,
+            } => {
                 let pixels = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(
                     &thumbnail.rgba,
                     thumbnail.width,
@@ -700,7 +764,7 @@ impl App {
                 );
                 let bytes = thumbnail.rgba.len();
                 self.thumbnails
-                    .insert(media, slint::Image::from_rgba8(pixels), bytes);
+                    .insert(media, path, slint::Image::from_rgba8(pixels), bytes);
                 self.refresh_bin();
             }
         }
@@ -809,7 +873,12 @@ impl App {
             .map(|row| MediaView {
                 id: id_int(row.id.0),
                 name: row.name.into(),
-                detail: row.detail.into(),
+                missing: self.missing.contains(&row.id),
+                detail: if self.missing.contains(&row.id) {
+                    self.missing_detail().into()
+                } else {
+                    row.detail.into()
+                },
                 length: frame_int(row.length),
                 video: row.video,
                 audio: row.audio,
@@ -886,17 +955,24 @@ impl App {
 
     /// Shows `message` in the status line.
     pub(crate) fn say(&self, message: &str) {
-        if let Some(window) = self.window() {
-            window.set_status(message.into());
-            window.set_status_is_error(false);
-        }
+        self.status(message, StatusKind::Info);
+    }
+
+    /// Shows `message` in the status line as something to notice, such as an edit that did
+    /// more than was asked.
+    pub(crate) fn warn(&self, message: &str) {
+        self.status(message, StatusKind::Warning);
     }
 
     /// Shows `message` in the status line as an error.
     pub(crate) fn fail(&self, message: &str) {
+        self.status(message, StatusKind::Error);
+    }
+
+    pub(crate) fn status(&self, message: &str, kind: StatusKind) {
         if let Some(window) = self.window() {
             window.set_status(message.into());
-            window.set_status_is_error(true);
+            window.set_status_kind(kind);
         }
     }
 

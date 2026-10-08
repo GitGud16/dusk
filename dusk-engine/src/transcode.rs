@@ -180,7 +180,7 @@ fn finish(
 ) -> Result<Option<Transcoded>, EngineError> {
     match written {
         Ok(Some(Encoded { encoder, size })) => {
-            if let Err(source) = std::fs::rename(part, output) {
+            if let Err(source) = put_in_place(part, output) {
                 let _ = std::fs::remove_file(part);
                 return Err(EngineError::Io {
                     path: output.to_path_buf(),
@@ -220,6 +220,16 @@ pub fn extract_audio(
         ..TranscodeSettings::default()
     };
     transcode(input, output, &settings, cancel, progress)
+}
+
+/// Renames the finished `part` to `output`, once what was written to it is on the disk, so a
+/// power cut just after cannot leave a damaged file under the name.
+pub(crate) fn put_in_place(part: &Path, output: &Path) -> std::io::Result<()> {
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(part)?
+        .sync_all()?;
+    std::fs::rename(part, output)
 }
 
 /// `path` with `.part` appended: `clip.mp4` becomes `clip.mp4.part`.

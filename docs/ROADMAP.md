@@ -72,12 +72,12 @@ Import one file, see it as a linked video clip and audio clip on one video track
 
 ## M6 — Release 0.1
 
-- Theme and icon polish against THEME.md; app icon and logo. About dialog with `AboutSlint`, license notices, and a link to the releases page.
-- Missing-media relink dialog. Error messages that say what to do.
-- Installer (Inno Setup with solid LZMA2, picked at M0; not MSI) containing `dusk.exe`, `dusq.exe`, the five FFmpeg DLLs and the third-party license files (the bundled fonts' OFL requires shipping theirs); startup time, download and installed size measured against targets.
-- Docs: README with screenshots, shortcuts reference, build instructions, contributing guide.
+- Theme and icon polish against THEME.md; app icon and logo. About dialog with `AboutSlint`, license notices, and a link to the releases page. Done: the logo is drawn by `scripts/make-logo.py` at every size Windows asks for and built into `dusk.exe`, the theme pass fixed four things (ARCHITECTURE.md, "Release (0.1)"), and Help → About Dusk (Shift+F1) has the licenses and the releases page.
+- Missing-media relink dialog. Error messages that say what to do. Done: a project opens with its missing files listed, File → Find missing media… (Ctrl+Shift+M) relinks a file and the others beside it in one undoable step, and every message was gone through.
+- Installer (Inno Setup with solid LZMA2, picked at M0; not MSI) containing `dusk.exe`, `dusq.exe`, the five FFmpeg DLLs and the third-party license files (the bundled fonts' OFL requires shipping theirs); startup time, download and installed size measured against targets. Done: `scripts/build-release.ps1` and `installer/dusk.iss`; CI builds the installer on every push and installs, runs and uninstalls it (`scripts/check-installer.ps1`); the sizes and the start-up are in REQUIREMENTS.md.
+- Docs: README with screenshots, shortcuts reference, build instructions, contributing guide. Done: README.md, `docs/SHORTCUTS.md` (a test keeps it equal to the shortcut table), CONTRIBUTING.md, and SETUP.md's "Release".
 
-**Done when**: a stranger can download Dusk, open a clip, cut it, and export it without asking a question.
+**Done when**: a stranger can download Dusk, open a clip, cut it, and export it without asking a question. Holds as far as tests can show it: CI installs the installer as a user would and runs both programs from where it put them, and the release build, started for the first time with nothing set up, says what to do first ("Import video, audio or photos with Import, or drop them on the window. Then drag them onto the timeline."). From there a 12 s 1080p clip with sound was brought in with the Import button and the system's dialog, dragged onto the timeline, split with Edit → Split at the playhead, its second half clicked and deleted with Delete, and exported with Export and Export… into a 6 s H.264 and AAC file, meeting no dialog but the system's and the export's. Whether a stranger asks a question is for a stranger to show, which is the last hands-on check on PR #6.
 
 ## 0.2
 

@@ -10,8 +10,8 @@ mod common;
 use dusk_core::{Frame, TrackKind};
 
 use common::{
-    VK_DELETE, VK_HOME, VK_RETURN, VK_RIGHT, close, press, saved_project_with_clip, start,
-    state_dir, type_key, wait_for_clean_exit, wait_for_title, wait_for_window,
+    VK_DELETE, VK_F1, VK_HOME, VK_RETURN, VK_RIGHT, VK_TAB, close, press, saved_project_with_clip,
+    start, state_dir, type_key, wait_for_clean_exit, wait_for_title, wait_for_window,
 };
 
 #[test]
@@ -72,4 +72,35 @@ fn an_edit_is_made_and_saved_with_keys_alone() {
         .filter(|track| !track.clips().is_empty())
         .count();
     assert_eq!(tracks_with_clips, 2);
+}
+
+#[test]
+fn tab_can_be_an_actions_new_keys() {
+    let state = state_dir("keyboard-tab");
+    let mut dusk = start(&[], &state);
+    let window = wait_for_window(&mut dusk);
+    wait_for_title(window, "Dusk did not start", |title| {
+        title.ends_with("Dusk")
+    });
+    // F1 opens the shortcut list on its first action, play or pause; Enter waits for its new
+    // keys, and Tab is taken as them rather than moving to the next button.
+    press(window, VK_F1, None);
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    press(window, VK_RETURN, None);
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    press(window, VK_TAB, None);
+    let file = state.join("settings").join("shortcuts.txt");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let taken = loop {
+        let text = std::fs::read_to_string(&file).unwrap_or_default();
+        if text.lines().any(|line| line.trim() == "play-pause = Tab") {
+            break true;
+        }
+        if std::time::Instant::now() >= deadline {
+            break false;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    };
+    let _ = dusk.kill();
+    assert!(taken, "the shortcuts file does not give play or pause Tab");
 }

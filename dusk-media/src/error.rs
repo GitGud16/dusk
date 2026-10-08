@@ -22,13 +22,13 @@ pub enum MediaError {
         path: PathBuf,
     },
     /// The file has no audio stream to decode.
-    #[error("{} has no audio", path.display())]
+    #[error("{} has no audio; pick a file with sound", path.display())]
     NoAudio {
         /// The path as given.
         path: PathBuf,
     },
     /// FFmpeg could not open or read the file.
-    #[error("FFmpeg could not read {}: {source}. The file may be damaged or in a format FFmpeg cannot read", path.display())]
+    #[error("FFmpeg could not read {}: {source}. The file may be damaged or in a format FFmpeg cannot read; try another copy of it, or convert it to MP4", path.display())]
     Open {
         /// The path as given.
         path: PathBuf,

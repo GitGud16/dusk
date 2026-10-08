@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, mpsc};
 use std::time::{Duration, Instant};
 
-use dusk_core::{Command, Frame, MediaId, Project, RemoveClips, import, split_at};
+use dusk_core::{Command, Frame, MediaId, Project, RelinkMedia, RemoveClips, import, split_at};
 use dusk_engine::{Engine, EngineEvent, EngineOptions, Gpu, Preview, media_info};
 use dusk_render::Compositor;
 
@@ -142,8 +142,13 @@ fn thumbnails_come_from_the_thumbnail_thread() {
     running.engine.make_thumbnail(MediaId(7), sample(), info);
     let thumbnail = loop {
         match running.events.recv_timeout(PATIENCE).expect("an event") {
-            EngineEvent::Thumbnail { media, thumbnail } => {
-                assert_eq!(media, MediaId(7));
+            EngineEvent::Thumbnail {
+                media,
+                path,
+                thumbnail,
+            } => {
+                // Which media, and the file it was made from.
+                assert_eq!((media, path), (MediaId(7), sample()));
                 break thumbnail;
             }
             EngineEvent::Frame { .. } => {}
@@ -255,6 +260,114 @@ fn shows_the_requested_frame_at_the_preview_size() {
     let rgba = Compositor::new(&running.gpu).read_rgba(&texture).unwrap();
     // testsrc2 is colorful; an all-black frame would mean nothing was drawn.
     assert!(rgba.chunks(4).any(|pixel| pixel[..3] != [0, 0, 0]));
+}
+
+#[test]
+fn a_relinked_file_never_shows_the_old_files_frames() {
+    let running = start(project_at(Frame(0)));
+    running.engine.show(Preview::Main, Frame(5));
+    let (_, texture) = running.next_frame();
+    assert!(!is_black(&running, &texture.expect("a picture")));
+    // The same media, now where no file is: the frames decoded from its old place must not
+    // stand in for it, so the frame fails to open.
+    let mut moved = (*project_at(Frame(0))).clone();
+    let media = moved.media()[0].clone();
+    let elsewhere = sample().with_file_name("moved-away.mp4");
+    Command::RelinkMedia(RelinkMedia::new(media.id, elsewhere, media.info))
+        .apply(&mut moved)
+        .unwrap();
+    running.engine.set_project(Preview::Main, Arc::new(moved));
+    running.engine.show(Preview::Main, Frame(5));
+    loop {
+        match running.events.recv_timeout(PATIENCE).expect("an event") {
+            EngineEvent::Error(_) => break,
+            EngineEvent::Frame { texture, .. } => {
+                panic!("a frame came instead of the error: {texture:?}")
+            }
+            _ => {}
+        }
+    }
+    // Then the frame shows black, as a clip whose file is missing does, rather than the
+    // picture that was on screen before.
+    let (frame, texture) = running.next_frame();
+    assert_eq!(frame, Frame(5));
+    assert!(is_black(&running, &texture.expect("a frame")));
+}
+
+#[test]
+fn a_media_id_given_to_another_file_never_shows_the_old_files_frames() {
+    let running = start(project_at(Frame(0)));
+    running.engine.show(Preview::Main, Frame(5));
+    let (_, texture) = running.next_frame();
+    assert!(!is_black(&running, &texture.expect("a picture")));
+    let info = media_info(&sample()).unwrap();
+    // The media goes (an import undone), and a new one is given its id: here a file that is
+    // not there, so a frame of the old file would be the only picture it could show.
+    let empty = Project::new(info.frame_rate.unwrap(), (320, 240));
+    running
+        .engine
+        .set_project(Preview::Main, Arc::new(empty.clone()));
+    running.engine.show(Preview::Main, Frame(5));
+    let (_, texture) = running.next_frame();
+    assert!(is_black(&running, &texture.expect("a frame")));
+    let mut other = empty;
+    import(
+        &other,
+        sample().with_file_name("another-file.mp4"),
+        info,
+        Frame(0),
+    )
+    .apply(&mut other)
+    .unwrap();
+    assert_eq!(
+        other.media()[0].id,
+        project_at(Frame(0)).media()[0].id,
+        "the new media has the old one's id"
+    );
+    running.engine.set_project(Preview::Main, Arc::new(other));
+    running.engine.show(Preview::Main, Frame(5));
+    loop {
+        match running.events.recv_timeout(PATIENCE).expect("an event") {
+            EngineEvent::Error(_) => break,
+            EngineEvent::Frame { texture, .. } => {
+                panic!("a frame came instead of the error: {texture:?}")
+            }
+            _ => {}
+        }
+    }
+}
+
+#[test]
+fn two_previews_naming_one_media_id_for_two_files_never_share_its_frames() {
+    // The clip editor can keep a project in which a media id names a file the main window's
+    // project no longer does (its group was undone, and the id given to new media).
+    let running = start(project_at(Frame(0)));
+    let mut other = (*project_at(Frame(0))).clone();
+    let media = other.media()[0].clone();
+    let elsewhere = sample().with_file_name("another-file.mp4");
+    Command::RelinkMedia(RelinkMedia::new(media.id, elsewhere, media.info))
+        .apply(&mut other)
+        .unwrap();
+    running
+        .engine
+        .set_project(Preview::ClipEditor, Arc::new(other));
+    running
+        .engine
+        .set_preview_size(Preview::ClipEditor, (64, 48));
+    running.engine.show(Preview::Main, Frame(5));
+    let (_, texture) = running.next_frame();
+    assert!(!is_black(&running, &texture.expect("a picture")));
+    // The clip editor's file is not there: the main window's frames do not stand in for it.
+    running.engine.show(Preview::ClipEditor, Frame(5));
+    loop {
+        match running.events.recv_timeout(PATIENCE).expect("an event") {
+            EngineEvent::Error(_) => break,
+            EngineEvent::Frame { texture, .. } => {
+                panic!("a frame came instead of the error: {texture:?}")
+            }
+            _ => {}
+        }
+    }
 }
 
 #[test]

@@ -109,8 +109,15 @@ export component ShortcutDialog inherits Rectangle {
     property <length> row-height: 24px;
     property <length> heading-height: 26px;
     property <length> list-height: 360px;
-    // How far the list is scrolled.
+    // How far the list scrolls at most, and how far it is scrolled, kept within the list as
+    // a search narrows it.
     property <length> scrolled;
+    property <length> most: Math.max(0px, list.preferred-height - root.list-height);
+    property <length> top: Math.clamp(root.scrolled, 0px, root.most);
+    // Clamped for good as rows leave, so it does not jump back when they return.
+    changed most => {
+        root.scrolled = root.top;
+    }
 
     pure function picked-top() -> length {
         return root.picked * root.row-height + root.headings-above * root.heading-height;
@@ -118,9 +125,9 @@ export component ShortcutDialog inherits Rectangle {
 
     changed picked => {
         if root.picked >= 0 {
-            if root.picked-top() < root.scrolled {
+            if root.picked-top() < root.top {
                 root.scrolled = root.picked-top();
-            } else if root.picked-top() + root.row-height > root.scrolled + root.list-height {
+            } else if root.picked-top() + root.row-height > root.top + root.list-height {
                 root.scrolled = root.picked-top() + root.row-height - root.list-height;
             }
         }
@@ -157,13 +164,13 @@ export component ShortcutDialog inherits Rectangle {
 
             TouchArea {
                 scroll-event(event) => {
-                    root.scrolled = Math.clamp(root.scrolled - event.delta-y, 0px, Math.max(0px, list.preferred-height - root.list-height));
+                    root.scrolled = Math.clamp(root.top - event.delta-y, 0px, root.most);
                     return accept;
                 }
             }
 
             list := VerticalLayout {
-                y: -root.scrolled;
+                y: -root.top;
                 height: self.preferred-height;
                 alignment: start;
 

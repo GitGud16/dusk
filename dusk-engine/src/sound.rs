@@ -3,6 +3,7 @@
 //! on the device, so video follows audio. When there is nothing to hear (a silent speed, no
 //! device) it starts the clock on the system clock instead.
 
+use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -164,7 +165,7 @@ impl SoundThread {
         };
         // A full buffer before the device starts, so it never starts on silence.
         if let Err(error) = top_up(output, &mut playing) {
-            (self.report)(EngineEvent::Error(error));
+            (self.report)(EngineEvent::Error(error.or_gone(Path::is_file)));
             return self.start_system_clock(generation, from, factor);
         }
         {
@@ -194,7 +195,8 @@ impl SoundThread {
         }
         if let Err(error) = top_up(output, playing) {
             let (generation, factor) = (playing.generation, playing.factor);
-            (self.report)(EngineEvent::Error(error));
+            // A drive that went away under a clip's sound fails as FFmpeg failing to read it.
+            (self.report)(EngineEvent::Error(error.or_gone(Path::is_file)));
             self.stop();
             self.switch_to_system_clock(generation, factor);
         }

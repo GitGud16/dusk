@@ -22,7 +22,7 @@ use crate::platform;
 use crate::shortcuts::Action;
 use crate::speed::{SpeedKey, next_factor};
 use crate::timeline::timecode;
-use crate::{ClipEditorWindow, EditorProps, EditorSides};
+use crate::{ClipEditorWindow, EditorProps, EditorSides, StatusKind};
 
 /// The clip editor's work while its window is open.
 pub struct ClipEditor {
@@ -121,7 +121,9 @@ impl App {
             && let Err(error) = window.show()
         {
             self.forget_editor();
-            return self.fail(&format!("The clip editor could not open: {error}."));
+            return self.fail(&format!(
+                "The clip editor could not open: {error}. Update the graphics driver and try again."
+            ));
         }
         // Showing the window sized its preview, but the callback came too early to be heard.
         self.editor_preview_resized(
@@ -141,7 +143,9 @@ impl App {
                     self.editor_window = Some(window);
                 }
                 Err(error) => {
-                    self.fail(&format!("The clip editor could not open: {error}."));
+                    self.fail(&format!(
+                "The clip editor could not open: {error}. Update the graphics driver and try again."
+            ));
                     return None;
                 }
             }
@@ -314,8 +318,14 @@ impl App {
                 }
                 self.editor_follow_project();
                 let message = format!("Applied to the project. {notices}");
-                self.say(message.trim_end());
-                self.editor_say(message.trim_end());
+                let message = message.trim_end();
+                if notices.is_empty() {
+                    self.say(message);
+                    self.editor_say(message);
+                } else {
+                    self.warn(message);
+                    self.editor_warn(message);
+                }
                 true
             }
             Err(reason) => {
@@ -773,7 +783,14 @@ impl App {
             | Action::Export
             | Action::CompressVideo
             | Action::CancelExport
-            | Action::Quit => self.act(action),
+            | Action::Quit => {
+                // The main window's dialog is about the project as it is; only Quit goes on.
+                if self.main_dialog_open() && !matches!(action, Action::Quit) {
+                    self.editor_say("Finish with the dialog in the main window first.");
+                } else {
+                    self.act(action);
+                }
+            }
             Action::Split
             | Action::Delete
             | Action::RippleDelete
@@ -788,6 +805,8 @@ impl App {
             | Action::ZoomFit
             | Action::SequenceSettings
             | Action::Settings
+            | Action::About
+            | Action::FindMissingMedia
             | Action::OpenClipEditor
             | Action::PreviousCut
             | Action::NextCut
@@ -845,8 +864,8 @@ impl App {
         let Some(editor) = &self.editor else {
             return;
         };
-        if self.export.is_some() {
-            return self.editor_say("An export is already running.");
+        if self.exporting(true) {
+            return;
         }
         let project = match editor.session.export_project(&self.project) {
             Ok(project) => project,
@@ -874,17 +893,23 @@ impl App {
 
     /// Shows `message` in the clip editor's status line.
     pub(crate) fn editor_say(&self, message: &str) {
-        if let Some(window) = &self.editor_window {
-            window.set_status(message.into());
-            window.set_status_is_error(false);
-        }
+        self.editor_status(message, StatusKind::Info);
+    }
+
+    /// Shows `message` in the clip editor's status line as something to notice.
+    pub(crate) fn editor_warn(&self, message: &str) {
+        self.editor_status(message, StatusKind::Warning);
     }
 
     /// Shows `message` in the clip editor's status line as an error.
     pub(crate) fn editor_fail(&self, message: &str) {
+        self.editor_status(message, StatusKind::Error);
+    }
+
+    fn editor_status(&self, message: &str, kind: StatusKind) {
         if let Some(window) = &self.editor_window {
             window.set_status(message.into());
-            window.set_status_is_error(true);
+            window.set_status_kind(kind);
         }
     }
 }

@@ -1,7 +1,8 @@
 // Dialogs drawn over the editor, which shows through dimmed and takes no clicks meanwhile.
 
+import { AboutSlint } from "std-widgets.slint";
 import { Theme } from "theme.slint";
-import { FieldLabel, NumberField, ToolButton } from "widgets.slint";
+import { FieldLabel, NumberField, Status, StatusKind, ToolButton } from "widgets.slint";
 
 // The panel a dialog sits on.
 export component DialogPanel inherits Rectangle {
@@ -69,7 +70,7 @@ export component Prompt inherits Rectangle {
             spacing: Theme.space-2;
 
             for answer[index] in root.answers: ToolButton {
-                in-dialog: true;
+                in-question: true;
                 text: answer;
                 primary: index == 0 && index != root.destructive;
                 destructive: index == root.destructive;
@@ -97,6 +98,8 @@ export component SequenceSettings inherits Rectangle {
     property <int> chosen-height: root.picture-height;
 
     DialogPanel {
+        // Wide enough for the four picture sizes side by side.
+        panel-width: 440px;
         DialogTitle {
             text: "Sequence settings";
         }
@@ -108,10 +111,6 @@ export component SequenceSettings inherits Rectangle {
         // Tab reaches the rates as one control; the arrow keys choose among them, Left and
         // Right along a row and Up and Down between the rows.
         Rectangle {
-            border-radius: Theme.radius-control + 2px;
-            border-width: rates-focus.has-focus ? Theme.focus-width : 0px;
-            border-color: Theme.primary-bright;
-
             rates-focus := FocusScope {
                 focus-on-click: false;
                 key-pressed(event) => {
@@ -135,7 +134,6 @@ export component SequenceSettings inherits Rectangle {
             }
 
             GridLayout {
-                padding: 2px;
                 spacing: Theme.space-1;
 
                 for name[index] in root.rates: Rectangle {
@@ -163,6 +161,17 @@ export component SequenceSettings inherits Rectangle {
                         }
                     }
                 }
+            }
+
+            // The focus ring, drawn just outside the rates so they line up with the fields.
+            Rectangle {
+                x: -Theme.focus-width;
+                y: -Theme.focus-width;
+                width: parent.width + 2 * Theme.focus-width;
+                height: parent.height + 2 * Theme.focus-width;
+                border-radius: Theme.radius-control + Theme.focus-width;
+                border-width: rates-focus.has-focus ? Theme.focus-width : 0px;
+                border-color: Theme.primary-bright;
             }
         }
 
@@ -247,6 +256,248 @@ export component SequenceSettings inherits Rectangle {
                 text: "Cancel";
                 clicked => {
                     root.done(false, root.chosen-rate, root.chosen-width, root.chosen-height);
+                }
+            }
+        }
+    }
+}
+
+// About Dusk (docs/ARCHITECTURE.md, "Release (0.1)"): the version, the license and what Dusk
+// is built with, with Slint's `AboutSlint`, which its license asks for in this dialog. The
+// system opens the releases page and the license files, so Dusk itself makes no request.
+export component AboutDialog inherits Rectangle {
+    in property <string> version;
+    in property <string> releases;
+    // The license files are installed beside Dusk; a development build has none.
+    in property <bool> licenses-available;
+    callback licenses();
+    callback close();
+    // The system could not open the releases page.
+    callback link-failed();
+
+    DialogPanel {
+        panel-width: 440px;
+
+        HorizontalLayout {
+            spacing: Theme.space-3;
+
+            VerticalLayout {
+                alignment: center;
+
+                Image {
+                    source: @image-url("../assets/dusk.svg");
+                    width: 40px;
+                    height: 40px;
+                }
+            }
+
+            VerticalLayout {
+                alignment: center;
+                spacing: Theme.space-1;
+
+                Text {
+                    text: "Dusk";
+                    color: Theme.text-1;
+                    font-size: Theme.font-heading;
+                    font-weight: Theme.weight-semibold;
+                }
+
+                Text {
+                    text: "Version " + root.version;
+                    color: Theme.text-2;
+                }
+            }
+        }
+
+        Text {
+            text: "A free, open-source video editor that stays light: no accounts, no cloud, no ads and no telemetry.";
+            color: Theme.text-1;
+            wrap: word-wrap;
+        }
+
+        Text {
+            text: "Dusk is released under the MIT License. It is built with Slint, under the Slint Royalty-free License 2.0; FFmpeg, under the GNU LGPL 3, linked as separate libraries you can replace; and the Inter and JetBrains Mono fonts, under the SIL Open Font License. The licenses folder beside Dusk holds every license, those of the libraries Dusk is built from too.";
+            color: Theme.text-2;
+            font-size: Theme.font-tiny;
+            wrap: word-wrap;
+        }
+
+        AboutSlint {
+            height: self.min-height;
+        }
+
+        HorizontalLayout {
+            spacing: Theme.space-2;
+
+            if root.licenses-available: ToolButton {
+                in-dialog: true;
+                text: "Licenses";
+                clicked => {
+                    root.licenses();
+                }
+            }
+
+            ToolButton {
+                in-dialog: true;
+                text: "Releases page";
+                clicked => {
+                    if !Platform.open-url(root.releases) {
+                        root.link-failed();
+                    }
+                }
+            }
+
+            Rectangle {
+                horizontal-stretch: 1;
+            }
+
+            ToolButton {
+                in-dialog: true;
+                text: "Close";
+                primary: true;
+                clicked => {
+                    root.close();
+                }
+            }
+        }
+    }
+}
+
+// A media file the project cannot find: its name and the folder it was in.
+export struct MissingView {
+    name: string,
+    folder: string,
+}
+
+// The media files the project cannot find (docs/ARCHITECTURE.md, "Release (0.1)"): one is
+// picked, with Up and Down or a click, and Find… asks where it is now; the others in the same
+// folder are found with it.
+export component MissingDialog inherits Rectangle {
+    in property <[MissingView]> rows;
+    in property <int> picked;
+    // What the last find came to, and how to color it.
+    in property <string> note;
+    in property <StatusKind> note-kind;
+    callback pick(row: int);
+    callback find();
+    callback close();
+
+    property <length> row-height: 40px;
+    property <length> list-height: Math.min(5, root.rows.length) * root.row-height;
+    property <length> scrolled: 0;
+    // How far the list scrolls at most, and how far it is scrolled, kept within the list as
+    // found files leave it.
+    property <length> most: Math.max(0px, root.rows.length * root.row-height - root.list-height);
+    property <length> top: Math.clamp(root.scrolled, 0px, root.most);
+    // Clamped for good as rows leave, so it does not jump back when they return.
+    changed most => {
+        root.scrolled = root.top;
+    }
+
+    // The picked file stays in view as the keys move through a long list.
+    changed picked => {
+        if root.picked * root.row-height < root.top {
+            root.scrolled = root.picked * root.row-height;
+        } else if (root.picked + 1) * root.row-height > root.top + root.list-height {
+            root.scrolled = (root.picked + 1) * root.row-height - root.list-height;
+        }
+    }
+
+    DialogPanel {
+        panel-width: 480px;
+
+        DialogTitle {
+            text: "Find missing media";
+        }
+
+        Text {
+            text: "These files are not where the project says, so their clips stay black and silent. Pick one and find it: the others in the same folder are found with it.";
+            color: Theme.text-2;
+            wrap: word-wrap;
+        }
+
+        Rectangle {
+            height: root.list-height;
+            border-radius: Theme.radius-control;
+            border-width: Theme.border-width;
+            border-color: Theme.border;
+            clip: true;
+
+            TouchArea {
+                scroll-event(event) => {
+                    root.scrolled = Math.clamp(root.top - event.delta-y, 0px, root.most);
+                    return accept;
+                }
+            }
+
+            VerticalLayout {
+                y: -root.top;
+                height: self.preferred-height;
+                alignment: start;
+
+                for row[index] in root.rows: Rectangle {
+                    height: root.row-height;
+                    background: index == root.picked ? Theme.primary-dim
+                        : touch.has-hover ? Theme.bg-3 : transparent;
+
+                    VerticalLayout {
+                        padding-left: Theme.space-2;
+                        padding-right: Theme.space-2;
+                        alignment: center;
+                        spacing: 2px;
+
+                        Text {
+                            text: row.name;
+                            color: Theme.text-1;
+                            overflow: elide;
+                        }
+
+                        Text {
+                            text: row.folder;
+                            color: Theme.text-2;
+                            font-size: Theme.font-tiny;
+                            overflow: elide;
+                        }
+                    }
+
+                    touch := TouchArea {
+                        clicked => {
+                            root.pick(index);
+                        }
+                        double-clicked => {
+                            root.pick(index);
+                            root.find();
+                        }
+                    }
+                }
+            }
+        }
+
+        if root.note != "": Text {
+            text: root.note;
+            color: Status.color-of(root.note-kind);
+            font-size: Theme.font-tiny;
+            wrap: word-wrap;
+        }
+
+        HorizontalLayout {
+            alignment: end;
+            spacing: Theme.space-2;
+
+            ToolButton {
+                in-dialog: true;
+                text: "Close";
+                clicked => {
+                    root.close();
+                }
+            }
+
+            ToolButton {
+                in-dialog: true;
+                text: "Find…";
+                primary: true;
+                clicked => {
+                    root.find();
                 }
             }
         }

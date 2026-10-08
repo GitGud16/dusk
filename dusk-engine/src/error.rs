@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use dusk_media::MediaError;
 
@@ -93,9 +93,69 @@ fn megabytes_up(bytes: u64) -> String {
     format!("{}.{}", tenths / 10, tenths % 10)
 }
 
+impl EngineError {
+    /// The file that is not where it was said to be, when that is what went wrong: a media
+    /// file of the project that went away, for one.
+    pub fn missing_file(&self) -> Option<&Path> {
+        match self {
+            EngineError::Media(MediaError::NotAFile { path }) => Some(path),
+            _ => None,
+        }
+    }
+
+    /// This error, or the file going away when the file it failed to read is no longer there
+    /// (`exists` says): a drive unplugged under an open decoder fails as FFmpeg failing to
+    /// read the file, though what the user can do is find it.
+    pub fn or_gone(self, exists: impl Fn(&Path) -> bool) -> EngineError {
+        match self {
+            EngineError::Media(MediaError::Open { path, .. } | MediaError::Decode { path, .. })
+                if !exists(&path) =>
+            {
+                EngineError::Media(MediaError::NotAFile { path })
+            }
+            other => other,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_file_that_is_not_there_is_named() {
+        let missing = EngineError::Media(MediaError::NotAFile {
+            path: PathBuf::from("E:/trip/beach.mp4"),
+        });
+        assert_eq!(missing.missing_file(), Some(Path::new("E:/trip/beach.mp4")));
+        let other = EngineError::Media(MediaError::NoAudio {
+            path: PathBuf::from("E:/trip/beach.mp4"),
+        });
+        assert_eq!(other.missing_file(), None);
+        assert_eq!(EngineError::Empty.missing_file(), None);
+    }
+
+    #[test]
+    fn a_file_that_went_away_while_it_was_read_is_named_as_missing() {
+        // A drive unplugged under an open decoder fails as FFmpeg failing to read the file.
+        let dir = std::env::temp_dir().join("dusk-engine-gone");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("damaged.mp4");
+        std::fs::write(&path, b"not a video").unwrap();
+        let read = || {
+            let failed = dusk_media::VideoDecoder::open(&path, dusk_media::Acceleration::Software);
+            EngineError::from(failed.err().expect("not a video"))
+        };
+        // Still there, the file is damaged, not missing.
+        assert_eq!(read().or_gone(Path::is_file).missing_file(), None);
+        let error = read();
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(
+            error.or_gone(Path::is_file).missing_file(),
+            Some(path.as_path())
+        );
+        assert_eq!(EngineError::Empty.or_gone(|_| false).missing_file(), None);
+    }
 
     #[test]
     fn the_smallest_size_is_never_said_below_itself() {

@@ -1,0 +1,61 @@
+name: Release
+
+# Pushing a tag such as v0.1.0 builds the installer and drafts a release with it, for the
+# maintainer to write the notes for and publish (docs/ARCHITECTURE.md, "Release (0.1)").
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  draft:
+    runs-on: windows-2025
+    env:
+      CARGO_TERM_COLOR: always
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: The tag names the version being built
+        shell: pwsh
+        run: |
+          $version = (Select-String -LiteralPath Cargo.toml -Pattern '^version = "(.+)"').Matches[0].Groups[1].Value
+          if ("v$version" -ne $env:GITHUB_REF_NAME) {
+            throw "The tag $env:GITHUB_REF_NAME does not name the version in Cargo.toml ($version): tag v$version instead."
+          }
+          "VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Cache the pinned FFmpeg zip
+        uses: actions/cache@v4
+        with:
+          path: ~\AppData\Local\dusk\ffmpeg-cache
+          key: ffmpeg-${{ hashFiles('scripts/ffmpeg-pin.psd1') }}
+
+      - name: Install the pinned FFmpeg
+        shell: pwsh
+        run: ./scripts/setup-ffmpeg.ps1
+
+      - name: Install Inno Setup 6 when the runner lacks it
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) {
+            choco install innosetup --no-progress -y
+          }
+
+      - name: Build the installer
+        shell: pwsh
+        run: ./scripts/build-release.ps1
+
+      - name: Install it, run both programs, uninstall it
+        shell: pwsh
+        run: ./scripts/check-installer.ps1
+
+      - name: Draft the release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $setup = "target/installer/dusk-$env:VERSION-setup.exe"
+          gh release create $env:GITHUB_REF_NAME $setup --draft --title "Dusk $env:VERSION" `
+            --notes "Draft: write what is new, then publish."

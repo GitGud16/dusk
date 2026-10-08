@@ -197,8 +197,8 @@ impl Settings {
                 problems.push((number, format!("{problem}; the default is used")));
             }
         }
+        let container = settings.export.container;
         if let Some((number, codec)) = codec {
-            let container = settings.export.container;
             if container.video_codecs().contains(&codec) {
                 settings.export.codec = codec;
             } else {
@@ -211,6 +211,15 @@ impl Settings {
                     ),
                 ));
             }
+        }
+        // A format that cannot hold the codec it is left with takes its first, as choosing the
+        // format in the Settings dialog does.
+        if let Some(first) = container
+            .video_codecs()
+            .first()
+            .filter(|_| !container.video_codecs().contains(&settings.export.codec))
+        {
+            settings.export.codec = *first;
         }
         problems.sort_by_key(|(number, _)| *number);
         let problems = problems
@@ -344,8 +353,8 @@ pub fn problems_message(problems: &[String]) -> Option<String> {
     let (first, rest) = problems.split_first()?;
     Some(match rest.len() {
         0 => first.clone(),
-        1 => format!("{first} 1 more line could not be read."),
-        more => format!("{first} {more} more lines could not be read."),
+        1 => format!("{first} Dusk found 1 more problem in its settings files."),
+        more => format!("{first} Dusk found {more} more problems in its settings files."),
     })
 }
 
@@ -462,6 +471,18 @@ unlink =
     }
 
     #[test]
+    fn a_format_alone_takes_its_first_codec_when_it_cannot_hold_the_default() {
+        // As choosing the format in the Settings dialog does.
+        let (settings, problems) = Settings::read("export-format = WebM\n");
+        assert!(problems.is_empty(), "{problems:?}");
+        assert_eq!(settings.export.container, Container::WebM);
+        assert_eq!(settings.export.codec, VideoCodec::Vp9);
+        // A format that holds the default keeps it.
+        let (settings, _) = Settings::read("export-format = MKV\n");
+        assert_eq!(settings.export.codec, VideoCodec::H264);
+    }
+
+    #[test]
     fn settings_that_cannot_be_read_keep_their_defaults() {
         let text = "cache = 50\n\
                     export-codec = vp9\n\
@@ -571,7 +592,20 @@ unlink =
         let three = vec![one[0].clone(), "b".to_owned(), "c".to_owned()];
         assert_eq!(
             problems_message(&three).as_deref(),
-            Some("shortcuts.txt, line 2: X; that line is skipped. 2 more lines could not be read.")
+            Some(
+                "shortcuts.txt, line 2: X; that line is skipped. Dusk found 2 more problems in \
+                 its settings files."
+            )
+        );
+        // A whole file Dusk could not read is a problem, not a line.
+        let files = vec![
+            "Dusk could not read settings.txt: denied; the default settings are used.".to_owned(),
+            "Dusk could not read shortcuts.txt: denied; the default keys are used.".to_owned(),
+        ];
+        assert!(
+            problems_message(&files)
+                .unwrap()
+                .ends_with(" Dusk found 1 more problem in its settings files.")
         );
     }
 }

@@ -10,7 +10,6 @@ mod progress;
 use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use std::sync::atomic::Ordering;
 use std::time::Instant;
 
 use anyhow::{Context, bail};
@@ -221,12 +220,10 @@ fn run(
         eprintln!();
     }
     let done = done.with_context(|| format!("{} was not written", output.display()))?;
+    // A job stopped with Ctrl+C says so; one that finished first wrote its file.
     let Some(done) = done else {
         return Ok(None);
     };
-    if STOP.load(Ordering::Relaxed) {
-        return Ok(None);
-    }
     let made = match done.size {
         (0, 0) => format!("{}, {}", progress::size(done.bytes), done.encoder),
         (width, height) => format!(
@@ -248,4 +245,27 @@ fn run(
         );
     }
     Ok(Some(()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::Ordering;
+
+    #[test]
+    fn a_job_that_finished_is_reported_written_even_after_ctrl_c() {
+        let output = std::env::temp_dir().join("dusq-late-stop.mp4");
+        let done = run(&output, None, |_| {
+            // Ctrl+C after the file was renamed into place.
+            STOP.store(true, Ordering::Relaxed);
+            Ok(Some(Transcoded {
+                path: output.clone(),
+                encoder: "libopenh264".to_owned(),
+                size: (2, 2),
+                bytes: 1,
+            }))
+        });
+        STOP.store(false, Ordering::Relaxed);
+        assert!(matches!(done, Ok(Some(()))), "{done:?}");
+    }
 }

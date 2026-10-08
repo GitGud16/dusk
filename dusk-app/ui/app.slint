@@ -1,10 +1,10 @@
-import { AboutSlint } from "std-widgets.slint";
+import { Palette } from "std-widgets.slint";
 import { Theme } from "theme.slint";
-import { Modal, Timecode, ToolButton } from "widgets.slint";
+import { Modal, Status, StatusKind, Timecode, ToolButton } from "widgets.slint";
 import { ClipView, Timeline, TickView, TrackView } from "timeline.slint";
 import { MediaBin, MediaView } from "media-bin.slint";
 import { ClipProperties, ClipProps } from "properties.slint";
-import { Prompt, SequenceSettings } from "dialogs.slint";
+import { AboutDialog, MissingDialog, MissingView, Prompt, SequenceSettings } from "dialogs.slint";
 import { ShortcutDialog, ShortcutView } from "shortcut-list.slint";
 import { ClipEditorWindow, EditorProps, EditorSides } from "clip-editor.slint";
 import { ExportDialog, ExportView } from "export-dialog.slint";
@@ -13,9 +13,11 @@ import { SettingsDialog, SettingsView } from "settings-dialog.slint";
 
 export { ClipView, TickView, TrackView, MediaView, ClipProps, ShortcutView }
 export { ClipEditorWindow, EditorProps, EditorSides, ExportView, CompressView, SettingsView }
+export { StatusKind, MissingView }
 
 export component MainWindow inherits Window {
     title: root.window-title;
+    icon: @image-url("../assets/dusk.svg");
     preferred-width: 1280px;
     preferred-height: 800px;
     min-width: 960px;
@@ -35,6 +37,8 @@ export component MainWindow inherits Window {
     out property <int> preview-pixel-width: Math.round(preview.width / 1phx);
     out property <int> preview-pixel-height: Math.round(preview.height / 1phx);
     callback preview-resized(width: int, height: int);
+    // The last dialog or question over the window closed.
+    callback dialogs-closed();
 
     // The media bin.
     in property <[MediaView]> media;
@@ -109,7 +113,7 @@ export component MainWindow inherits Window {
 
     // The status line: what just happened, or what went wrong.
     in property <string> status;
-    in property <bool> status-is-error;
+    in property <StatusKind> status-kind;
 
     // A question over the window.
     in property <bool> prompt-open;
@@ -147,6 +151,23 @@ export component MainWindow inherits Window {
     callback shortcut-close();
     // What in the user's shortcuts file Dusk could not read, if anything.
     in property <string> shortcut-problem;
+    // The list of media files the project cannot find (see dialogs.slint).
+    in property <bool> missing-open;
+    in property <[MissingView]> missing-rows;
+    in property <int> missing-picked;
+    in property <string> missing-note;
+    in property <StatusKind> missing-note-kind;
+    callback missing-pick(row: int);
+    callback missing-find();
+    callback missing-close();
+    // The About dialog (see dialogs.slint).
+    in property <bool> about-open;
+    in property <string> about-version;
+    in property <string> releases-url;
+    in property <bool> about-licenses;
+    callback about-close();
+    callback about-show-licenses();
+    callback about-link-failed();
     // The Settings dialog (see settings-dialog.slint).
     in property <bool> settings-open;
     in property <SettingsView> settings-view;
@@ -157,6 +178,12 @@ export component MainWindow inherits Window {
     property <int> dragged-media: -1;
     property <length> drag-x;
     property <length> drag-y;
+
+    // Dusk is dark only (THEME.md), whatever the system's choice, which Slint's own widget in
+    // the About dialog would otherwise follow.
+    init => {
+        Palette.color-scheme = ColorScheme.dark;
+    }
 
     // Gives the keyboard back to the shortcuts after a field or a button had it.
     public function take-keys() {
@@ -209,6 +236,12 @@ export component MainWindow inherits Window {
                 enabled: !root.exporting;
                 activated => {
                     root.action("compress-video");
+                }
+            }
+            MenuItem {
+                title: "Find missing media…";
+                activated => {
+                    root.action("find-missing-media");
                 }
             }
             MenuSeparator { }
@@ -336,7 +369,7 @@ export component MainWindow inherits Window {
             MenuItem {
                 title: "About Dusk";
                 activated => {
-                    about.show();
+                    root.action("about");
                 }
             }
         }
@@ -344,13 +377,21 @@ export component MainWindow inherits Window {
 
     // Whether a dialog is open over the window: only its controls take the keyboard then (see
     // `Modal`), and the keys go back to the shortcuts whenever one opens or closes.
-    property <bool> modal-open: root.export-open || root.compress-open || root.prompt-open || root.sequence-settings-open || root.shortcuts-open || root.settings-open;
+    property <bool> modal-open: root.export-open || root.compress-open || root.prompt-open || root.sequence-settings-open || root.shortcuts-open || root.settings-open || root.about-open || root.missing-open;
+    // A question that opens over a dialog takes the keys from the dialog's controls.
+    changed prompt-open => {
+        Modal.question = root.prompt-open;
+        keys.focus();
+    }
     changed modal-open => {
         Modal.open = root.modal-open;
         if root.shortcuts-open {
             shortcuts-dialog.focus-search();
         } else {
             keys.focus();
+        }
+        if !root.modal-open {
+            root.dialogs-closed();
         }
     }
 
@@ -374,12 +415,27 @@ export component MainWindow inherits Window {
                     padding-right: Theme.panel-padding;
                     spacing: Theme.space-3;
 
-                    Text {
-                        text: "Dusk";
-                        color: Theme.text-1;
-                        font-size: Theme.font-title;
-                        font-weight: Theme.weight-semibold;
-                        vertical-alignment: center;
+                    // The logo: the mark beside the wordmark (THEME.md, "Logo").
+                    HorizontalLayout {
+                        spacing: Theme.space-2;
+
+                        VerticalLayout {
+                            alignment: center;
+
+                            Image {
+                                source: @image-url("../assets/dusk.svg");
+                                width: Theme.icon-size;
+                                height: Theme.icon-size;
+                            }
+                        }
+
+                        Text {
+                            text: "Dusk";
+                            color: Theme.text-1;
+                            font-size: Theme.font-title;
+                            font-weight: Theme.weight-semibold;
+                            vertical-alignment: center;
+                        }
                     }
 
                     Rectangle {
@@ -634,7 +690,7 @@ export component MainWindow inherits Window {
 
                     Text {
                         text: root.status;
-                        color: root.status-is-error ? Theme.alert : Theme.text-2;
+                        color: Status.color-of(root.status-kind);
                         vertical-alignment: center;
                         overflow: elide;
                         horizontal-stretch: 1;
@@ -644,7 +700,7 @@ export component MainWindow inherits Window {
                         width: 160px;
                         height: 6px;
                         y: (parent.height - self.height) / 2;
-                        border-radius: 3px;
+                        border-radius: self.height / 2;
                         background: Theme.bg-3;
 
                         Rectangle {
@@ -699,16 +755,6 @@ export component MainWindow inherits Window {
                 font-size: Theme.font-heading;
                 horizontal-alignment: center;
                 vertical-alignment: center;
-            }
-        }
-
-        if root.prompt-open: Prompt {
-            title: root.prompt-title;
-            message: root.prompt-message;
-            answers: root.prompt-answers;
-            destructive: root.prompt-destructive;
-            answered(index) => {
-                root.prompt-answered(index);
             }
         }
 
@@ -772,6 +818,39 @@ export component MainWindow inherits Window {
             }
         }
 
+        if root.missing-open: MissingDialog {
+            rows: root.missing-rows;
+            picked: root.missing-picked;
+            note: root.missing-note;
+            note-kind: root.missing-note-kind;
+            pick(row) => {
+                root.missing-pick(row);
+            }
+            find => {
+                root.missing-find();
+            }
+            close => {
+                root.missing-close();
+                keys.focus();
+            }
+        }
+
+        if root.about-open: AboutDialog {
+            version: root.about-version;
+            releases: root.releases-url;
+            licenses-available: root.about-licenses;
+            licenses => {
+                root.about-show-licenses();
+            }
+            close => {
+                root.about-close();
+                keys.focus();
+            }
+            link-failed => {
+                root.about-link-failed();
+            }
+        }
+
         if root.settings-open: SettingsDialog {
             view: root.settings-view;
             changed(what, value) => {
@@ -799,6 +878,18 @@ export component MainWindow inherits Window {
                 keys.focus();
             }
         }
+
+        // Last, so a question (closing with unsaved changes, say) shows over any dialog open
+        // at the time; it takes the keys first too.
+        if root.prompt-open: Prompt {
+            title: root.prompt-title;
+            message: root.prompt-message;
+            answers: root.prompt-answers;
+            destructive: root.prompt-destructive;
+            answered(index) => {
+                root.prompt-answered(index);
+            }
+        }
     }
 
     // Lookups in the media list for the item being dragged.
@@ -815,39 +906,4 @@ export component MainWindow inherits Window {
         return root.media-item(id).name;
     }
     pure callback media-item(id: int) -> MediaView;
-
-    // The AboutSlint widget is the attribution the Slint Royalty-free License 2.0 requires; it
-    // must stay reachable from the top-level menu.
-    about := PopupWindow {
-        width: 360px;
-        x: (root.width - self.width) / 2;
-        y: (root.height - self.height) / 2;
-
-        Rectangle {
-            background: Theme.bg-2;
-            border-color: Theme.border;
-            border-width: Theme.border-width;
-            border-radius: Theme.radius-panel;
-
-            VerticalLayout {
-                padding: Theme.panel-padding;
-                spacing: Theme.space-2;
-
-                Text {
-                    text: "Dusk";
-                    color: Theme.text-1;
-                    font-size: Theme.font-dialog;
-                    font-weight: Theme.weight-semibold;
-                }
-
-                Text {
-                    text: "A free, open-source video editor. MIT licensed.";
-                    color: Theme.text-2;
-                    wrap: word-wrap;
-                }
-
-                AboutSlint { }
-            }
-        }
-    }
 }

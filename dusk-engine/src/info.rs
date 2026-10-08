@@ -82,9 +82,11 @@ pub(crate) const TEXTURE_LIMIT: u32 = 8192;
 
 /// Describes a probed file, or says why Dusk cannot use it.
 fn describe(probe: &ProbeInfo) -> Result<MediaInfo, &'static str> {
-    // FFmpeg's single-image demuxers; still images arrive in M2.
+    // FFmpeg's single-image demuxers, for a picture the still probe did not take.
     if probe.format == "image2" || probe.format.ends_with("_pipe") {
-        return Err("still images arrive in a later version of Dusk");
+        return Err(
+            "it is a picture in a form Dusk cannot read; save it as a JPEG or PNG and import that",
+        );
     }
     // Cover art is a picture stream too, but not video.
     let video = probe.streams.iter().find_map(|stream| match stream.detail {
@@ -111,7 +113,7 @@ fn describe(probe: &ProbeInfo) -> Result<MediaInfo, &'static str> {
         .iter()
         .any(|stream| stream.kind == StreamKind::Audio);
     if video.is_none() && !has_audio {
-        return Err("it has neither video nor audio");
+        return Err("it has neither video nor audio; import a video, a sound or a picture");
     }
     let duration = probe
         .duration_us

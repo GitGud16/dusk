@@ -81,7 +81,33 @@ impl FrameCache {
     /// above it at once, the least recently used frames first.
     pub fn set_cap(&mut self, cap: usize) {
         self.cap = cap;
-        while self.used > self.cap && self.evict_one() {}
+        if self.used <= self.cap {
+            return;
+        }
+        // Oldest first, found in one pass rather than a scan for each frame let go.
+        let mut by_age: Vec<(u64, MediaId, MediaTime)> = self
+            .media
+            .iter()
+            .flat_map(|(media, frames)| {
+                frames
+                    .iter()
+                    .map(move |(time, entry)| (entry.last_used, *media, *time))
+            })
+            .collect();
+        by_age.sort_unstable();
+        for (_, media, time) in by_age {
+            if self.used <= self.cap {
+                break;
+            }
+            if let Some(entry) = self
+                .media
+                .get_mut(&media)
+                .and_then(|frames| frames.remove(&time))
+            {
+                self.used -= entry.picture.byte_size();
+            }
+        }
+        self.media.retain(|_, frames| !frames.is_empty());
     }
 
     /// Keeps the frame of `media` that starts at `time`, followed by `following`, and makes
@@ -116,6 +142,16 @@ impl FrameCache {
     #[cfg(test)]
     fn used(&self) -> usize {
         self.used
+    }
+
+    /// Drops every frame of `media`, as when the project points it at another file.
+    pub fn forget(&mut self, media: MediaId) {
+        if let Some(frames) = self.media.remove(&media) {
+            self.used -= frames
+                .values()
+                .map(|entry| entry.picture.byte_size())
+                .sum::<usize>();
+        }
     }
 
     /// Drops the least recently used frame; false when the cache is empty.
@@ -234,6 +270,28 @@ mod tests {
         assert!(cache.get(CLIP, us(0)).is_some());
         assert!(cache.get(CLIP, us(2000)).is_some());
         assert!(cache.get(OTHER, us(0)).is_some());
+    }
+
+    #[test]
+    fn forgetting_a_media_drops_its_frames_alone() {
+        let size = picture(0).byte_size();
+        let mut cache = FrameCache::new(8 * size);
+        for (media, n) in [(CLIP, 0), (CLIP, 1), (OTHER, 0)] {
+            cache.insert(
+                media,
+                us(n * 1000),
+                Following::Next(us(n * 1000 + 1000)),
+                picture(n as u8),
+            );
+        }
+        cache.forget(CLIP);
+        assert!(cache.get(CLIP, us(0)).is_none() && cache.get(CLIP, us(1000)).is_none());
+        assert!(cache.nearest(CLIP, us(0)).is_none());
+        assert!(cache.get(OTHER, us(0)).is_some());
+        assert_eq!(cache.used(), size);
+        // Forgetting a media with nothing cached changes nothing.
+        cache.forget(MediaId(9));
+        assert_eq!(cache.used(), size);
     }
 
     #[test]

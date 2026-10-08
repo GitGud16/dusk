@@ -16,6 +16,8 @@ export struct MediaView {
     audio: bool,
     // A small picture of a video or photo, once the engine has made it; empty until then.
     thumbnail: image,
+    // The file is not where the project says; `detail` says how to find it.
+    missing: bool,
 }
 
 export component MediaBin inherits Rectangle {
@@ -33,8 +35,15 @@ export component MediaBin inherits Rectangle {
     callback drag-ended(media: int);
 
     property <int> pressed-item: -1;
-    // How far the list is scrolled.
+    // How far the list scrolls at most, and how far it is scrolled, kept within the list as
+    // media leave it (an import undone) and the panel grows.
     property <length> scrolled;
+    property <length> most: Math.max(0px, list.preferred-height - view.height);
+    property <length> top: Math.clamp(root.scrolled, 0px, root.most);
+    // Clamped for good as rows leave, so it does not jump back when they return.
+    changed most => {
+        root.scrolled = root.top;
+    }
     property <bool> dragging;
     property <length> press-x;
     property <length> press-y;
@@ -46,9 +55,9 @@ export component MediaBin inherits Rectangle {
 
     changed selected-row => {
         if root.selected-row >= 0 {
-            if root.selected-top() < root.scrolled {
+            if root.selected-top() < root.top {
                 root.scrolled = root.selected-top();
-            } else if root.selected-top() + 44px > root.scrolled + view.height {
+            } else if root.selected-top() + 44px > root.top + view.height {
                 root.scrolled = root.selected-top() + 44px - view.height;
             }
         }
@@ -103,7 +112,7 @@ export component MediaBin inherits Rectangle {
             // decides whether a drag pans it, which breaks double-clicks and drags out.
             TouchArea {
                 scroll-event(event) => {
-                    root.scrolled = Math.clamp(root.scrolled - event.delta-y, 0px, Math.max(0px, list.preferred-height - parent.height));
+                    root.scrolled = Math.clamp(root.top - event.delta-y, 0px, root.most);
                     return accept;
                 }
             }
@@ -112,7 +121,7 @@ export component MediaBin inherits Rectangle {
                 clip: true;
 
                 list := VerticalLayout {
-                    y: -root.scrolled;
+                    y: -root.top;
                     width: parent.width;
                     height: self.preferred-height;
                     padding: Theme.space-1;
@@ -157,7 +166,7 @@ export component MediaBin inherits Rectangle {
 
                                 Text {
                                     text: item.detail;
-                                    color: Theme.text-2;
+                                    color: item.missing ? Theme.alert : Theme.text-2;
                                     font-size: Theme.font-tiny;
                                     overflow: elide;
                                 }

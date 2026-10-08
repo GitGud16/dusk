@@ -27,16 +27,28 @@ pub const FORMAT_VERSION: u32 = 1;
 #[derive(Debug, thiserror::Error)]
 pub enum FileError {
     /// The text is not a Dusk project file, or a value in it is out of range.
-    #[error("the project file is damaged or is not a Dusk project ({0})")]
+    #[error("the project file is damaged or is not a Dusk project ({0}); open another copy of it")]
     Unreadable(String),
     /// The file is in a format version this Dusk does not read.
     #[error(
         "the project file is in format version {0}, which this Dusk cannot open; a newer Dusk may"
     )]
     Version(u64),
-    /// The file breaks a timeline rule.
-    #[error("the project file breaks a timeline rule: {0}")]
+    /// The file breaks a timeline rule. The rule's own advice is left out: a project that
+    /// does not open cannot be trimmed.
+    #[error(
+        "the project file breaks a timeline rule ({}); if it was changed by hand, undo that change, or open another copy of it",
+        .0.what()
+    )]
     Invalid(#[from] Rejection),
+}
+
+impl FileError {
+    /// What is wrong with the file without what to do about it, for a file the user cannot
+    /// change or find another copy of, such as an autosave.
+    pub fn what(&self) -> String {
+        crate::command::without_advice(self.to_string())
+    }
 }
 
 /// The text of `project` saved as the project file `file`. Media paths are expected to be
@@ -87,14 +99,35 @@ fn folder_of(file: &Path) -> PathBuf {
 /// How a media path is written: relative to `folder`, with `/` between parts, when it lies
 /// inside it; as it is otherwise.
 fn saved_path(path: &Path, folder: &Path) -> String {
-    match path.strip_prefix(folder) {
-        Ok(inside) if folder.is_absolute() => {
-            let parts: Vec<_> = inside.iter().map(|part| part.to_string_lossy()).collect();
-            parts.join("/")
-        }
+    match inside(path, folder) {
+        Some(parts) if folder.is_absolute() => parts.join("/"),
         // Import only takes paths FFmpeg can open, which are Unicode, so nothing is lost.
         _ => path.to_string_lossy().into_owned(),
     }
+}
+
+/// The parts of `path` after `folder`, when it lies inside it, part by part as the system
+/// compares names: Windows' ignore case.
+fn inside(path: &Path, folder: &Path) -> Option<Vec<String>> {
+    let name = |part: std::path::Component| {
+        let name = part.as_os_str().to_string_lossy().into_owned();
+        if cfg!(windows) {
+            name.to_lowercase()
+        } else {
+            name
+        }
+    };
+    let mut parts = path.components();
+    for wanted in folder.components() {
+        if name(parts.next()?) != name(wanted) {
+            return None;
+        }
+    }
+    Some(
+        parts
+            .map(|part| part.as_os_str().to_string_lossy().into_owned())
+            .collect(),
+    )
 }
 
 /// Where a media path written as `saved` points, for a project file in `folder`.
@@ -929,6 +962,54 @@ mod tests {
             Err(FileError::Invalid(rejection)) => rejection,
             other => panic!("expected a broken timeline rule, got {other:?}"),
         }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn media_in_the_projects_folder_is_saved_relative_in_any_case() {
+        // Windows' file names ignore case: a path typed another way is still inside.
+        let folder = Path::new(r"J:\Films\Trip");
+        assert_eq!(
+            saved_path(Path::new(r"j:\films\TRIP\clips\a.mp4"), folder),
+            "clips/a.mp4"
+        );
+        assert_eq!(
+            saved_path(Path::new(r"J:\Films\Trips\a.mp4"), folder),
+            r"J:\Films\Trips\a.mp4"
+        );
+    }
+
+    #[test]
+    fn a_refused_file_says_what_broke_without_the_advice_meant_for_an_edit() {
+        // "Trim it" or "crop less" cannot be done in a project that does not open.
+        let refused = FileError::Invalid(Rejection::SourceRange(ClipId(4))).to_string();
+        assert_eq!(
+            refused,
+            "the project file breaks a timeline rule (the clip reaches outside its source file); \
+             if it was changed by hand, undo that change, or open another copy of it"
+        );
+        let refused = FileError::Invalid(Rejection::Crop(ClipId(4))).to_string();
+        assert!(!refused.contains("crop less"), "{refused}");
+    }
+
+    #[test]
+    fn what_is_wrong_with_a_file_is_said_without_what_to_do() {
+        // For an autosave, which the user cannot change or find another copy of.
+        let invalid = FileError::Invalid(Rejection::SourceRange(ClipId(4)));
+        assert_eq!(
+            invalid.what(),
+            "the project file breaks a timeline rule (the clip reaches outside its source file)"
+        );
+        // What the JSON reader says may hold a "; " of its own.
+        let damaged = FileError::Unreadable("expected `,`; found `}` at line 3".into());
+        assert_eq!(
+            damaged.what(),
+            "the project file is damaged or is not a Dusk project (expected `,`; found `}` at line 3)"
+        );
+        assert_eq!(
+            FileError::Version(2).what(),
+            "the project file is in format version 2, which this Dusk cannot open"
+        );
     }
 
     #[test]

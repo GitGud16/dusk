@@ -237,13 +237,15 @@ impl ClipEditSession {
         let duration = |frames: Frame| media_to_frame(frame_to_media(frames, from), rate);
         let mut draft = draft.clone();
         draft.still_length = duration(draft.still_length);
+        let length = draft.length(still, rate);
         if let Some(audio) = draft.audio.as_mut() {
             audio.fade_in = duration(audio.fade_in);
             audio.fade_out = duration(audio.fade_out);
+            // Each rounded alone, fades that filled the clip can come out a frame longer.
+            audio.fit_into(length);
         }
         let mut alone = Project::new(rate, size);
         alone.media.push(media.clone());
-        let length = draft.length(still, rate);
         for seen in &self.seen {
             let mut clip = draft.applied_to(seen, still, length);
             clip.position = Frame(0);
@@ -464,5 +466,29 @@ mod tests {
         assert_eq!(export.sequence().frame_rate(), fps30());
         assert_eq!(export.sequence().resolution(), (4032, 3024));
         assert_eq!(export.sequence().end(), Frame(90));
+    }
+
+    #[test]
+    fn fades_that_fill_a_clip_still_fit_it_at_the_sources_rate() {
+        // Exported at the source's 25 fps: half a second of fade is 12.5 frames there, and
+        // rounding each fade up alone made them longer than the clip.
+        let mut project = project();
+        project.media[0].info.frame_rate = Some(Rational::new(25, 1).unwrap());
+        let (_, audio) = insert_pair(&mut project, 0, (0, SECOND));
+        let mut session = ClipEditSession::open(&project, audio).unwrap();
+        let fades = session.draft.audio.as_mut().unwrap();
+        (fades.fade_in, fades.fade_out) = (Frame(15), Frame(15));
+        let export = session
+            .export_project(&project)
+            .expect("the fades fit the clip");
+        let sound = export
+            .clips()
+            .find_map(|(_, clip)| match &clip.edits {
+                ClipEdits::Audio(edits) => Some((clip.length, edits.fade_in + edits.fade_out)),
+                ClipEdits::Video(_) => None,
+            })
+            .unwrap();
+        assert_eq!(sound.0, Frame(25));
+        assert!(sound.1 <= sound.0, "{sound:?}");
     }
 }
