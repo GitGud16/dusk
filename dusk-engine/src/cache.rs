@@ -77,6 +77,13 @@ impl FrameCache {
         self.cap
     }
 
+    /// Holds at most `cap` bytes of pictures from now on: a smaller cap gives back what lies
+    /// above it at once, the least recently used frames first.
+    pub fn set_cap(&mut self, cap: usize) {
+        self.cap = cap;
+        while self.used > self.cap && self.evict_one() {}
+    }
+
     /// Keeps the frame of `media` that starts at `time`, followed by `following`, and makes
     /// room for it by dropping the least recently used frames.
     pub fn insert(
@@ -227,6 +234,29 @@ mod tests {
         assert!(cache.get(CLIP, us(0)).is_some());
         assert!(cache.get(CLIP, us(2000)).is_some());
         assert!(cache.get(OTHER, us(0)).is_some());
+    }
+
+    #[test]
+    fn a_smaller_cap_gives_back_what_lies_above_it() {
+        let size = picture(0).byte_size();
+        let mut cache = FrameCache::new(4 * size);
+        for n in 0..4 {
+            cache.insert(
+                CLIP,
+                us(n * 1000),
+                Following::Next(us(n * 1000 + 1000)),
+                picture(n as u8),
+            );
+        }
+        // Frame 0 is used again, so frames 1 and 2 are the least recently used.
+        assert!(cache.get(CLIP, us(0)).is_some());
+        cache.set_cap(2 * size);
+        assert_eq!((cache.cap(), cache.used()), (2 * size, 2 * size));
+        assert!(cache.get(CLIP, us(0)).is_some() && cache.get(CLIP, us(3000)).is_some());
+        assert!(cache.get(CLIP, us(1000)).is_none() && cache.get(CLIP, us(2000)).is_none());
+        // A larger cap keeps everything and leaves room for more.
+        cache.set_cap(8 * size);
+        assert_eq!(cache.used(), 2 * size);
     }
 
     #[test]

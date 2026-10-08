@@ -203,8 +203,8 @@ unsafe fn path_of(item: &IShellItem) -> windows::core::Result<PathBuf> {
     }
 }
 
-/// The letter or digit of the key at `scancode` in the calling thread's keyboard layout,
-/// lowercase, from its virtual-key code; `None` for every other key.
+/// The character of the key at `scancode` in the calling thread's keyboard layout, from its
+/// virtual-key code (see `character_of`); `None` for every other key.
 pub fn key_character(scancode: u32) -> Option<char> {
     // SAFETY: both calls only read the keyboard layout of the calling thread, the UI thread,
     // whose layout is the one the user picked for Dusk's window.
@@ -213,10 +213,22 @@ pub fn key_character(scancode: u32) -> Option<char> {
     character_of(code)
 }
 
-/// The character of virtual-key code `code` if it is a letter or a digit, lowercase.
+/// The character of virtual-key code `code` if it is a letter or a digit, lowercase, or a
+/// punctuation key, as a US layout types it without Shift.
 fn character_of(code: u32) -> Option<char> {
     match code {
         0x30..=0x39 | 0x41..=0x5A => char::from_u32(code).map(|c| c.to_ascii_lowercase()),
+        0xBA => Some(';'),
+        0xBB => Some('='),
+        0xBC => Some(','),
+        0xBD => Some('-'),
+        0xBE => Some('.'),
+        0xBF => Some('/'),
+        0xC0 => Some('`'),
+        0xDB => Some('['),
+        0xDC => Some('\\'),
+        0xDD => Some(']'),
+        0xDE => Some('\''),
         _ => None,
     }
 }
@@ -226,11 +238,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn only_letters_and_digits_have_a_character() {
+    fn letters_digits_and_punctuation_keys_have_a_character() {
         assert_eq!(character_of(0x4C), Some('l'));
         assert_eq!(character_of(0x31), Some('1'));
-        // The space bar, the slash key and the numeric keypad's 1.
-        for code in [0x20, 0xBF, 0x61] {
+        // Punctuation keys, as a US layout types them without Shift.
+        assert_eq!(character_of(0xBF), Some('/'));
+        assert_eq!(character_of(0xBB), Some('='));
+        assert_eq!(character_of(0xDC), Some('\\'));
+        assert_eq!(character_of(0xDE), Some('\''));
+        // The space bar, the numeric keypad's 1 and F1.
+        for code in [0x20, 0x61, 0x70] {
             assert_eq!(character_of(code), None);
         }
     }

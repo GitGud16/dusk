@@ -1,11 +1,14 @@
-//! The central shortcut table (CLAUDE.md, "UI conventions"): every user action and its key,
-//! so the shortcut list stays complete. Menu items name the same actions. Remapping arrives
-//! in M5.
+//! The central shortcut table (CLAUDE.md, "UI conventions"): every action, its name, what it
+//! does and its default keys, so the shortcut list stays complete. Menu items and buttons
+//! name the same actions. The keys in use, the defaults with the user's changes over them,
+//! are the keymap's (`keymap`; docs/ARCHITECTURE.md, "Keyboard and settings").
 
 use slint::platform::Key;
 
+use crate::keymap::Keys;
+
 /// Something the user can do.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Action {
     PlayPause,
     PlayBackward,
@@ -17,6 +20,12 @@ pub enum Action {
     StepForward,
     GoToStart,
     GoToEnd,
+    /// Up and Down: the playhead to the previous or next cut, where any clip starts or ends.
+    PreviousCut,
+    NextCut,
+    /// Shift+Left and Shift+Right: the playhead a second back or ahead.
+    BackSecond,
+    AheadSecond,
     Undo,
     Redo,
     Split,
@@ -26,6 +35,12 @@ pub enum Action {
     Unlink,
     ToggleEnabled,
     Place,
+    /// Selects the clip at the playhead, the next one down when one there is selected.
+    SelectAtPlayhead,
+    SelectNone,
+    /// Selects the media before or after the selected one in the bin.
+    PreviousMedia,
+    NextMedia,
     /// Hides or shows, mutes or unmutes, the track at this index (V1, V2, A1, A2).
     ToggleMute(usize),
     /// Locks or unlocks the track at this index.
@@ -39,6 +54,8 @@ pub enum Action {
     SaveAs,
     Import,
     SequenceSettings,
+    /// Dusk's own settings: the frame cache, the export default, the user's ffmpeg.exe.
+    Settings,
     Export,
     CancelExport,
     /// Compresses a video file into a smaller one, outside the project.
@@ -50,10 +67,12 @@ pub enum Action {
     ToggleFill,
     /// Opens the selected clip in the clip editor.
     OpenClipEditor,
-    /// The clip editor's own: start or end the clip at the playhead, turn and mirror the
-    /// picture, apply the draft to the project, close the window.
+    /// Starts or ends the clip at the playhead: the selected clip in the main window, the
+    /// draft in the clip editor.
     MarkIn,
     MarkOut,
+    /// The clip editor's own: turn and mirror the picture, apply the draft to the project,
+    /// close the window.
     TurnLeft,
     TurnRight,
     MirrorLeftRight,
@@ -68,587 +87,579 @@ pub enum Action {
     ExportClip,
 }
 
-/// A key as Slint reports it: a character (lowercase for letters) or a named key.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum KeyName {
-    Char(char),
-    Named(Key),
+/// What the shortcut list groups actions under.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Group {
+    Playback,
+    Editing,
+    ClipEditor,
+    Tracks,
+    View,
+    Project,
 }
 
-/// A key with its modifiers, and what it does.
-#[derive(Clone, Copy, Debug)]
-pub struct Shortcut {
-    pub key: KeyName,
-    pub ctrl: bool,
-    pub shift: bool,
-    pub alt: bool,
+impl Group {
+    /// Its heading in the shortcut list and in the shortcuts file.
+    pub fn title(self) -> &'static str {
+        match self {
+            Group::Playback => "Playback",
+            Group::Editing => "Editing",
+            Group::ClipEditor => "Clip editor",
+            Group::Tracks => "Tracks",
+            Group::View => "View",
+            Group::Project => "Project",
+        }
+    }
+}
+
+/// An action's entry in the table.
+#[derive(Debug)]
+pub struct ActionInfo {
     pub action: Action,
+    /// Its name in the shortcuts file, and the name menu items and buttons give it.
+    pub name: &'static str,
+    pub group: Group,
     /// What it does, for the shortcut list.
     pub description: &'static str,
+    /// The keys it has unless the user changed them.
+    pub keys: &'static [Keys],
 }
 
-const fn key(key: KeyName, action: Action, description: &'static str) -> Shortcut {
-    Shortcut {
-        key,
-        ctrl: false,
-        shift: false,
-        alt: false,
+const fn entry(
+    action: Action,
+    name: &'static str,
+    group: Group,
+    description: &'static str,
+    keys: &'static [Keys],
+) -> ActionInfo {
+    ActionInfo {
         action,
+        name,
+        group,
         description,
+        keys,
     }
 }
 
-const fn char_key(c: char, action: Action, description: &'static str) -> Shortcut {
-    key(KeyName::Char(c), action, description)
+const fn letter(c: char) -> Keys {
+    Keys::char(c)
 }
 
-const fn ctrl(shortcut: Shortcut) -> Shortcut {
-    Shortcut {
-        ctrl: true,
-        ..shortcut
-    }
+const fn named(key: Key) -> Keys {
+    Keys::named(key)
 }
 
-const fn shift(shortcut: Shortcut) -> Shortcut {
-    Shortcut {
-        shift: true,
-        ..shortcut
-    }
-}
-
-const fn alt(shortcut: Shortcut) -> Shortcut {
-    Shortcut {
-        alt: true,
-        ..shortcut
-    }
-}
-
-/// Every shortcut.
-pub const SHORTCUTS: &[Shortcut] = &[
-    char_key(' ', Action::PlayPause, "Play or pause"),
-    char_key(
-        'j',
+/// Every action, in the order the shortcut list shows them.
+pub const ACTIONS: &[ActionInfo] = &[
+    entry(
+        Action::PlayPause,
+        "play-pause",
+        Group::Playback,
+        "Play or pause",
+        &[letter(' ')],
+    ),
+    entry(
         Action::PlayBackward,
+        "play-backward",
+        Group::Playback,
         "Play backwards; press again to play faster, up to 32x",
+        &[letter('j')],
     ),
-    char_key('k', Action::Pause, "Pause"),
-    char_key(
-        'l',
+    entry(
+        Action::Pause,
+        "pause",
+        Group::Playback,
+        "Pause",
+        &[letter('k')],
+    ),
+    entry(
         Action::PlayForward,
+        "play-forward",
+        Group::Playback,
         "Play; press again to play faster, up to 32x",
+        &[letter('l')],
     ),
-    shift(char_key(
-        'j',
+    entry(
         Action::PlaySlowBackward,
+        "play-slow-backward",
+        Group::Playback,
         "Play backwards slowly; press again to play slower, down to 0.1x",
-    )),
-    shift(char_key(
-        'l',
+        &[letter('j').shift()],
+    ),
+    entry(
         Action::PlaySlowForward,
+        "play-slow-forward",
+        Group::Playback,
         "Play slowly; press again to play slower, down to 0.1x",
-    )),
-    key(
-        KeyName::Named(Key::LeftArrow),
+        &[letter('l').shift()],
+    ),
+    entry(
         Action::StepBack,
+        "previous-frame",
+        Group::Playback,
         "Previous frame",
+        &[named(Key::LeftArrow)],
     ),
-    key(
-        KeyName::Named(Key::RightArrow),
+    entry(
         Action::StepForward,
+        "next-frame",
+        Group::Playback,
         "Next frame",
+        &[named(Key::RightArrow)],
     ),
-    key(
-        KeyName::Named(Key::Home),
+    entry(
         Action::GoToStart,
+        "go-to-start",
+        Group::Playback,
         "Go to the start",
+        &[named(Key::Home)],
     ),
-    key(
-        KeyName::Named(Key::End),
+    entry(
         Action::GoToEnd,
+        "go-to-end",
+        Group::Playback,
         "Go to the last frame",
+        &[named(Key::End)],
     ),
-    ctrl(char_key('z', Action::Undo, "Undo")),
-    ctrl(shift(char_key('z', Action::Redo, "Redo"))),
-    ctrl(char_key('y', Action::Redo, "Redo")),
-    char_key(
-        's',
+    entry(
+        Action::PreviousCut,
+        "previous-cut",
+        Group::Playback,
+        "Go to the previous cut",
+        &[named(Key::UpArrow)],
+    ),
+    entry(
+        Action::NextCut,
+        "next-cut",
+        Group::Playback,
+        "Go to the next cut, where any clip starts or ends",
+        &[named(Key::DownArrow)],
+    ),
+    entry(
+        Action::BackSecond,
+        "back-a-second",
+        Group::Playback,
+        "Back one second",
+        &[named(Key::LeftArrow).shift()],
+    ),
+    entry(
+        Action::AheadSecond,
+        "ahead-a-second",
+        Group::Playback,
+        "Ahead one second",
+        &[named(Key::RightArrow).shift()],
+    ),
+    entry(
+        Action::Undo,
+        "undo",
+        Group::Editing,
+        "Undo",
+        &[letter('z').ctrl()],
+    ),
+    entry(
+        Action::Redo,
+        "redo",
+        Group::Editing,
+        "Redo",
+        &[letter('z').ctrl().shift(), letter('y').ctrl()],
+    ),
+    entry(
         Action::Split,
+        "split",
+        Group::Editing,
         "Split at the playhead: the selected clip, or every clip there",
+        &[letter('s')],
     ),
-    key(
-        KeyName::Named(Key::Delete),
+    entry(
         Action::Delete,
+        "delete",
+        Group::Editing,
         "Delete the selected clip and its linked clips, leaving a gap",
+        &[named(Key::Delete)],
     ),
-    shift(key(
-        KeyName::Named(Key::Delete),
+    entry(
         Action::RippleDelete,
+        "ripple-delete",
+        Group::Editing,
         "Delete and close the gap on every unlocked track",
-    )),
-    alt(key(
-        KeyName::Named(Key::Delete),
+        &[named(Key::Delete).shift()],
+    ),
+    entry(
         Action::DeleteOne,
+        "delete-one",
+        Group::Editing,
         "Delete the selected clip only, not its linked clips",
-    )),
-    ctrl(char_key(
-        'l',
+        &[named(Key::Delete).alt()],
+    ),
+    entry(
         Action::Unlink,
+        "unlink",
+        Group::Editing,
         "Detach audio: unlink the selected clip",
-    )),
-    char_key(
-        'e',
+        &[letter('l').ctrl()],
+    ),
+    entry(
         Action::ToggleEnabled,
+        "toggle-enabled",
+        Group::Editing,
         "Enable or disable the selected clip",
+        &[letter('e')],
     ),
-    char_key(
-        'p',
-        Action::Place,
-        "Place the selected media at the playhead",
-    ),
-    char_key(
-        'f',
+    entry(
         Action::ToggleFill,
+        "toggle-fill",
+        Group::Editing,
         "Fit the picture with bars, or fill the frame and crop",
+        &[letter('f')],
     ),
-    key(
-        KeyName::Named(Key::Return),
-        Action::OpenClipEditor,
-        "Open the selected clip in the clip editor",
+    entry(
+        Action::Place,
+        "place",
+        Group::Editing,
+        "Place the selected media at the playhead, and go past it",
+        &[letter('p')],
     ),
-    char_key(
-        'i',
+    entry(
+        Action::PreviousMedia,
+        "previous-media",
+        Group::Editing,
+        "Select the media above in the bin",
+        &[named(Key::UpArrow).alt()],
+    ),
+    entry(
+        Action::NextMedia,
+        "next-media",
+        Group::Editing,
+        "Select the media below in the bin",
+        &[named(Key::DownArrow).alt()],
+    ),
+    entry(
+        Action::SelectAtPlayhead,
+        "select-at-playhead",
+        Group::Editing,
+        "Select the clip at the playhead; press again for the one below it",
+        &[letter('d')],
+    ),
+    entry(
+        Action::SelectNone,
+        "select-none",
+        Group::Editing,
+        "Select no clip",
+        &[letter('a').ctrl().shift()],
+    ),
+    entry(
         Action::MarkIn,
-        "Clip editor: start the clip at the playhead",
+        "mark-in",
+        Group::Editing,
+        "Start the clip at the playhead: the selected one, or the clip editor's",
+        &[letter('i')],
     ),
-    char_key(
-        'o',
+    entry(
         Action::MarkOut,
-        "Clip editor: end the clip at the playhead",
+        "mark-out",
+        Group::Editing,
+        "End the clip at the playhead: the selected one, or the clip editor's",
+        &[letter('o')],
     ),
-    char_key(
-        'r',
+    entry(
+        Action::OpenClipEditor,
+        "open-clip-editor",
+        Group::Editing,
+        "Open the selected clip in the clip editor",
+        &[named(Key::Return)],
+    ),
+    entry(
         Action::TurnRight,
+        "turn-right",
+        Group::ClipEditor,
         "Clip editor: turn the picture right",
+        &[letter('r')],
     ),
-    shift(char_key(
-        'r',
+    entry(
         Action::TurnLeft,
+        "turn-left",
+        Group::ClipEditor,
         "Clip editor: turn the picture left",
-    )),
-    char_key(
-        'h',
+        &[letter('r').shift()],
+    ),
+    entry(
         Action::MirrorLeftRight,
+        "mirror-left-right",
+        Group::ClipEditor,
         "Clip editor: mirror the picture left to right",
+        &[letter('h')],
     ),
-    char_key(
-        'v',
+    entry(
         Action::MirrorTopBottom,
+        "mirror-top-bottom",
+        Group::ClipEditor,
         "Clip editor: mirror the picture top to bottom",
+        &[letter('v')],
     ),
-    ctrl(key(
-        KeyName::Named(Key::Return),
+    entry(
         Action::ApplyClip,
+        "apply-clip",
+        Group::ClipEditor,
         "Clip editor: apply the changes to the project",
-    )),
-    ctrl(char_key(
-        'w',
-        Action::CloseClipEditor,
-        "Close the clip editor",
-    )),
-    ctrl(char_key(
-        'r',
-        Action::ReloadClip,
-        "Clip editor: the clip changed in the main window; take it as it is now",
-    )),
-    ctrl(char_key(
-        'k',
-        Action::KeepDraft,
-        "Clip editor: the clip changed in the main window; keep the draft",
-    )),
-    ctrl(shift(char_key(
-        'e',
-        Action::ExportClip,
-        "Clip editor: export the clip as a file of its own",
-    ))),
-    alt(char_key('1', Action::ToggleMute(0), "Hide or show V1")),
-    alt(char_key('2', Action::ToggleMute(1), "Hide or show V2")),
-    alt(char_key('3', Action::ToggleMute(2), "Mute or unmute A1")),
-    alt(char_key('4', Action::ToggleMute(3), "Mute or unmute A2")),
-    ctrl(alt(char_key(
-        '1',
-        Action::ToggleLock(0),
-        "Lock or unlock V1",
-    ))),
-    ctrl(alt(char_key(
-        '2',
-        Action::ToggleLock(1),
-        "Lock or unlock V2",
-    ))),
-    ctrl(alt(char_key(
-        '3',
-        Action::ToggleLock(2),
-        "Lock or unlock A1",
-    ))),
-    ctrl(alt(char_key(
-        '4',
-        Action::ToggleLock(3),
-        "Lock or unlock A2",
-    ))),
-    char_key('=', Action::ZoomIn, "Zoom in"),
-    char_key('-', Action::ZoomOut, "Zoom out"),
-    char_key('\\', Action::ZoomFit, "Fit the sequence in view"),
-    ctrl(char_key('n', Action::NewProject, "New project")),
-    ctrl(char_key('o', Action::OpenProject, "Open a project")),
-    ctrl(char_key('s', Action::Save, "Save the project")),
-    ctrl(shift(char_key(
-        's',
-        Action::SaveAs,
-        "Save the project under a new name",
-    ))),
-    ctrl(char_key('i', Action::Import, "Import media")),
-    ctrl(shift(char_key(
-        'r',
-        Action::SequenceSettings,
-        "Sequence settings: frame rate and size",
-    ))),
-    ctrl(char_key('e', Action::Export, "Export the timeline")),
-    ctrl(char_key(
-        'm',
-        Action::CompressVideo,
-        "Compress a video into a smaller file",
-    )),
-    key(
-        KeyName::Named(Key::Escape),
-        Action::CancelExport,
-        "Cancel the export",
+        &[named(Key::Return).ctrl()],
     ),
-    ctrl(char_key('q', Action::Quit, "Quit")),
-    char_key('?', Action::ShortcutList, "Show the keyboard shortcuts"),
+    entry(
+        Action::CloseClipEditor,
+        "close-clip-editor",
+        Group::ClipEditor,
+        "Close the clip editor",
+        &[letter('w').ctrl()],
+    ),
+    entry(
+        Action::ReloadClip,
+        "reload-clip",
+        Group::ClipEditor,
+        "Clip editor: the clip changed in the main window; take it as it is now",
+        &[letter('r').ctrl()],
+    ),
+    entry(
+        Action::KeepDraft,
+        "keep-draft",
+        Group::ClipEditor,
+        "Clip editor: the clip changed in the main window; keep the draft",
+        &[letter('k').ctrl()],
+    ),
+    entry(
+        Action::ExportClip,
+        "export-clip",
+        Group::ClipEditor,
+        "Clip editor: export the clip as a file of its own",
+        &[letter('e').ctrl().shift()],
+    ),
+    entry(
+        Action::ToggleMute(0),
+        "mute-v1",
+        Group::Tracks,
+        "Hide or show V1",
+        &[letter('1').alt()],
+    ),
+    entry(
+        Action::ToggleMute(1),
+        "mute-v2",
+        Group::Tracks,
+        "Hide or show V2",
+        &[letter('2').alt()],
+    ),
+    entry(
+        Action::ToggleMute(2),
+        "mute-a1",
+        Group::Tracks,
+        "Mute or unmute A1",
+        &[letter('3').alt()],
+    ),
+    entry(
+        Action::ToggleMute(3),
+        "mute-a2",
+        Group::Tracks,
+        "Mute or unmute A2",
+        &[letter('4').alt()],
+    ),
+    entry(
+        Action::ToggleLock(0),
+        "lock-v1",
+        Group::Tracks,
+        "Lock or unlock V1",
+        &[letter('1').ctrl().alt()],
+    ),
+    entry(
+        Action::ToggleLock(1),
+        "lock-v2",
+        Group::Tracks,
+        "Lock or unlock V2",
+        &[letter('2').ctrl().alt()],
+    ),
+    entry(
+        Action::ToggleLock(2),
+        "lock-a1",
+        Group::Tracks,
+        "Lock or unlock A1",
+        &[letter('3').ctrl().alt()],
+    ),
+    entry(
+        Action::ToggleLock(3),
+        "lock-a2",
+        Group::Tracks,
+        "Lock or unlock A2",
+        &[letter('4').ctrl().alt()],
+    ),
+    entry(
+        Action::ZoomIn,
+        "zoom-in",
+        Group::View,
+        "Zoom in",
+        &[letter('=')],
+    ),
+    entry(
+        Action::ZoomOut,
+        "zoom-out",
+        Group::View,
+        "Zoom out",
+        &[letter('-')],
+    ),
+    entry(
+        Action::ZoomFit,
+        "zoom-fit",
+        Group::View,
+        "Fit the sequence in view",
+        &[letter('\\')],
+    ),
+    entry(
+        Action::ShortcutList,
+        "shortcut-list",
+        Group::View,
+        "Show the keyboard shortcuts",
+        &[letter('?')],
+    ),
+    entry(
+        Action::NewProject,
+        "new-project",
+        Group::Project,
+        "New project",
+        &[letter('n').ctrl()],
+    ),
+    entry(
+        Action::OpenProject,
+        "open-project",
+        Group::Project,
+        "Open a project",
+        &[letter('o').ctrl()],
+    ),
+    entry(
+        Action::Save,
+        "save",
+        Group::Project,
+        "Save the project",
+        &[letter('s').ctrl()],
+    ),
+    entry(
+        Action::SaveAs,
+        "save-as",
+        Group::Project,
+        "Save the project under a new name",
+        &[letter('s').ctrl().shift()],
+    ),
+    entry(
+        Action::Import,
+        "import",
+        Group::Project,
+        "Import media",
+        &[letter('i').ctrl()],
+    ),
+    entry(
+        Action::SequenceSettings,
+        "sequence-settings",
+        Group::Project,
+        "Sequence settings: frame rate and size",
+        &[letter('r').ctrl().shift()],
+    ),
+    entry(
+        Action::Settings,
+        "settings",
+        Group::Project,
+        "Settings: the frame cache, the export default, your own ffmpeg.exe",
+        &[letter(',').ctrl()],
+    ),
+    entry(
+        Action::Export,
+        "export",
+        Group::Project,
+        "Export the timeline",
+        &[letter('e').ctrl()],
+    ),
+    entry(
+        Action::CancelExport,
+        "cancel-export",
+        Group::Project,
+        "Cancel the export",
+        &[named(Key::Escape)],
+    ),
+    entry(
+        Action::CompressVideo,
+        "compress-video",
+        Group::Project,
+        "Compress a video into a smaller file",
+        &[letter('m').ctrl()],
+    ),
+    entry(
+        Action::Quit,
+        "quit",
+        Group::Project,
+        "Quit",
+        &[letter('q').ctrl()],
+    ),
 ];
 
-impl Shortcut {
-    /// How the shortcut list writes the keys, such as "Ctrl+Shift+Z".
-    pub fn keys(&self) -> String {
-        let key = match self.key {
-            KeyName::Char(' ') => "Space".to_owned(),
-            KeyName::Char(c) => c.to_ascii_uppercase().to_string(),
-            KeyName::Named(Key::LeftArrow) => "Left".to_owned(),
-            KeyName::Named(Key::RightArrow) => "Right".to_owned(),
-            KeyName::Named(Key::Escape) => "Esc".to_owned(),
-            KeyName::Named(Key::Return) => "Enter".to_owned(),
-            KeyName::Named(named) => format!("{named:?}"),
-        };
-        let ctrl = if self.ctrl { "Ctrl+" } else { "" };
-        let alt = if self.alt { "Alt+" } else { "" };
-        let shift = if self.shift { "Shift+" } else { "" };
-        format!("{ctrl}{alt}{shift}{key}")
+impl Action {
+    /// Its entry in the table; `None` only for a track that is not there, such as the
+    /// fifth.
+    pub fn info(self) -> Option<&'static ActionInfo> {
+        ACTIONS.iter().find(|info| info.action == self)
     }
 
-    /// Whether the key ignores Shift: a punctuation character already says whether Shift
-    /// was held, and which keys need it differs between keyboard layouts.
-    fn shift_agnostic(&self) -> bool {
-        matches!(self.key, KeyName::Char(c) if c.is_ascii_punctuation())
+    /// The action called `name` in the shortcuts file, a menu item or a button.
+    pub fn named(name: &str) -> Option<Action> {
+        ACTIONS
+            .iter()
+            .find(|info| info.name == name)
+            .map(|info| info.action)
     }
-}
-
-/// The action for a key press; `text` is the key text Slint reports.
-pub fn action_for(text: &str, ctrl: bool, shift: bool, alt: bool) -> Option<Action> {
-    let mut chars = text.chars();
-    let (Some(key), None) = (chars.next(), chars.next()) else {
-        return None;
-    };
-    let key = key.to_ascii_lowercase();
-    SHORTCUTS
-        .iter()
-        .find(|shortcut| {
-            let matches_key = match shortcut.key {
-                KeyName::Char(c) => c == key,
-                KeyName::Named(named) => char::from(named) == key,
-            };
-            matches_key
-                && shortcut.ctrl == ctrl
-                && shortcut.alt == alt
-                && (shortcut.shift == shift || shortcut.shift_agnostic())
-        })
-        .map(|shortcut| shortcut.action)
-}
-
-/// The action for a key press: by `key`, the letter or digit of the key pressed when it has
-/// one (see `platform::pressed_key`), otherwise by `text`. Letter shortcuts so work under any
-/// keyboard layout, as Windows' own do: under Arabic (101), L types م, and Shift+L a slash.
-pub fn action_for_key(
-    text: &str,
-    key: Option<char>,
-    ctrl: bool,
-    shift: bool,
-    alt: bool,
-) -> Option<Action> {
-    match key {
-        Some(key) => action_for(key.encode_utf8(&mut [0; 4]), ctrl, shift, alt),
-        None => action_for(text, ctrl, shift, alt),
-    }
-}
-
-/// The shortcut list as the windows show it.
-pub fn shortcut_list() -> slint::ModelRc<crate::ShortcutView> {
-    let list: Vec<crate::ShortcutView> = SHORTCUTS
-        .iter()
-        .map(|shortcut| crate::ShortcutView {
-            keys: shortcut.keys().into(),
-            description: shortcut.description.into(),
-        })
-        .collect();
-    std::rc::Rc::new(slint::VecModel::from(list)).into()
-}
-
-/// The action a menu item or button names (see `root.action(...)` in the windows' .slint
-/// files).
-pub fn action_named(name: &str) -> Option<Action> {
-    Some(match name {
-        "new" => Action::NewProject,
-        "open" => Action::OpenProject,
-        "save" => Action::Save,
-        "save-as" => Action::SaveAs,
-        "import" => Action::Import,
-        "export" => Action::Export,
-        "cancel-export" => Action::CancelExport,
-        "compress" => Action::CompressVideo,
-        "quit" => Action::Quit,
-        "undo" => Action::Undo,
-        "redo" => Action::Redo,
-        "split" => Action::Split,
-        "delete" => Action::Delete,
-        "ripple-delete" => Action::RippleDelete,
-        "delete-one" => Action::DeleteOne,
-        "unlink" => Action::Unlink,
-        "toggle-enabled" => Action::ToggleEnabled,
-        "place" => Action::Place,
-        "sequence-settings" => Action::SequenceSettings,
-        "zoom-in" => Action::ZoomIn,
-        "zoom-out" => Action::ZoomOut,
-        "zoom-fit" => Action::ZoomFit,
-        "toggle-fill" => Action::ToggleFill,
-        "open-clip-editor" => Action::OpenClipEditor,
-        "apply-clip" => Action::ApplyClip,
-        "reload-clip" => Action::ReloadClip,
-        "keep-draft" => Action::KeepDraft,
-        "export-clip" => Action::ExportClip,
-        _ => return None,
-    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn named(key: Key) -> String {
-        slint::SharedString::from(key).to_string()
-    }
-
     #[test]
-    fn plain_keys_find_their_action() {
-        assert_eq!(
-            action_for(" ", false, false, false),
-            Some(Action::PlayPause)
-        );
-        assert_eq!(
-            action_for("l", false, false, false),
-            Some(Action::PlayForward)
-        );
-        assert_eq!(
-            action_for(&named(Key::LeftArrow), false, false, false),
-            Some(Action::StepBack)
-        );
-        assert_eq!(
-            action_for(&named(Key::End), false, false, false),
-            Some(Action::GoToEnd)
-        );
-        assert_eq!(action_for("s", false, false, false), Some(Action::Split));
-    }
-
-    #[test]
-    fn letters_match_in_either_case() {
-        assert_eq!(
-            action_for("L", false, false, false),
-            Some(Action::PlayForward)
-        );
-        assert_eq!(action_for("Z", true, true, false), Some(Action::Redo));
-    }
-
-    #[test]
-    fn modifiers_must_match() {
-        assert_eq!(action_for("z", true, false, false), Some(Action::Undo));
-        assert_eq!(action_for("z", true, true, false), Some(Action::Redo));
-        assert_eq!(action_for("z", false, false, false), None);
-        assert_eq!(action_for("l", true, false, false), Some(Action::Unlink));
-        assert_eq!(action_for("l", false, false, true), None);
-        assert_eq!(action_for("x", false, false, false), None);
-        assert_eq!(action_for("s", true, false, false), Some(Action::Save));
-        assert_eq!(action_for("s", true, true, false), Some(Action::SaveAs));
-    }
-
-    #[test]
-    fn letter_keys_work_under_any_keyboard_layout() {
-        // Arabic (101): L types م, and Shift+L a slash; the key is L either way.
-        assert_eq!(
-            action_for_key("م", Some('l'), false, false, false),
-            Some(Action::PlayForward)
-        );
-        assert_eq!(
-            action_for_key("/", Some('l'), false, true, false),
-            Some(Action::PlaySlowForward)
-        );
-        assert_eq!(
-            action_for_key("س", Some('s'), true, false, false),
-            Some(Action::Save)
-        );
-        // Keys without a letter or digit go by their text.
-        assert_eq!(
-            action_for_key(" ", None, false, false, false),
-            Some(Action::PlayPause)
-        );
-        assert_eq!(
-            action_for_key(&named(Key::Delete), None, false, false, false),
-            action_for(&named(Key::Delete), false, false, false)
-        );
-    }
-
-    #[test]
-    fn the_clip_editor_has_keys_of_its_own() {
-        let enter = named(Key::Return);
-        assert_eq!(
-            action_for(&enter, false, false, false),
-            Some(Action::OpenClipEditor)
-        );
-        assert_eq!(
-            action_for(&enter, true, false, false),
-            Some(Action::ApplyClip)
-        );
-        assert_eq!(action_for("i", false, false, false), Some(Action::MarkIn));
-        assert_eq!(action_for("o", false, false, false), Some(Action::MarkOut));
-        assert_eq!(
-            action_for("r", false, false, false),
-            Some(Action::TurnRight)
-        );
-        assert_eq!(action_for("R", false, true, false), Some(Action::TurnLeft));
-        assert_eq!(
-            action_for("h", false, false, false),
-            Some(Action::MirrorLeftRight)
-        );
-        assert_eq!(
-            action_for("v", false, false, false),
-            Some(Action::MirrorTopBottom)
-        );
-        assert_eq!(
-            action_for("f", false, false, false),
-            Some(Action::ToggleFill)
-        );
-        assert_eq!(
-            action_for("w", true, false, false),
-            Some(Action::CloseClipEditor)
-        );
-        assert_eq!(
-            action_for("r", true, false, false),
-            Some(Action::ReloadClip)
-        );
-        assert_eq!(action_for("k", true, false, false), Some(Action::KeepDraft));
-        assert_eq!(action_for("e", true, true, false), Some(Action::ExportClip));
-        assert_eq!(action_for("e", true, false, false), Some(Action::Export));
-        assert_eq!(
-            action_for("m", true, false, false),
-            Some(Action::CompressVideo)
-        );
-        assert_eq!(action_named("compress"), Some(Action::CompressVideo));
-    }
-
-    #[test]
-    fn shift_plays_slowly() {
-        assert_eq!(
-            action_for("L", false, true, false),
-            Some(Action::PlaySlowForward)
-        );
-        assert_eq!(
-            action_for("J", false, true, false),
-            Some(Action::PlaySlowBackward)
-        );
-    }
-
-    #[test]
-    fn delete_comes_in_three_kinds() {
-        let delete = named(Key::Delete);
-        assert_eq!(
-            action_for(&delete, false, false, false),
-            Some(Action::Delete)
-        );
-        assert_eq!(
-            action_for(&delete, false, true, false),
-            Some(Action::RippleDelete)
-        );
-        assert_eq!(
-            action_for(&delete, false, false, true),
-            Some(Action::DeleteOne)
-        );
-    }
-
-    #[test]
-    fn tracks_are_hidden_with_alt_and_locked_with_ctrl_alt() {
-        assert_eq!(
-            action_for("3", false, false, true),
-            Some(Action::ToggleMute(2))
-        );
-        assert_eq!(
-            action_for("1", true, false, true),
-            Some(Action::ToggleLock(0))
-        );
-        assert_eq!(action_for("1", false, false, false), None);
-    }
-
-    #[test]
-    fn punctuation_keys_work_with_or_without_shift() {
-        // "?" needs Shift on most layouts; which key it is varies.
-        assert_eq!(
-            action_for("?", false, true, false),
-            Some(Action::ShortcutList)
-        );
-        assert_eq!(
-            action_for("?", false, false, false),
-            Some(Action::ShortcutList)
-        );
-        assert_eq!(action_for("=", false, false, false), Some(Action::ZoomIn));
-    }
-
-    #[test]
-    fn the_list_names_keys_as_printed_on_the_keyboard() {
-        let keys: Vec<String> = SHORTCUTS.iter().map(Shortcut::keys).collect();
-        for expected in [
-            "Space",
-            "J",
-            "Left",
-            "Home",
-            "End",
-            "Ctrl+Z",
-            "Ctrl+Shift+Z",
-            "Esc",
-            "Delete",
-            "Shift+Delete",
-            "Alt+Delete",
-            "Ctrl+Alt+1",
-            "?",
-        ] {
-            assert!(keys.iter().any(|k| k == expected), "{expected} in {keys:?}");
-        }
-    }
-
-    #[test]
-    fn no_two_shortcuts_share_a_key() {
-        for (i, a) in SHORTCUTS.iter().enumerate() {
-            for b in &SHORTCUTS[i + 1..] {
-                assert!(
-                    (a.key, a.ctrl, a.shift, a.alt) != (b.key, b.ctrl, b.shift, b.alt),
-                    "{a:?} and {b:?}"
-                );
+    fn every_action_has_a_name_of_its_own() {
+        for (i, info) in ACTIONS.iter().enumerate() {
+            assert!(
+                info.name
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-'),
+                "{}",
+                info.name
+            );
+            assert_eq!(Action::named(info.name), Some(info.action));
+            assert_eq!(info.action.info().map(|info| info.name), Some(info.name));
+            for other in &ACTIONS[i + 1..] {
+                assert_ne!(info.name, other.name);
+                assert_ne!(info.action, other.action);
             }
         }
+        assert_eq!(Action::named("mute-a1"), Some(Action::ToggleMute(2)));
+        assert_eq!(Action::named("splitt"), None);
+        assert!(Action::ToggleMute(4).info().is_none());
+    }
+
+    #[test]
+    fn no_two_actions_share_a_default_key() {
+        let keys: Vec<(Action, Keys)> = ACTIONS
+            .iter()
+            .flat_map(|info| info.keys.iter().map(move |keys| (info.action, *keys)))
+            .collect();
+        for (i, (action, key)) in keys.iter().enumerate() {
+            for (other, other_key) in &keys[i + 1..] {
+                assert!(key != other_key, "{action:?} and {other:?} share {key}");
+            }
+        }
+    }
+
+    #[test]
+    fn every_group_has_actions_and_they_come_together() {
+        let groups: Vec<Group> = ACTIONS.iter().map(|info| info.group).collect();
+        let mut seen: Vec<Group> = Vec::new();
+        for group in groups {
+            if seen.last() != Some(&group) {
+                assert!(!seen.contains(&group), "{group:?} comes back later");
+                seen.push(group);
+            }
+        }
+        assert_eq!(seen.len(), 6);
     }
 
     /// The actions the windows' menu items and buttons name.
@@ -669,18 +680,15 @@ mod tests {
         assert!(names.len() > 15, "{names:?}");
         assert!(names.contains(&"apply-clip"), "{names:?}");
         for name in names {
-            assert!(action_named(name).is_some(), "{name}");
+            assert!(Action::named(name).is_some(), "{name}");
         }
     }
 
     #[test]
-    fn every_named_action_has_a_shortcut() {
+    fn every_named_action_has_a_key() {
         for name in named_in_the_windows() {
-            let action = action_named(name).unwrap();
-            assert!(
-                SHORTCUTS.iter().any(|shortcut| shortcut.action == action),
-                "{action:?} has no shortcut"
-            );
+            let info = Action::named(name).and_then(Action::info).unwrap();
+            assert!(!info.keys.is_empty(), "{name} has no key");
         }
     }
 }

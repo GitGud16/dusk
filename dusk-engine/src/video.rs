@@ -34,6 +34,8 @@ pub(crate) enum VideoRequest {
     },
     /// The preview's window closed: what it showed and drew with is let go.
     Close(Preview),
+    /// The frame cache holds at most this many bytes from now on.
+    CacheCap(usize),
 }
 
 /// While scrubbing, exact frames are decoded at most this often.
@@ -279,6 +281,7 @@ impl VideoThread {
                         *self.view_mut(preview) = View::default();
                         (wanted[preview.index()], redraw[preview.index()]) = (None, false);
                     }
+                    VideoRequest::CacheCap(cap) => self.cache.set_cap(cap),
                 }
             }
             for preview in Preview::ALL {

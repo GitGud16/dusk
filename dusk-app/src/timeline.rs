@@ -23,7 +23,7 @@ pub fn timecode(frame: Frame, rate: Rational) -> String {
 }
 
 /// Whole frames per timecode second: the rate rounded up, so 29.97 counts 30.
-fn nominal_fps(rate: Rational) -> i64 {
+pub(crate) fn nominal_fps(rate: Rational) -> i64 {
     i64::from(rate.num().div_ceil(rate.den())).max(1)
 }
 

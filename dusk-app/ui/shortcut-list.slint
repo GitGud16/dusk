@@ -1,9 +1,14 @@
-// The shortcut list, the same in every window: each key and what it does.
+// The shortcut list: each key and what it does, by group. The main window's is a dialog that
+// narrows the list to what is typed and changes keys; the clip editor's only shows them.
 
 import { Theme } from "theme.slint";
+import { SearchField, ToolButton } from "widgets.slint";
+import { DialogPanel, DialogTitle } from "dialogs.slint";
 
 // A line of the shortcut list.
 export struct ShortcutView {
+    // The group's heading on the group's first line, empty on the others.
+    heading: string,
     keys: string,
     description: string,
 }
@@ -12,6 +17,8 @@ export struct ShortcutView {
 export component ShortcutPanel inherits Rectangle {
     in property <[ShortcutView]> shortcuts;
     in property <length> available-height;
+    // What in the user's shortcuts file Dusk could not read, if anything.
+    in property <string> problem;
 
     height: Math.min(content.preferred-height, root.available-height);
     background: Theme.bg-2;
@@ -35,20 +42,234 @@ export component ShortcutPanel inherits Rectangle {
                 font-weight: Theme.weight-semibold;
             }
 
-            for shortcut in root.shortcuts: HorizontalLayout {
-                spacing: Theme.space-3;
+            if root.problem != "": Text {
+                text: root.problem;
+                color: Theme.alert;
+                wrap: word-wrap;
+            }
 
-                Text {
-                    width: 120px;
-                    text: shortcut.keys;
-                    color: Theme.primary-bright;
-                    font-family: Theme.font-numeric;
+            for shortcut in root.shortcuts: VerticalLayout {
+                spacing: Theme.space-1;
+
+                if shortcut.heading != "": Text {
+                    text: shortcut.heading;
+                    color: Theme.text-1;
+                    font-weight: Theme.weight-semibold;
                 }
 
-                Text {
-                    text: shortcut.description;
-                    color: Theme.text-2;
-                    wrap: word-wrap;
+                HorizontalLayout {
+                    spacing: Theme.space-3;
+
+                    Text {
+                        width: 120px;
+                        text: shortcut.keys;
+                        color: Theme.primary-bright;
+                        font-family: Theme.font-numeric;
+                        wrap: word-wrap;
+                    }
+
+                    Text {
+                        text: shortcut.description;
+                        color: Theme.text-2;
+                        wrap: word-wrap;
+                    }
+                }
+            }
+        }
+    }
+}
+
+// The main window's shortcut list (docs/ARCHITECTURE.md, "Keyboard and settings"): typing
+// narrows it, Up and Down or a click pick an action, and Enter, a double-click or Change keys
+// waits for its new keys.
+export component ShortcutDialog inherits Rectangle {
+    in property <[ShortcutView]> rows;
+    // The picked row, -1 for none, and how many headings are above it, its own included, for
+    // keeping it in view.
+    in property <int> picked: -1;
+    in property <int> headings-above;
+    // What the dialog says under the list.
+    in property <string> note;
+    // Waiting for the picked action's new keys.
+    in property <bool> capturing;
+    // What in the user's shortcuts file Dusk could not read, if anything.
+    in property <string> problem;
+    callback search(text: string);
+    callback pick(row: int);
+    callback change();
+    callback remove();
+    callback restore();
+    callback restore-all();
+    callback close();
+
+    public function focus-search() {
+        search-field.focus-input();
+    }
+
+    property <length> row-height: 24px;
+    property <length> heading-height: 26px;
+    property <length> list-height: 360px;
+    // How far the list is scrolled.
+    property <length> scrolled;
+
+    pure function picked-top() -> length {
+        return root.picked * root.row-height + root.headings-above * root.heading-height;
+    }
+
+    changed picked => {
+        if root.picked >= 0 {
+            if root.picked-top() < root.scrolled {
+                root.scrolled = root.picked-top();
+            } else if root.picked-top() + root.row-height > root.scrolled + root.list-height {
+                root.scrolled = root.picked-top() + root.row-height - root.list-height;
+            }
+        }
+    }
+
+    DialogPanel {
+        panel-width: 600px;
+        keep-top: true;
+
+        DialogTitle {
+            text: "Keyboard shortcuts";
+        }
+
+        search-field := SearchField {
+            in-dialog: true;
+            placeholder: "Type what an action does, or its keys";
+            edited(text) => {
+                root.search(text);
+            }
+            accepted => {
+                root.change();
+            }
+        }
+
+        if root.problem != "": Text {
+            text: root.problem;
+            color: Theme.alert;
+            wrap: word-wrap;
+        }
+
+        Rectangle {
+            height: root.list-height;
+            clip: true;
+
+            TouchArea {
+                scroll-event(event) => {
+                    root.scrolled = Math.clamp(root.scrolled - event.delta-y, 0px, Math.max(0px, list.preferred-height - root.list-height));
+                    return accept;
+                }
+            }
+
+            list := VerticalLayout {
+                y: -root.scrolled;
+                height: self.preferred-height;
+                alignment: start;
+
+                for row[index] in root.rows: VerticalLayout {
+                    if row.heading != "": Text {
+                        height: root.heading-height;
+                        text: row.heading;
+                        color: Theme.text-1;
+                        font-weight: Theme.weight-semibold;
+                        vertical-alignment: bottom;
+                    }
+
+                    Rectangle {
+                        height: root.row-height;
+                        border-radius: Theme.radius-control;
+                        background: index != root.picked ? transparent
+                            : root.capturing ? Theme.primary : Theme.primary-dim;
+
+                        HorizontalLayout {
+                            padding-left: Theme.space-2;
+                            padding-right: Theme.space-2;
+                            spacing: Theme.space-3;
+
+                            Text {
+                                width: 170px;
+                                text: row.keys == "" ? "No keys" : row.keys;
+                                color: index == root.picked && root.capturing ? Theme.on-brand
+                                    : row.keys == "" ? Theme.text-3 : Theme.primary-bright;
+                                font-family: Theme.font-numeric;
+                                vertical-alignment: center;
+                                overflow: elide;
+                            }
+
+                            Text {
+                                text: row.description;
+                                color: index == root.picked ? Theme.text-1 : Theme.text-2;
+                                vertical-alignment: center;
+                                overflow: elide;
+                            }
+                        }
+
+                        TouchArea {
+                            clicked => {
+                                root.pick(index);
+                            }
+                            double-clicked => {
+                                root.pick(index);
+                                root.change();
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if root.note != "": Text {
+            text: root.note;
+            color: Theme.text-2;
+            wrap: word-wrap;
+        }
+
+        HorizontalLayout {
+            spacing: Theme.space-2;
+
+            ToolButton {
+                in-dialog: true;
+                text: "Change keys";
+                clicked => {
+                    root.change();
+                }
+            }
+
+            ToolButton {
+                in-dialog: true;
+                text: "Remove keys";
+                clicked => {
+                    root.remove();
+                }
+            }
+
+            ToolButton {
+                in-dialog: true;
+                text: "Default keys";
+                clicked => {
+                    root.restore();
+                }
+            }
+
+            Rectangle {
+                horizontal-stretch: 1;
+            }
+
+            ToolButton {
+                in-dialog: true;
+                text: "All defaults";
+                clicked => {
+                    root.restore-all();
+                }
+            }
+
+            ToolButton {
+                in-dialog: true;
+                text: "Close";
+                primary: true;
+                clicked => {
+                    root.close();
                 }
             }
         }

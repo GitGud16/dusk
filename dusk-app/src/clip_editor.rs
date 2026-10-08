@@ -17,8 +17,9 @@ use crate::app::{App, factor_label, sentence, texture_image, with_app};
 use crate::document::Next;
 use crate::draft::{self, EditorView, Sides, Source};
 use crate::export_dialog::ExportTarget;
+use crate::navigation::one_second;
 use crate::platform;
-use crate::shortcuts::{self, Action};
+use crate::shortcuts::Action;
 use crate::speed::{SpeedKey, next_factor};
 use crate::timeline::timecode;
 use crate::{ClipEditorWindow, EditorProps, EditorSides};
@@ -689,6 +690,15 @@ impl App {
     /// A key was pressed in the clip editor; true when it was a shortcut there, or its
     /// question took it.
     pub fn editor_key(&mut self, text: &str, ctrl: bool, shift: bool, alt: bool) -> bool {
+        // Slint moves the keyboard through a dialog's controls with the keys no one takes.
+        let dialog = self
+            .editor
+            .as_ref()
+            .is_some_and(|editor| editor.question.is_some())
+            || self.export_dialog_in_editor();
+        if dialog && crate::keymap::moves_focus(text) {
+            return false;
+        }
         if self
             .editor
             .as_ref()
@@ -701,7 +711,7 @@ impl App {
             return true;
         }
         let key = platform::pressed_key();
-        match shortcuts::action_for_key(text, key, ctrl, shift, alt) {
+        match self.keymap.action_for_press(text, key, ctrl, shift, alt) {
             Some(action) => self.editor_act(action),
             None => false,
         }
@@ -728,6 +738,12 @@ impl App {
             Action::StepForward => self.editor_step(1),
             Action::GoToStart => self.editor_seek(Frame(0)),
             Action::GoToEnd => self.editor_seek(Frame(i64::MAX)),
+            Action::BackSecond => {
+                self.editor_step(-one_second(self.project.sequence().frame_rate()));
+            }
+            Action::AheadSecond => {
+                self.editor_step(one_second(self.project.sequence().frame_rate()));
+            }
             Action::MarkIn => self.editor_mark(Edge::Start),
             Action::MarkOut => self.editor_mark(Edge::End),
             Action::TurnLeft => self.editor_turn(false),
@@ -771,7 +787,14 @@ impl App {
             | Action::ZoomOut
             | Action::ZoomFit
             | Action::SequenceSettings
-            | Action::OpenClipEditor => return false,
+            | Action::Settings
+            | Action::OpenClipEditor
+            | Action::PreviousCut
+            | Action::NextCut
+            | Action::SelectAtPlayhead
+            | Action::SelectNone
+            | Action::PreviousMedia
+            | Action::NextMedia => return false,
         }
         true
     }
@@ -952,14 +975,19 @@ fn connect(window: &ClipEditorWindow) {
         with_app(|app| app.export_done(export));
     });
     window.on_action(|name| {
-        if let Some(action) = shortcuts::action_named(&name) {
+        if let Some(action) = Action::named(&name) {
             with_app(|app| app.editor_act(action));
         }
     });
     window.on_key(|text, ctrl, shift, alt| {
         with_app(|app| app.editor_key(&text, ctrl, shift, alt)).unwrap_or(false)
     });
-    window.set_shortcuts(shortcuts::shortcut_list());
+    if let Some((list, problem)) =
+        with_app(|app| (app.keymap.shortcut_list(), app.keymap_problem.clone()))
+    {
+        window.set_shortcuts(list);
+        window.set_shortcut_problem(problem.into());
+    }
     window.window().on_close_requested(|| {
         if with_app(App::may_close_editor).unwrap_or(true) {
             CloseRequestResponse::HideWindow

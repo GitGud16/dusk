@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Instant;
 
 use dusk_core::time::STANDARD_RATES;
-use dusk_core::{ClipId, Command, Frame, MediaId, Project};
+use dusk_core::{ClipId, Command, Edge, Frame, MediaId, Project};
 use dusk_engine::{Engine, EngineEvent, ExportEvent, ExportJob, Preview};
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 
@@ -20,6 +20,7 @@ use crate::document::{Document, Question};
 use crate::export_dialog::ExportDialog;
 use crate::files::Worker;
 use crate::history::History;
+use crate::navigation::{cut_after, cut_before, one_second};
 use crate::recovery::Session;
 use crate::shortcuts::Action;
 use crate::speed::{SpeedKey, next_factor};
@@ -124,6 +125,18 @@ pub struct App {
     pub(crate) compressing: bool,
     /// How the last export was written, where the dialog starts next time.
     pub(crate) last_export: Option<dusk_engine::ExportSettings>,
+    /// The keys in use: the shortcut table's, with the user's changes over them.
+    pub(crate) keymap: crate::keymap::Keymap,
+    /// What in the user's shortcuts file could not be read, for the shortcut list.
+    pub(crate) keymap_problem: String,
+    /// The shortcut list's dialog, while it is open.
+    pub(crate) shortcut_dialog: Option<crate::shortcut_dialog::ShortcutDialog>,
+    /// Where the user's settings and shortcuts are kept; `None` when there is nowhere.
+    pub(crate) settings_dir: Option<std::path::PathBuf>,
+    /// The user's settings, as `settings.txt` keeps them.
+    pub(crate) settings: crate::settings::Settings,
+    /// The Settings dialog is open.
+    pub(crate) settings_open: bool,
     /// The GPL encoders of the user's own `ffmpeg`, picked in the export dialog for this
     /// session (docs/ARCHITECTURE.md, "Optional GPL encoders").
     pub(crate) external: Vec<dusk_engine::ExternalEncoder>,
@@ -131,6 +144,9 @@ pub struct App {
     pub(crate) use_external: bool,
     /// What the export dialog says of that program.
     pub(crate) external_note: String,
+    /// Counts the checks of that program, so a check that a later one or Forget overtook
+    /// changes nothing.
+    pub(crate) external_check: u64,
     pub(crate) view: View,
     /// The question on screen, if one is.
     pub(crate) question: Option<Question>,
@@ -182,9 +198,16 @@ impl App {
             compress_dialog: None,
             compressing: false,
             last_export: None,
+            keymap: crate::keymap::Keymap::default(),
+            keymap_problem: String::new(),
+            shortcut_dialog: None,
+            settings_dir: None,
+            settings: crate::settings::Settings::default(),
+            settings_open: false,
             external: Vec::new(),
             use_external: false,
             external_note: String::new(),
+            external_check: 0,
             view: View::new(window.get_timeline_width()),
             question: None,
             dialog_open: false,
@@ -280,6 +303,14 @@ impl App {
 
     /// A key was pressed; true when it was a shortcut, or a dialog took it.
     pub fn key(&mut self, text: &str, ctrl: bool, shift: bool, alt: bool) -> bool {
+        // Slint moves the keyboard through a dialog's controls with the keys no one takes.
+        if self.main_dialog_open() && crate::keymap::moves_focus(text) {
+            return false;
+        }
+        if self.shortcut_dialog.is_some() {
+            let key = crate::platform::pressed_key();
+            return self.shortcut_dialog_key(text, key, ctrl, shift, alt);
+        }
         if self.compress_dialog_key(text) || self.export_dialog_key(text, false) {
             return true;
         }
@@ -293,12 +324,31 @@ impl App {
             }
             return true;
         }
+        if self.settings_open {
+            if text == SharedString::from(slint::platform::Key::Escape).as_str() {
+                self.settings_close();
+            }
+            return true;
+        }
         let key = crate::platform::pressed_key();
-        let Some(action) = crate::shortcuts::action_for_key(text, key, ctrl, shift, alt) else {
+        let Some(action) = self.keymap.action_for_press(text, key, ctrl, shift, alt) else {
             return false;
         };
         self.act(action);
         true
+    }
+
+    /// Whether a dialog is open over the main window.
+    pub(crate) fn main_dialog_open(&self) -> bool {
+        self.compress_dialog.is_some()
+            || self
+                .export_dialog
+                .as_ref()
+                .is_some_and(|dialog| !dialog.in_editor())
+            || self.question.is_some()
+            || self.sequence_settings_open
+            || self.shortcut_dialog.is_some()
+            || self.settings_open
     }
 
     /// Does what a shortcut, a menu item or a button stands for.
@@ -317,6 +367,16 @@ impl App {
             Action::StepForward => self.step(1),
             Action::GoToStart => self.seek(Frame(0)),
             Action::GoToEnd => self.seek(self.last_frame()),
+            Action::PreviousCut => self.go_to_cut(false),
+            Action::NextCut => self.go_to_cut(true),
+            Action::BackSecond => self.step(-one_second(self.project.sequence().frame_rate())),
+            Action::AheadSecond => self.step(one_second(self.project.sequence().frame_rate())),
+            Action::SelectAtPlayhead => self.select_at_playhead(),
+            Action::SelectNone => self.select_clip(-1),
+            Action::PreviousMedia => self.select_neighbor_media(false),
+            Action::NextMedia => self.select_neighbor_media(true),
+            Action::MarkIn => self.trim_selected_to_playhead(Edge::Start),
+            Action::MarkOut => self.trim_selected_to_playhead(Edge::End),
             Action::Undo => self.undo(),
             Action::Redo => self.redo(),
             Action::Split => self.split(),
@@ -340,21 +400,16 @@ impl App {
             Action::SaveAs => self.save_as(None),
             Action::Import => self.import_dialog(),
             Action::SequenceSettings => self.open_sequence_settings(),
+            Action::Settings => self.open_settings(),
             Action::Export => self.export(),
             Action::CompressVideo => self.compress_video(),
             Action::CancelExport => self.cancel_export(),
             Action::Quit => self.quit(),
-            Action::ShortcutList => {
-                if let Some(window) = self.window() {
-                    window.invoke_show_shortcut_list();
-                }
-            }
+            Action::ShortcutList => self.open_shortcut_list(),
             Action::ToggleFill => self.toggle_fill(),
             Action::OpenClipEditor => self.open_selected_clip(),
             // The clip editor's own keys mean nothing in the main window.
-            Action::MarkIn
-            | Action::MarkOut
-            | Action::TurnLeft
+            Action::TurnLeft
             | Action::TurnRight
             | Action::MirrorLeftRight
             | Action::MirrorTopBottom
@@ -529,11 +584,33 @@ impl App {
         self.seek(from + Frame(frames));
     }
 
-    /// Moves the playhead to `frame` and shows exactly that frame.
+    /// Up and Down: the playhead goes to the previous or next cut, or stays at the last one.
+    fn go_to_cut(&mut self, forward: bool) {
+        let from = self.stop_playing(Preview::Main).unwrap_or(self.playhead);
+        let cut = if forward {
+            cut_after(&self.project, from)
+        } else {
+            cut_before(&self.project, from)
+        };
+        self.seek(cut.unwrap_or(from));
+    }
+
+    /// Moves the playhead to `frame` and shows exactly that frame; the timeline scrolls to
+    /// keep the playhead in view, as the keys that move it need.
     pub(crate) fn seek(&mut self, frame: Frame) {
         self.playhead = self.clamp(frame);
         self.engine.show(Preview::Main, self.playhead);
+        self.follow_playhead();
         self.refresh_transport();
+    }
+
+    /// Scrolls the timeline so the playhead is in view.
+    fn follow_playhead(&mut self) {
+        let before = self.view;
+        self.view.follow(self.playhead);
+        if self.view != before {
+            self.refresh_timeline();
+        }
     }
 
     /// The playhead is being dragged to `frame`.
@@ -739,8 +816,11 @@ impl App {
                 thumbnail: self.thumbnails.get(row.id).unwrap_or_default(),
             })
             .collect();
+        let selected = self.selected_media.map_or(-1, |media| id_int(media.0));
+        let row = media.iter().position(|view| view.id == selected);
         replace_if_changed(&self.models.media, media);
-        window.set_selected_media(self.selected_media.map_or(-1, |media| id_int(media.0)));
+        window.set_selected_media(selected);
+        window.set_selected_media_row(row.and_then(|row| i32::try_from(row).ok()).unwrap_or(-1));
     }
 
     /// Shows the selected clip's properties.
@@ -776,11 +856,7 @@ impl App {
         let rate = self.project.sequence().frame_rate();
         let playing = self.playing(Preview::Main);
         if playing.is_some() {
-            let before = self.view;
-            self.view.follow(self.playhead);
-            if self.view != before {
-                self.refresh_timeline();
-            }
+            self.follow_playhead();
         }
         window.set_playhead(frame_int(self.playhead));
         window.set_position_timecode(timeline::timecode(self.playhead, rate).into());
@@ -802,8 +878,10 @@ impl App {
         (self.project.sequence().end() - Frame(1)).max(Frame(0))
     }
 
+    /// Where the playhead can go: from the start to just past the last frame, where placing
+    /// media puts it after everything.
     fn clamp(&self, frame: Frame) -> Frame {
-        frame.clamp(Frame(0), self.last_frame())
+        frame.clamp(Frame(0), self.project.sequence().end())
     }
 
     /// Shows `message` in the status line.

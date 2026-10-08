@@ -1,9 +1,10 @@
 //! The export dialog on the UI thread (docs/ARCHITECTURE.md, "Export details"): it opens
 //! over the main window for the timeline or over the clip editor for its clip, probes the
 //! encoders on a worker the first time, asks where to save with the system's dialog and
-//! starts the export. What it offers is worked out in `export_choices`. Its Advanced section
-//! takes the user's own `ffmpeg` for the GPL encoders ("Optional GPL encoders"), checked on a
-//! worker and kept for the session.
+//! starts the export. What it offers is worked out in `export_choices`, starting from the
+//! last export of the session or else the user's settings. Its Advanced section takes the
+//! user's own `ffmpeg` for the GPL encoders ("Optional GPL encoders"), checked on a worker and
+//! kept in the settings, as the Settings dialog does too.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -44,7 +45,7 @@ pub struct ExportDialog {
 }
 
 impl ExportDialog {
-    fn in_editor(&self) -> bool {
+    pub(crate) fn in_editor(&self) -> bool {
         matches!(self.target, ExportTarget::Clip { .. })
     }
 
@@ -107,12 +108,15 @@ impl App {
     }
 
     fn choices_for(&self, dialog: &ExportDialog, encoders: Vec<&'static Encoder>) -> ExportChoices {
+        let start = self
+            .last_export
+            .unwrap_or_else(|| self.settings.export_settings());
         let mut choices = ExportChoices::new(
             encoders,
             dialog.size,
             dialog.has_video,
             dialog.has_sound,
-            self.last_export,
+            Some(start),
         );
         choices.external = self.external.clone();
         choices.use_external = self.use_external;
@@ -188,60 +192,101 @@ impl App {
         let Some(dialog) = &self.export_dialog else {
             return;
         };
-        let done = |paths: Vec<PathBuf>| {
-            if let Some(program) = paths.into_iter().next() {
-                with_app(|app| app.check_program(program));
-            }
-        };
         if dialog.in_editor() {
             if let Some(window) = self
                 .editor_window
                 .as_ref()
                 .map(ComponentHandle::clone_strong)
             {
-                self.show_dialog_over(window.window(), Dialog::OpenProgram, done);
+                self.pick_program_over(window.window());
             }
         } else if let Some(window) = self.window() {
-            self.show_dialog_over(window.window(), Dialog::OpenProgram, done);
+            self.pick_program_over(window.window());
         }
     }
 
-    /// Asks `program` for its encoders on a worker; the dialog says so meanwhile.
-    fn check_program(&mut self, program: PathBuf) {
+    /// Asks for the user's own `ffmpeg` program with the system's dialog over `window`, and
+    /// checks the program picked.
+    pub(crate) fn pick_program_over(&mut self, window: &slint::Window) {
+        self.show_dialog_over(window, Dialog::OpenProgram, |paths| {
+            if let Some(program) = paths.into_iter().next() {
+                with_app(|app| app.check_program(program, true));
+            }
+        });
+    }
+
+    /// Asks `program` for its encoders on a worker; the dialogs say so meanwhile. `picked`
+    /// when the user just picked it, rather than Dusk starting with the one the settings keep.
+    pub(crate) fn check_program(&mut self, program: PathBuf, picked: bool) {
+        self.external_check += 1;
+        let check = self.external_check;
         self.external_note = format!("Checking {}…", program.display());
-        self.refresh_export_dialog();
+        self.refresh_program_note();
         let spawned = std::thread::Builder::new()
             .name("dusk ffmpeg check".to_owned())
             .spawn(move || {
                 let checked = external_encoders(&program);
                 let _ = slint::invoke_from_event_loop(move || {
-                    with_app(|app| app.program_checked(&program, checked));
+                    with_app(|app| app.program_checked(check, &program, picked, checked));
                 });
             });
         if let Err(error) = spawned {
             self.external_note = crate::app::sentence(&EngineError::Thread(error).to_string());
-            self.refresh_export_dialog();
+            self.refresh_program_note();
         }
     }
 
-    /// What `program` has is known: exports use it from now on when it has a GPL encoder.
+    /// What `program` has is known. A program that turns out to be `ffmpeg` is kept in the
+    /// settings when it was picked, and exports use it when it has a GPL encoder and the
+    /// settings say so. One picked that cannot be used leaves the one in use, if any; the one
+    /// the settings keep is still kept when it cannot be used as Dusk starts (on a drive that
+    /// is not there, say), and the status line says why.
     fn program_checked(
         &mut self,
+        check: u64,
         program: &Path,
+        picked: bool,
         checked: Result<Vec<ExternalEncoder>, EngineError>,
     ) {
+        if check != self.external_check {
+            return;
+        }
         match checked {
             Ok(found) => {
                 self.external_note = program_note(program, &found);
-                self.use_external = !found.is_empty();
+                if picked {
+                    self.settings.ffmpeg = Some(program.to_path_buf());
+                    self.settings.use_ffmpeg = true;
+                    self.save_settings();
+                }
+                self.use_external = self.settings.use_ffmpeg && !found.is_empty();
                 self.external = found;
             }
             Err(error) => {
                 self.external_note = crate::app::sentence(&error.to_string());
-                self.use_external = false;
-                self.external.clear();
+                if picked {
+                    if let Some(kept) = self
+                        .settings
+                        .ffmpeg
+                        .as_ref()
+                        .filter(|_| !self.external.is_empty())
+                    {
+                        let still = format!(" Dusk keeps using {}.", kept.display());
+                        self.external_note.push_str(&still);
+                    }
+                } else {
+                    self.use_external = false;
+                    self.external.clear();
+                    let message = self.external_note.clone();
+                    self.fail(&message);
+                }
             }
         }
+        self.refresh_program_note();
+    }
+
+    /// Shows what is known of the user's own `ffmpeg` in whichever dialog is open.
+    fn refresh_program_note(&mut self) {
         if let Some(choices) = self
             .export_dialog
             .as_mut()
@@ -251,6 +296,7 @@ impl App {
             choices.use_external = self.use_external;
         }
         self.refresh_export_dialog();
+        self.refresh_settings_dialog();
     }
 
     /// The dialog closed: on Export, ask where and start; on Cancel, nothing.

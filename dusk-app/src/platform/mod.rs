@@ -13,6 +13,23 @@ use slint::winit_030::{EventResult, WinitWindowAccessor, winit};
 #[cfg(windows)]
 mod windows;
 
+/// The folder where Dusk keeps the user's settings and shortcuts: `DUSK_SETTINGS_DIR` when set
+/// (tests use it), otherwise the user's roaming application data, which follows them from one
+/// computer to another (docs/ARCHITECTURE.md, "Keyboard and settings").
+pub fn settings_dir() -> Option<PathBuf> {
+    if let Some(dir) = std::env::var_os("DUSK_SETTINGS_DIR") {
+        return Some(PathBuf::from(dir));
+    }
+    #[cfg(windows)]
+    let dir = std::env::var_os("APPDATA").map(|dir| PathBuf::from(dir).join("Dusk"));
+    #[cfg(not(windows))]
+    let dir = std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))
+        .map(|dir| dir.join("dusk"));
+    dir
+}
+
 /// The folder where Dusk keeps its own files, such as autosaves: `DUSK_STATE_DIR` when set
 /// (tests use it), otherwise the user's local application data.
 pub fn state_dir() -> Option<PathBuf> {
@@ -89,14 +106,16 @@ fn window_handle(window: &slint::Window) -> Option<isize> {
 }
 
 thread_local! {
-    /// The letter or digit of the key pressed last, until a shortcut takes it.
+    /// The character of the key pressed last, until a shortcut takes it.
     static PRESSED: Cell<Option<char>> = const { Cell::new(None) };
 }
 
-/// The letter or digit of the key whose press Slint is handing on, if it has one: the
-/// character of its virtual-key code, as Windows' own shortcuts take it. That is the letter
-/// on the key under Latin keyboard layouts, and the Latin letter at its place under others
-/// (Arabic, Cyrillic, Greek), whose letters no shortcut is defined for.
+/// The character of the key whose press Slint is handing on, if it has one: the letter or
+/// digit of its virtual-key code, as Windows' own shortcuts take it, or for a punctuation key
+/// what it types on a US layout without Shift. That is the letter on the key under Latin
+/// keyboard layouts, and the Latin letter at its place under others (Arabic, Cyrillic,
+/// Greek), whose letters no shortcut is defined for; the keymap goes by it for punctuation
+/// only when the layout types something else there (`keymap::Keys::pressed`).
 pub fn pressed_key() -> Option<char> {
     PRESSED.take()
 }
@@ -117,7 +136,7 @@ pub fn watch_keys(window: &slint::Window) {
     });
 }
 
-/// Keeps the letter or digit of a key press for [`pressed_key`].
+/// Keeps the character of a key press for [`pressed_key`].
 fn note_key(event: &WindowEvent) {
     if let WindowEvent::KeyboardInput { event, .. } = event
         && event.state == ElementState::Pressed
@@ -159,8 +178,8 @@ pub fn watch_window(
     });
 }
 
-/// The letter or digit `key` stands for in the keyboard layout in use, from its virtual-key
-/// code; `None` for every other key.
+/// The character `key` stands for in the keyboard layout in use, from its virtual-key code
+/// (see [`pressed_key`]); `None` for every other key.
 fn key_character(key: winit::keyboard::PhysicalKey) -> Option<char> {
     #[cfg(windows)]
     {

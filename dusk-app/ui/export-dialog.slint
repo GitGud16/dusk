@@ -69,6 +69,7 @@ export component ExportDialog inherits Rectangle {
         }
 
         if !root.view.probing && root.view.video-offered && root.view.sound-offered: Segmented {
+            in-dialog: true;
             options: ["Video", "Sound only"];
             selected: root.view.sound-only ? 1 : 0;
             chosen(index) => {
@@ -87,6 +88,7 @@ export component ExportDialog inherits Rectangle {
                 }
 
                 Segmented {
+                    in-dialog: true;
                     options: root.view.containers;
                     selected: root.view.container;
                     chosen(index) => {
@@ -114,6 +116,7 @@ export component ExportDialog inherits Rectangle {
                 }
 
                 Segmented {
+                    in-dialog: true;
                     options: root.view.codecs;
                     selected: root.view.codec;
                     chosen(index) => {
@@ -130,6 +133,7 @@ export component ExportDialog inherits Rectangle {
                 }
 
                 Segmented {
+                    in-dialog: true;
                     options: root.view.sizes;
                     selected: root.view.size;
                     chosen(index) => {
@@ -156,6 +160,7 @@ export component ExportDialog inherits Rectangle {
                 }
 
                 Segmented {
+                    in-dialog: true;
                     options: ["High", "Medium", "Small"];
                     selected: root.view.level == 80 ? 0 : root.view.level == 60 ? 1 : root.view.level == 40 ? 2 : -1;
                     chosen(index) => {
@@ -164,6 +169,7 @@ export component ExportDialog inherits Rectangle {
                 }
 
                 quality := Slider {
+                    in-dialog: true;
                     minimum: 0;
                     maximum: 100;
                     value: root.view.level;
@@ -184,6 +190,7 @@ export component ExportDialog inherits Rectangle {
                 }
 
                 Segmented {
+                    in-dialog: true;
                     options: root.view.sounds;
                     selected: root.view.sound;
                     chosen(index) => {
@@ -203,6 +210,8 @@ export component ExportDialog inherits Rectangle {
                     }
 
                     NumberField {
+                        in-dialog: true;
+                        live: true;
                         value: root.view.bitrate;
                         maximum: 500000;
                         suffix: "kbit/s";
@@ -223,6 +232,8 @@ export component ExportDialog inherits Rectangle {
                     }
 
                     NumberField {
+                        in-dialog: true;
+                        live: true;
                         value: root.view.crf;
                         maximum: 63;
                         edited(value) => {
@@ -248,6 +259,7 @@ export component ExportDialog inherits Rectangle {
                     spacing: Theme.space-2;
 
                     if root.view.external-offered: Segmented {
+                        in-dialog: true;
                         horizontal-stretch: 1;
                         options: ["Dusk's own", "Your ffmpeg"];
                         selected: root.view.external ? 1 : 0;
@@ -257,6 +269,7 @@ export component ExportDialog inherits Rectangle {
                     }
 
                     ToolButton {
+                        in-dialog: true;
                         text: "Use my own ffmpeg.exe…";
                         clicked => {
                             root.changed("program", 0);
@@ -286,6 +299,7 @@ export component ExportDialog inherits Rectangle {
             }
 
             Segmented {
+                in-dialog: true;
                 options: root.view.sound-formats;
                 selected: root.view.sound-format;
                 chosen(index) => {
@@ -298,6 +312,7 @@ export component ExportDialog inherits Rectangle {
             spacing: Theme.space-2;
 
             if !root.view.probing && !root.view.sound-only: ToolButton {
+                in-dialog: true;
                 text: root.advanced ? "Hide advanced settings" : "Advanced settings";
                 clicked => {
                     root.advanced = !root.advanced;
@@ -309,6 +324,7 @@ export component ExportDialog inherits Rectangle {
             }
 
             ToolButton {
+                in-dialog: true;
                 text: "Export…";
                 primary: true;
                 enabled: root.view.ready;
@@ -318,6 +334,7 @@ export component ExportDialog inherits Rectangle {
             }
 
             ToolButton {
+                in-dialog: true;
                 text: "Cancel";
                 clicked => {
                     root.done(false);

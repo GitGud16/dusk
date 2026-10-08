@@ -15,8 +15,13 @@ mod export_choices;
 mod export_dialog;
 mod files;
 mod history;
+mod keymap;
+mod navigation;
 mod platform;
 mod recovery;
+mod settings;
+mod settings_dialog;
+mod shortcut_dialog;
 mod shortcuts;
 mod speed;
 mod stats;
@@ -48,9 +53,47 @@ fn main() -> anyhow::Result<()> {
     // never dropped, that teardown only lowers a reference count.
     let gpu: &'static Gpu = Box::leak(Box::new(select_renderer()?));
     let window = MainWindow::new()?;
-    let engine = Engine::new(gpu, EngineOptions::default(), app::engine_events())?;
+    // The user's settings and keys, before the engine and the windows use them
+    // (docs/ARCHITECTURE.md, "Keyboard and settings"); the files are small, so reading them
+    // here keeps no window waiting.
+    let settings_dir = platform::settings_dir();
+    let (user_settings, settings_problems) = settings::read_settings(settings_dir.as_deref());
+    let (keymap, keymap_problems) = settings::read_keymap(settings_dir.as_deref());
+    let options = EngineOptions {
+        cache_cap: user_settings.cache_bytes(),
+        ..EngineOptions::default()
+    };
+    let engine = Engine::new(gpu, options, app::engine_events())?;
     let files = Worker::start().map_err(|e| anyhow!("Dusk could not start a thread: {e}."))?;
-    app::install(App::new(&window, engine, files));
+    let mut editor = App::new(&window, engine, files);
+    editor.keymap = keymap;
+    editor.keymap_problem = settings::problems_message(&keymap_problems).unwrap_or_default();
+    window.set_shortcut_problem(editor.keymap_problem.clone().into());
+    editor.settings_dir.clone_from(&settings_dir);
+    let program = user_settings.ffmpeg.clone();
+    editor.settings = user_settings;
+    app::install(editor);
+    // The first time, a shortcuts file that names every action with its default keys and a
+    // settings file with every setting, ready to change.
+    if let Some(dir) = settings_dir {
+        let shortcuts = !dir.join(settings::SHORTCUTS_FILE).exists();
+        let settings = !dir.join(settings::SETTINGS_FILE).exists();
+        with_app(|app| {
+            app.files.run(move || {
+                if shortcuts
+                    && let Err(error) = settings::write_keymap(&dir, &keymap::Keymap::default())
+                {
+                    eprintln!("Dusk could not write its shortcuts file: {error}");
+                }
+                if settings
+                    && let Err(error) =
+                        settings::write_settings(&dir, &settings::Settings::default())
+                {
+                    eprintln!("Dusk could not write its settings file: {error}");
+                }
+            });
+        });
+    }
     connect(&window);
     window.show()?;
     // The preview and the timeline have their sizes now that the window is shown.
@@ -64,6 +107,20 @@ fn main() -> anyhow::Result<()> {
     // Files named on the command line: a project to open, or media to import and place.
     let named: Vec<PathBuf> = std::env::args_os().skip(1).map(PathBuf::from).collect();
     with_app(|app| app.start(named));
+    let problems: Vec<String> = settings_problems
+        .into_iter()
+        .chain(keymap_problems)
+        .collect();
+    if let Some(message) = settings::problems_message(&problems) {
+        for problem in &problems {
+            eprintln!("{problem}");
+        }
+        with_app(|app| app.fail(&message));
+    }
+    // The user's own ffmpeg, if the settings keep one, is checked on a worker.
+    if let Some(program) = program {
+        with_app(|app| app.check_program(program, false));
+    }
     let autosave = slint::Timer::default();
     autosave.start(slint::TimerMode::Repeated, AUTOSAVE_EVERY, || {
         with_app(App::autosave);
@@ -170,11 +227,37 @@ fn connect(window: &MainWindow) {
         with_app(|app| app.sequence_settings_done(apply, rate, width, height));
     });
     window.on_action(|name| {
-        if let Some(action) = shortcuts::action_named(&name) {
+        if let Some(action) = shortcuts::Action::named(&name) {
             with_app(|app| app.act(action));
         }
     });
-    window.set_shortcuts(shortcuts::shortcut_list());
+    window.on_shortcut_search(|text| {
+        with_app(|app| app.shortcut_search(&text));
+    });
+    window.on_shortcut_pick(|row| {
+        with_app(|app| app.shortcut_pick(row));
+    });
+    window.on_shortcut_change(|| {
+        with_app(App::shortcut_change);
+    });
+    window.on_shortcut_remove(|| {
+        with_app(App::shortcut_remove);
+    });
+    window.on_shortcut_restore(|| {
+        with_app(App::shortcut_restore);
+    });
+    window.on_shortcut_restore_all(|| {
+        with_app(App::shortcut_restore_all);
+    });
+    window.on_shortcut_close(|| {
+        with_app(App::shortcut_close);
+    });
+    window.on_settings_changed(|what, value| {
+        with_app(|app| app.settings_changed(&what, value));
+    });
+    window.on_settings_close(|| {
+        with_app(App::settings_close);
+    });
     window.on_key(|text, ctrl, shift, alt| {
         with_app(|app| app.key(&text, ctrl, shift, alt)).unwrap_or(false)
     });
