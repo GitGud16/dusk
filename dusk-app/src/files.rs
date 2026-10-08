@@ -80,8 +80,8 @@ pub fn part_path(path: &Path) -> PathBuf {
 
 /// The name the clip editor suggests for an export of a clip of `source`: "<name> edit.mp4"
 /// in `folder`, numbered so no existing file is replaced.
-pub fn clip_export_path(folder: &Path, source: &Path) -> PathBuf {
-    free_mp4(folder, &format!("{} edit", stem(source)))
+pub fn clip_export_path(folder: &Path, source: &Path, extension: &str) -> PathBuf {
+    free_file(folder, &format!("{} edit", stem(source)), extension)
 }
 
 /// Whether `a` and `b` name the same existing file, however their paths are written.
@@ -92,17 +92,17 @@ pub fn same_file(a: &Path, b: &Path) -> bool {
     }
 }
 
-/// `name`.mp4 in `folder`, or `name` 2.mp4, 3 and so on: the first that replaces no file,
-/// not even the part file of an export that was cut off.
-fn free_mp4(folder: &Path, name: &str) -> PathBuf {
+/// `name`.`extension` in `folder`, or `name` 2, 3 and so on: the first that replaces no
+/// file, not even the part file of an export that was cut off.
+fn free_file(folder: &Path, name: &str, extension: &str) -> PathBuf {
     let taken = |path: &Path| path.exists() || part_path(path).exists();
     (1..)
         .map(|n| match n {
-            1 => folder.join(format!("{name}.mp4")),
-            n => folder.join(format!("{name} {n}.mp4")),
+            1 => folder.join(format!("{name}.{extension}")),
+            n => folder.join(format!("{name} {n}.{extension}")),
         })
         .find(|path| !taken(path))
-        .unwrap_or_else(|| folder.join(format!("{name}.mp4")))
+        .unwrap_or_else(|| folder.join(format!("{name}.{extension}")))
 }
 
 /// The file name of `path` without its extension; "Dusk" when it has none.
@@ -111,11 +111,18 @@ fn stem(path: &Path) -> std::borrow::Cow<'_, str> {
         .map_or_else(|| "Dusk".into(), |stem| stem.to_string_lossy())
 }
 
-/// Where an export of the project made from `source` goes, until M4 brings the export dialog:
-/// beside the source as "<name> export.mp4", numbered so no existing file is replaced.
-pub fn export_path(source: &Path) -> PathBuf {
+/// The name the compress tool suggests for `source` compressed: beside it as
+/// "<name> compressed.mp4", numbered so no existing file is replaced.
+pub fn compress_path(source: &Path) -> PathBuf {
     let folder = source.parent().unwrap_or(Path::new("."));
-    free_mp4(folder, &format!("{} export", stem(source)))
+    free_file(folder, &format!("{} compressed", stem(source)), "mp4")
+}
+
+/// The name the export dialog suggests for an export of the project made from `source`:
+/// beside it as "<name> export.<extension>", numbered so no existing file is replaced.
+pub fn export_path(source: &Path, extension: &str) -> PathBuf {
+    let folder = source.parent().unwrap_or(Path::new("."));
+    free_file(folder, &format!("{} export", stem(source)), extension)
 }
 
 #[cfg(test)]
@@ -133,7 +140,26 @@ mod tests {
     fn the_export_goes_beside_the_source() {
         let dir = folder("beside");
         let source = dir.join("beach day.mov");
-        assert_eq!(export_path(&source), dir.join("beach day export.mp4"));
+        assert_eq!(
+            export_path(&source, "mp4"),
+            dir.join("beach day export.mp4")
+        );
+        assert_eq!(
+            export_path(&source, "mkv"),
+            dir.join("beach day export.mkv")
+        );
+    }
+
+    #[test]
+    fn a_compressed_video_goes_beside_the_source() {
+        let dir = folder("compressed");
+        let source = dir.join("IMG_0042.MOV");
+        assert_eq!(compress_path(&source), dir.join("IMG_0042 compressed.mp4"));
+        std::fs::write(dir.join("IMG_0042 compressed.mp4"), b"earlier").unwrap();
+        assert_eq!(
+            compress_path(&source),
+            dir.join("IMG_0042 compressed 2.mp4")
+        );
     }
 
     #[test]
@@ -183,13 +209,17 @@ mod tests {
         let dir = folder("clip-export");
         let source = Path::new("D:/phone/IMG_0042.MOV");
         assert_eq!(
-            clip_export_path(&dir, source),
+            clip_export_path(&dir, source, "mp4"),
             dir.join("IMG_0042 edit.mp4")
         );
         std::fs::write(dir.join("IMG_0042 edit.mp4"), b"earlier").unwrap();
         assert_eq!(
-            clip_export_path(&dir, source),
+            clip_export_path(&dir, source, "mp4"),
             dir.join("IMG_0042 edit 2.mp4")
+        );
+        assert_eq!(
+            clip_export_path(&dir, source, "opus"),
+            dir.join("IMG_0042 edit.opus")
         );
     }
 
@@ -212,6 +242,6 @@ mod tests {
         std::fs::write(dir.join("clip export.mp4"), b"earlier export").unwrap();
         // A leftover from an export that was cut off counts as taken too.
         std::fs::write(dir.join("clip export 2.mp4.part"), b"").unwrap();
-        assert_eq!(export_path(&source), dir.join("clip export 3.mp4"));
+        assert_eq!(export_path(&source, "mp4"), dir.join("clip export 3.mp4"));
     }
 }

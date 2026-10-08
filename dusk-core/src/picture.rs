@@ -44,6 +44,32 @@ pub enum ColorRange {
     Full,
 }
 
+/// Where a 4:2:0 picture's chroma samples sit, in 256ths of a luma pixel from the top-left
+/// one of the two by two luma pixels each covers: across, then down, as FFmpeg counts chroma
+/// positions. Step 1 of color and scaling reads chroma there (docs/ARCHITECTURE.md, "Decoder
+/// pool").
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ChromaSiting {
+    /// From 0, on the left luma column, to 256, on the right one.
+    pub across: i32,
+    /// From 0, on the top luma row, to 256, on the bottom one.
+    pub down: i32,
+}
+
+impl ChromaSiting {
+    /// MPEG-2's, which most video uses and Dusk writes: on the even luma columns, halfway
+    /// between two rows.
+    pub const LEFT: ChromaSiting = ChromaSiting {
+        across: 0,
+        down: 128,
+    };
+    /// JPEG's: in the middle of its four luma pixels.
+    pub const CENTER: ChromaSiting = ChromaSiting {
+        across: 128,
+        down: 128,
+    };
+}
+
 /// A decoded picture in memory Dusk owns, its rows packed without padding.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Picture {
@@ -64,6 +90,8 @@ pub struct Picture {
     /// For an HDR picture, the brightest it gets in nits, where tone mapping starts from
     /// (`color::source_peak`); 0 for SDR.
     pub peak_nits: u16,
+    /// Where its chroma sits.
+    pub siting: ChromaSiting,
     /// `height` rows of `width` luma samples.
     pub luma: Vec<u8>,
     /// Rows of interleaved U and V samples, sized by [`Picture::chroma_size`].
@@ -180,6 +208,7 @@ mod tests {
             primaries: crate::color::Primaries::Bt709,
             transfer: crate::color::Transfer::Bt1886,
             peak_nits: 0,
+            siting: ChromaSiting::LEFT,
             luma: vec![0; samples],
             chroma: vec![0; chroma * layout.bytes_per_sample()],
         }

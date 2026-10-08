@@ -150,6 +150,7 @@ mod tests {
             primaries: dusk_core::color::Primaries::Bt709,
             transfer: dusk_core::color::Transfer::Bt1886,
             peak_nits: 0,
+            siting: dusk_core::ChromaSiting::LEFT,
             luma: vec![shade; 256],
             chroma: vec![128; 128],
         }

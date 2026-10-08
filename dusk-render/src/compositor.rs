@@ -284,11 +284,19 @@ impl Compositor {
         } else {
             ((x_min, x_max), (y_min, y_max))
         };
-        // 4:2:0 chroma has half as many texels each way. It is sited left (MPEG-2): along
-        // the source's x a chroma texel sits on the even luma columns, a quarter of a chroma
-        // texel right of centered; along its y it sits halfway between two luma rows.
+        // 4:2:0 chroma has half as many texels each way, sited where the picture says: in
+        // chroma texels, a sample sited at `p` 256ths of a luma pixel lies (128 − p) / 512 to
+        // the near side of centered. Left siting (MPEG-2) is a quarter texel across and none
+        // down; JPEG's is centered.
         let half = |(min, max): (u32, u32)| (min / 2, max.div_ceil(2));
-        let siting = |along_x: bool| if along_x { 0.25 } else { 0.0 };
+        let siting = |along_x: bool| {
+            let sited = if along_x {
+                picture.siting.across
+            } else {
+                picture.siting.down
+            };
+            (128 - sited) as f32 / 512.0
+        };
         let passes = [
             (
                 &luma,

@@ -16,6 +16,11 @@ pub struct Placement {
     pub edits: Orientation,
     /// Bars where the shapes differ, or cover the frame and crop the rest.
     pub fit: Fit,
+    /// The frame's shape as the sequence has it, which the picture is fitted or made to fill
+    /// against; `None` for the frame's own. Drawn at another size, a frame's sides are rounded
+    /// and its shape can be a hair off: against the sequence's, a picture of that shape covers
+    /// the rounded frame whole instead of leaving a sliver of a bar.
+    pub shape: Option<(u32, u32)>,
 }
 
 impl Default for Placement {
@@ -25,6 +30,7 @@ impl Default for Placement {
             crop: None,
             edits: Orientation::UPRIGHT,
             fit: Fit::Fit,
+            shape: None,
         }
     }
 }
@@ -66,9 +72,14 @@ pub(crate) fn mapping(size: (u32, u32), placement: &Placement, frame: (u32, u32)
         .map_or(whole(upright), |crop| clamp_to(crop, upright));
     let shown = placement.edits.apply_to_size((crop.width, crop.height));
     // The part of the shown picture in view, as fractions of it: all of it, or when filling,
-    // the middle part with the frame's shape.
+    // the middle part with the frame's shape. Both are worked out at the sequence's shape and
+    // stretched with it onto the frame.
+    let shape = placement
+        .shape
+        .filter(|(width, height)| *width > 0 && *height > 0)
+        .unwrap_or(frame);
     let (rect, view) = match placement.fit {
-        Fit::Fit => (fit(shown, frame), (0.0, 0.0, 1.0, 1.0)),
+        Fit::Fit => (onto(fit(shown, shape), shape, frame), (0.0, 0.0, 1.0, 1.0)),
         Fit::Fill => (
             FrameRect {
                 x: 0,
@@ -76,7 +87,7 @@ pub(crate) fn mapping(size: (u32, u32), placement: &Placement, frame: (u32, u32)
                 width: frame.0,
                 height: frame.1,
             },
-            fill_view(shown, frame),
+            fill_view(shown, shape),
         ),
     };
     let (width, height) = (f64::from(size.0), f64::from(size.1));
@@ -132,6 +143,32 @@ pub(crate) fn mapping(size: (u32, u32), placement: &Placement, frame: (u32, u32)
             ys[0].min(ys[1]),
             ys[0].max(ys[1]),
         ),
+    }
+}
+
+/// `rect` of a frame of `shape`, on a frame of `frame` stretched from it, sides rounded.
+fn onto(rect: FrameRect, shape: (u32, u32), frame: (u32, u32)) -> FrameRect {
+    if shape == frame {
+        return rect;
+    }
+    let scale = |at: u32, from: u32, to: u32| {
+        let (at, from, to) = (u64::from(at), u64::from(from), u64::from(to));
+        // At most `to`, since `at` is at most `from`.
+        ((at * to + from / 2) / from) as u32
+    };
+    let (left, right) = (
+        scale(rect.x, shape.0, frame.0),
+        scale(rect.x + rect.width, shape.0, frame.0),
+    );
+    let (top, bottom) = (
+        scale(rect.y, shape.1, frame.1),
+        scale(rect.y + rect.height, shape.1, frame.1),
+    );
+    FrameRect {
+        x: left.min(frame.0.saturating_sub(1)),
+        y: top.min(frame.1.saturating_sub(1)),
+        width: right.saturating_sub(left).max(1),
+        height: bottom.saturating_sub(top).max(1),
     }
 }
 
@@ -246,6 +283,23 @@ mod tests {
         assert!(near(map.x_origin, 0.0) && near(map.x_step, 1.5));
         assert!(near(map.y_origin, 0.0) && near(map.y_step, 1.5));
         assert_eq!(map.window, (0, 1920, 0, 1080));
+    }
+
+    #[test]
+    fn a_frame_rounded_from_the_sequences_shape_is_covered_whole() {
+        // 1920x1080 at a 480 short side rounds to 854x480, a hair wider than 16:9. Fitted
+        // against that frame the picture would leave a sliver of a bar on the right; fitted
+        // against the sequence's own shape it is stretched over the whole frame.
+        let placement = Placement {
+            shape: Some((1920, 1080)),
+            ..Placement::default()
+        };
+        let map = mapping((1920, 1080), &placement, (854, 480));
+        assert_eq!(map.rect, rect(0, 0, 854, 480));
+        assert!(near(map.x_step, 1920.0 / 854.0) && near(map.y_step, 2.25));
+        // A clip of another shape keeps its bars, worked out at the sequence's shape.
+        let square = mapping((1080, 1080), &placement, (854, 480));
+        assert_eq!(square.rect, rect(187, 0, 480, 480));
     }
 
     #[test]

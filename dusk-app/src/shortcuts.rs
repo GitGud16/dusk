@@ -41,6 +41,8 @@ pub enum Action {
     SequenceSettings,
     Export,
     CancelExport,
+    /// Compresses a video file into a smaller one, outside the project.
+    CompressVideo,
     Quit,
     ShortcutList,
     /// Fits the picture with bars or fills the frame: the selected clip's, or the clip
@@ -309,7 +311,12 @@ pub const SHORTCUTS: &[Shortcut] = &[
         Action::SequenceSettings,
         "Sequence settings: frame rate and size",
     ))),
-    ctrl(char_key('e', Action::Export, "Export to MP4")),
+    ctrl(char_key('e', Action::Export, "Export the timeline")),
+    ctrl(char_key(
+        'm',
+        Action::CompressVideo,
+        "Compress a video into a smaller file",
+    )),
     key(
         KeyName::Named(Key::Escape),
         Action::CancelExport,
@@ -405,6 +412,7 @@ pub fn action_named(name: &str) -> Option<Action> {
         "import" => Action::Import,
         "export" => Action::Export,
         "cancel-export" => Action::CancelExport,
+        "compress" => Action::CompressVideo,
         "quit" => Action::Quit,
         "undo" => Action::Undo,
         "redo" => Action::Redo,
@@ -546,6 +554,11 @@ mod tests {
         assert_eq!(action_for("k", true, false, false), Some(Action::KeepDraft));
         assert_eq!(action_for("e", true, true, false), Some(Action::ExportClip));
         assert_eq!(action_for("e", true, false, false), Some(Action::Export));
+        assert_eq!(
+            action_for("m", true, false, false),
+            Some(Action::CompressVideo)
+        );
+        assert_eq!(action_named("compress"), Some(Action::CompressVideo));
     }
 
     #[test]

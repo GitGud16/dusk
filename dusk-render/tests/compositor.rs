@@ -1,6 +1,8 @@
 //! Needs a graphics adapter; CI runners use WARP (see tests/gpu.rs).
 
-use dusk_core::{ColorMatrix, ColorRange, Fit, Orientation, Picture, PictureLayout, Rect};
+use dusk_core::{
+    ChromaSiting, ColorMatrix, ColorRange, Fit, Orientation, Picture, PictureLayout, Rect,
+};
 use dusk_render::{Compositor, Gpu, Placement};
 
 fn compositor() -> Compositor {
@@ -19,6 +21,7 @@ fn flat(width: u32, height: u32, yuv: [u8; 3], matrix: ColorMatrix, range: Color
         primaries: dusk_core::color::Primaries::Bt709,
         transfer: dusk_core::color::Transfer::Bt1886,
         peak_nits: 0,
+        siting: ChromaSiting::LEFT,
         luma: vec![yuv[0]; (width * height) as usize],
         chroma: [yuv[1], yuv[2]].repeat((chroma_width * chroma_height) as usize),
     }
@@ -43,6 +46,7 @@ fn flat_10_bit(
         primaries: dusk_core::color::Primaries::Bt709,
         transfer: dusk_core::color::Transfer::Bt1886,
         peak_nits: 0,
+        siting: ChromaSiting::LEFT,
         luma: sample(yuv[0]).repeat((width * height) as usize),
         chroma: [sample(yuv[1]), sample(yuv[2])]
             .concat()
@@ -271,6 +275,7 @@ fn painted(
         primaries: dusk_core::color::Primaries::Bt709,
         transfer: dusk_core::color::Transfer::Bt1886,
         peak_nits: 0,
+        siting: ChromaSiting::LEFT,
         luma: (0..height)
             .flat_map(|y| (0..width).map(move |x| (x, y)))
             .map(|(x, y)| luma(x, y))
@@ -491,4 +496,57 @@ fn an_hlg_picture_is_tone_mapped_through_its_ootf() {
     let expected = shown(light, |v| v.powf(1.0 / 2.4));
     let actual = pixel(&rgba, 16, 8, 8);
     assert!(close(actual, expected, 2), "{actual:?} != {expected:?}");
+}
+
+#[test]
+fn chroma_is_read_where_the_picture_sites_it() {
+    // Gray luma; U steps from below to above neutral between chroma columns 1 and 2. Left-sited
+    // chroma (MPEG-2) sits on the even luma columns, so the step's middle falls on luma x 3;
+    // centered chroma (JPEG) sits half a pixel further right, so the middle falls between x 3
+    // and x 4. U moves blue, so blue shows where the step is.
+    let mut picture = flat(
+        8,
+        2,
+        [126, 128, 128],
+        ColorMatrix::Bt709,
+        ColorRange::Limited,
+    );
+    picture.chroma = vec![90, 128, 90, 128, 166, 128, 166, 128];
+    let compositor = compositor();
+    let blue = |rgba: &[u8], x: u32| i32::from(pixel(rgba, 8, x, 0)[2]);
+    let gray = i32::from(
+        pixel(
+            &render(
+                &compositor,
+                &flat(
+                    8,
+                    2,
+                    [126, 128, 128],
+                    ColorMatrix::Bt709,
+                    ColorRange::Limited,
+                ),
+                (8, 2),
+            ),
+            8,
+            0,
+            0,
+        )[2],
+    );
+    let left = render(&compositor, &picture, (8, 2));
+    assert!(
+        (blue(&left, 3) - gray).abs() <= 2,
+        "left: {} for {gray}",
+        blue(&left, 3)
+    );
+    picture.siting = ChromaSiting::CENTER;
+    let center = render(&compositor, &picture, (8, 2));
+    let (before, after) = (blue(&center, 3), blue(&center, 4));
+    assert!(
+        before < gray && after > gray,
+        "center: {before}, {after} around {gray}"
+    );
+    assert!(
+        (before + after - 2 * gray).abs() <= 2,
+        "center: {before}, {after} around {gray}"
+    );
 }

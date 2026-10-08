@@ -15,8 +15,10 @@ use dusk_engine::{Engine, EngineEvent, ExportEvent, ExportJob, Preview};
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 
 use crate::clip_editor::ClipEditor;
+use crate::compress_dialog::{CompressDialog, megabytes};
 use crate::document::{Document, Question};
-use crate::files::{Worker, export_path};
+use crate::export_dialog::ExportDialog;
+use crate::files::Worker;
 use crate::history::History;
 use crate::recovery::Session;
 use crate::shortcuts::Action;
@@ -110,6 +112,25 @@ pub struct App {
     pub(crate) export: Option<ExportJob>,
     /// The running export is the clip editor's, which hears how it goes too.
     pub(crate) export_from_editor: bool,
+    /// The encoders that open on this machine, once they have been tried.
+    pub(crate) encoders: Option<Vec<&'static dusk_engine::Encoder>>,
+    /// They are being tried, on a worker.
+    pub(crate) probing_encoders: bool,
+    /// The export dialog, while it is open.
+    pub(crate) export_dialog: Option<ExportDialog>,
+    /// The compress tool's dialog, while it is open.
+    pub(crate) compress_dialog: Option<CompressDialog>,
+    /// The running export is the compress tool's.
+    pub(crate) compressing: bool,
+    /// How the last export was written, where the dialog starts next time.
+    pub(crate) last_export: Option<dusk_engine::ExportSettings>,
+    /// The GPL encoders of the user's own `ffmpeg`, picked in the export dialog for this
+    /// session (docs/ARCHITECTURE.md, "Optional GPL encoders").
+    pub(crate) external: Vec<dusk_engine::ExternalEncoder>,
+    /// Whether exports use that program for the codecs it has an encoder for.
+    pub(crate) use_external: bool,
+    /// What the export dialog says of that program.
+    pub(crate) external_note: String,
     pub(crate) view: View,
     /// The question on screen, if one is.
     pub(crate) question: Option<Question>,
@@ -155,6 +176,15 @@ impl App {
             selected_media: None,
             export: None,
             export_from_editor: false,
+            encoders: None,
+            probing_encoders: false,
+            export_dialog: None,
+            compress_dialog: None,
+            compressing: false,
+            last_export: None,
+            external: Vec::new(),
+            use_external: false,
+            external_note: String::new(),
             view: View::new(window.get_timeline_width()),
             question: None,
             dialog_open: false,
@@ -250,6 +280,9 @@ impl App {
 
     /// A key was pressed; true when it was a shortcut, or a dialog took it.
     pub fn key(&mut self, text: &str, ctrl: bool, shift: bool, alt: bool) -> bool {
+        if self.compress_dialog_key(text) || self.export_dialog_key(text, false) {
+            return true;
+        }
         if self.question.is_some() {
             self.answer_with_key(text);
             return true;
@@ -308,6 +341,7 @@ impl App {
             Action::Import => self.import_dialog(),
             Action::SequenceSettings => self.open_sequence_settings(),
             Action::Export => self.export(),
+            Action::CompressVideo => self.compress_video(),
             Action::CancelExport => self.cancel_export(),
             Action::Quit => self.quit(),
             Action::ShortcutList => {
@@ -329,32 +363,6 @@ impl App {
             | Action::ReloadClip
             | Action::KeepDraft
             | Action::ExportClip => {}
-        }
-    }
-
-    /// Exports the timeline to an MP4 beside the project file, or beside the first media
-    /// file while the project is unsaved (the export dialog arrives in M4).
-    pub fn export(&mut self) {
-        if self.export.is_some() {
-            return self.say("An export is already running.");
-        }
-        if self.project.sequence().end() == Frame(0) {
-            return self.fail("Place some media on the timeline before exporting.");
-        }
-        let base = match &self.document.path {
-            Some(path) => path.clone(),
-            None => match self.project.media().first() {
-                Some(media) => media.path.clone(),
-                None => return self.fail("Import some media before exporting."),
-            },
-        };
-        let path = export_path(&base);
-        match self.engine.export(Arc::clone(&self.project), path.clone()) {
-            Ok(job) => {
-                self.export_started(job, false);
-                self.say(&format!("Exporting to {}…", path.display()));
-            }
-            Err(error) => self.fail(&error.to_string()),
         }
     }
 
@@ -386,6 +394,14 @@ impl App {
             return;
         };
         let from_editor = self.export_from_editor;
+        if let ExportEvent::Again { first } = event {
+            // A file made to a size came out too far over; it is made once more.
+            window.set_export_progress(0.0);
+            return self.say(&format!(
+                "It came out at {:.1} MB, more than 3% over; compressing again, smaller…",
+                first as f64 / 1e6
+            ));
+        }
         if let ExportEvent::Progress { done, total } = event {
             let progress = done as f32 / total.max(1) as f32;
             window.set_export_progress(progress);
@@ -397,6 +413,7 @@ impl App {
             }
             return;
         }
+        let compressing = std::mem::take(&mut self.compressing);
         self.export = None;
         self.export_from_editor = false;
         window.set_exporting(false);
@@ -404,13 +421,29 @@ impl App {
             window.set_exporting(false);
         }
         let (message, failed) = match event {
-            ExportEvent::Finished { path, encoder } => (
+            ExportEvent::Finished {
+                path,
+                encoder,
+                bytes,
+            } if compressing => (
+                format!(
+                    "Compressed to {}: {} ({encoder}).",
+                    megabytes(bytes),
+                    path.display()
+                ),
+                false,
+            ),
+            ExportEvent::Finished { path, encoder, .. } => (
                 format!("Exported to {} ({encoder}).", path.display()),
+                false,
+            ),
+            ExportEvent::Cancelled if compressing => (
+                "Compressing cancelled; nothing was written.".to_owned(),
                 false,
             ),
             ExportEvent::Cancelled => ("Export cancelled; nothing was written.".to_owned(), false),
             ExportEvent::Failed(error) => (error.to_string(), true),
-            ExportEvent::Progress { .. } => return,
+            ExportEvent::Progress { .. } | ExportEvent::Again { .. } => return,
         };
         if failed {
             self.fail(&message);

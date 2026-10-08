@@ -14,3 +14,5 @@ path = "src/main.rs"
 [dependencies]
 # No `gpu` feature: dusq transcodes on the CPU and never links wgpu or Slint.
 dusk-engine.workspace = true
+dusk-core.workspace = true
+anyhow.workspace = true

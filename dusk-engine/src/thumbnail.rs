@@ -228,6 +228,7 @@ mod tests {
             primaries: Primaries::Bt709,
             transfer: Transfer::Bt1886,
             peak_nits: 0,
+            siting: dusk_core::ChromaSiting::LEFT,
             luma: vec![yuv[0]; (width * height) as usize],
             chroma: [yuv[1], yuv[2]].repeat(pairs),
         }

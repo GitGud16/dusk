@@ -10,14 +10,23 @@ mod encode;
 mod error;
 #[allow(unsafe_code)]
 mod ffi;
+mod formats;
 mod input;
 mod orientation;
 mod probe;
 mod still;
 
 pub use audio::AudioDecoder;
-pub use decode::{Acceleration, DecodedFrame, Following, HUGE_FRAME, Step, VideoDecoder};
-pub use encode::{AudioSettings, Mp4Writer, VideoSettings};
+pub use decode::{
+    Acceleration, DecodedFrame, Following, HUGE_FRAME, LARGE_FRAME, NormalizedFrame, Step,
+    VideoDecoder,
+};
+pub use encode::{AudioSettings, Timing, VideoSettings, Writer, available_encoders, sdr_to_nv12};
 pub use error::MediaError;
+pub use formats::{
+    AudioCodec, AudioFormat, Container, ENCODERS, EXTERNAL_ENCODERS, Encoder, Quality, VideoCodec,
+    encoder_named, encoders_of, external_encoder_named,
+};
+pub use input::quiet_logs;
 pub use probe::{ProbeInfo, StreamDetail, StreamKind, StreamSummary, probe};
-pub use still::{StillInfo, decode_still, is_still, still_info};
+pub use still::{StillInfo, decode_still, decode_still_normalized, is_still, still_info};

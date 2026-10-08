@@ -54,11 +54,23 @@ pub enum MediaError {
         #[source]
         source: ffmpeg_next::Error,
     },
-    /// No H.264 encoder could be opened.
-    #[error("no H.264 encoder could be opened ({tried}); update the graphics driver and try again")]
+    /// No encoder of the codec could be opened.
+    #[error(
+        "no {codec} encoder could be opened ({tried}); update the graphics driver, or choose another codec"
+    )]
     NoEncoder {
+        /// The codec, such as H.264.
+        codec: &'static str,
         /// Each encoder tried, with why it failed.
         tried: String,
+    },
+    /// The file format cannot hold the codec asked for.
+    #[error("{format} files cannot hold {codec}; choose another codec or file format")]
+    Unsupported {
+        /// The file format, such as WebM.
+        format: &'static str,
+        /// The codec, such as H.264.
+        codec: &'static str,
     },
     /// FFmpeg failed while encoding or writing the file.
     #[error("FFmpeg could not write {}: {source}. Check that the disk has room and try again", path.display())]

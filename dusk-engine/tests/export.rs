@@ -8,11 +8,15 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 use dusk_core::{
-    ClipEditSession, Command, Edge, Frame, MediaTime, Project, Rational, Rect, Rotation, TrimClips,
-    import,
+    ClipEditSession, ColorMatrix, ColorRange, Command, Edge, Frame, MediaTime, Picture, Project,
+    Rational, Rect, Rotation, SetTrackMuted, TrimClips, import,
 };
-use dusk_engine::{Engine, EngineEvent, EngineOptions, ExportEvent, Gpu, media_info};
+use dusk_engine::{
+    CompressTarget, Engine, EngineError, EngineEvent, EngineOptions, ExportEvent, ExportFormat,
+    ExportSettings, ExternalEncoder, Gpu, media_info,
+};
 use dusk_media::{Acceleration, StreamKind, VideoDecoder, probe};
+use dusk_media::{AudioCodec, AudioFormat, Container, Quality, VideoCodec};
 
 fn sample() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../testdata/sample-h264-aac.mp4")
@@ -82,7 +86,11 @@ fn a_clip_exports_to_a_playable_mp4() {
     let (engine, events) = engine();
     let path = output("clip.mp4");
     let _job = engine
-        .export(Arc::new(project_at(Frame(0))), path.clone())
+        .export(
+            Arc::new(project_at(Frame(0))),
+            path.clone(),
+            ExportSettings::default(),
+        )
         .unwrap();
     let (outcome, progress) = outcome(&events);
     match outcome {
@@ -127,7 +135,9 @@ fn a_clip_from_the_clip_editor_exports_at_its_own_rate_and_shape() {
     assert_eq!(export.sequence().resolution(), (121, 201));
     let (engine, events) = engine();
     let path = output("clip-editor.mp4");
-    let _job = engine.export(Arc::new(export), path.clone()).unwrap();
+    let _job = engine
+        .export(Arc::new(export), path.clone(), ExportSettings::default())
+        .unwrap();
     assert!(matches!(outcome(&events).0, ExportEvent::Finished { .. }));
     let written = media_info(&path).unwrap();
     assert_eq!((written.width, written.height), (120, 200));
@@ -174,6 +184,116 @@ fn a_clip_from_the_clip_editor_exports_at_its_own_rate_and_shape() {
     }
 }
 
+/// Exports `project` with `settings` and waits for it to finish.
+fn export_with(project: Project, name: &str, settings: ExportSettings) -> PathBuf {
+    let (engine, events) = engine();
+    let path = output(name);
+    let _job = engine
+        .export(Arc::new(project), path.clone(), settings)
+        .unwrap();
+    match outcome(&events).0 {
+        ExportEvent::Finished { .. } => path,
+        other => panic!("expected the export to finish, got {other:?}"),
+    }
+}
+
+fn video_codec(path: &Path) -> String {
+    probe(path)
+        .unwrap()
+        .streams
+        .iter()
+        .find(|stream| stream.kind == StreamKind::Video)
+        .map(|stream| stream.codec.clone())
+        .unwrap_or_default()
+}
+
+fn audio_codec(path: &Path) -> String {
+    probe(path)
+        .unwrap()
+        .streams
+        .iter()
+        .find(|stream| stream.kind == StreamKind::Audio)
+        .map(|stream| stream.codec.clone())
+        .unwrap_or_default()
+}
+
+#[test]
+fn a_preset_exports_the_short_side_keeping_the_shape() {
+    // The sample is 320x240; a 120-pixel short side makes it 160x120.
+    let settings = ExportSettings {
+        short_side: Some(120),
+        ..ExportSettings::default()
+    };
+    let path = export_with(project_at(Frame(0)), "short-side.mp4", settings);
+    let written = media_info(&path).unwrap();
+    assert_eq!((written.width, written.height), (160, 120));
+}
+
+#[test]
+fn hevc_in_mkv_and_vp9_in_webm_export_from_the_timeline() {
+    let mkv = ExportSettings {
+        format: ExportFormat::Video {
+            container: Container::Mkv,
+            codec: VideoCodec::Hevc,
+            audio: AudioCodec::Aac,
+        },
+        ..ExportSettings::default()
+    };
+    let path = export_with(project_at(Frame(0)), "timeline.mkv", mkv);
+    assert_eq!(
+        (video_codec(&path), audio_codec(&path)),
+        ("hevc".into(), "aac".into())
+    );
+    let webm = ExportSettings {
+        format: ExportFormat::Video {
+            container: Container::WebM,
+            codec: VideoCodec::Vp9,
+            audio: AudioCodec::Opus,
+        },
+        quality: Quality::SMALL,
+        ..ExportSettings::default()
+    };
+    let path = export_with(project_at(Frame(0)), "timeline.webm", webm);
+    assert_eq!(
+        (video_codec(&path), audio_codec(&path)),
+        ("vp9".into(), "opus".into())
+    );
+    let duration = duration_of(&path);
+    assert!((950_000..=1_100_000).contains(&duration), "{duration} µs");
+}
+
+#[test]
+fn sound_alone_exports_the_mix() {
+    let settings = ExportSettings {
+        format: ExportFormat::Sound(AudioFormat::Mp3),
+        ..ExportSettings::default()
+    };
+    let path = export_with(project_at(Frame(0)), "mix.mp3", settings);
+    let info = probe(&path).unwrap();
+    assert_eq!(info.streams.len(), 1);
+    assert_eq!(audio_codec(&path), "mp3");
+    let duration = duration_of(&path);
+    assert!((950_000..=1_150_000).contains(&duration), "{duration} µs");
+}
+
+#[test]
+fn a_timeline_without_sound_has_no_sound_to_export() {
+    let mut project = project_at(Frame(0));
+    let sound_track = project.sequence().tracks()[2].id();
+    Command::SetTrackMuted(SetTrackMuted::new(sound_track, true))
+        .apply(&mut project)
+        .unwrap();
+    let (engine, _events) = engine();
+    let settings = ExportSettings {
+        format: ExportFormat::Sound(AudioFormat::Wav),
+        ..ExportSettings::default()
+    };
+    assert!(matches!(
+        engine.export(Arc::new(project), output("silent.wav"), settings),
+        Err(EngineError::NoSound)
+    ));
+}
+
 #[test]
 fn a_trimmed_clip_exports_only_what_is_left() {
     let mut project = project_at(Frame(0));
@@ -183,7 +303,9 @@ fn a_trimmed_clip_exports_only_what_is_left() {
         .unwrap();
     let (engine, events) = engine();
     let path = output("trimmed.mp4");
-    let _job = engine.export(Arc::new(project), path.clone()).unwrap();
+    let _job = engine
+        .export(Arc::new(project), path.clone(), ExportSettings::default())
+        .unwrap();
     assert!(matches!(outcome(&events).0, ExportEvent::Finished { .. }));
     let duration = duration_of(&path);
     assert!((450_000..=600_000).contains(&duration), "{duration} µs");
@@ -194,7 +316,11 @@ fn a_gap_exports_as_black() {
     let (engine, events) = engine();
     let path = output("gap.mp4");
     let _job = engine
-        .export(Arc::new(project_at(Frame(15))), path.clone())
+        .export(
+            Arc::new(project_at(Frame(15))),
+            path.clone(),
+            ExportSettings::default(),
+        )
         .unwrap();
     assert!(matches!(outcome(&events).0, ExportEvent::Finished { .. }));
     let duration = duration_of(&path);
@@ -209,7 +335,11 @@ fn a_cancelled_export_leaves_nothing_behind() {
     let (engine, events) = engine();
     let path = output("cancelled.mp4");
     let job = engine
-        .export(Arc::new(project_at(Frame(0))), path.clone())
+        .export(
+            Arc::new(project_at(Frame(0))),
+            path.clone(),
+            ExportSettings::default(),
+        )
         .unwrap();
     job.cancel();
     assert!(matches!(outcome(&events).0, ExportEvent::Cancelled));
@@ -223,7 +353,9 @@ fn an_empty_timeline_is_refused() {
     let info = media_info(&sample()).unwrap();
     let empty = Project::new(info.frame_rate.unwrap(), (320, 240));
     let path = output("empty.mp4");
-    let _job = engine.export(Arc::new(empty), path.clone()).unwrap();
+    let _job = engine
+        .export(Arc::new(empty), path.clone(), ExportSettings::default())
+        .unwrap();
     assert!(matches!(outcome(&events).0, ExportEvent::Failed(_)));
     assert!(!path.exists());
     assert!(!part(&path).exists());
@@ -235,7 +367,11 @@ fn closing_the_engine_mid_export_leaves_no_part_file() {
     let path = output("closed.mp4");
     // Ten seconds of black before the clip: long enough to close the engine halfway.
     let _job = engine
-        .export(Arc::new(project_at(Frame(300))), path.clone())
+        .export(
+            Arc::new(project_at(Frame(300))),
+            path.clone(),
+            ExportSettings::default(),
+        )
         .unwrap();
     loop {
         match events.recv_timeout(PATIENCE).expect("progress") {
@@ -255,14 +391,333 @@ fn one_export_runs_at_a_time() {
     let (engine, events) = engine();
     let first = output("first.mp4");
     let _job = engine
-        .export(Arc::new(project_at(Frame(0))), first)
+        .export(
+            Arc::new(project_at(Frame(0))),
+            first,
+            ExportSettings::default(),
+        )
         .unwrap();
     let second = output("second.mp4");
     assert!(
         engine
-            .export(Arc::new(project_at(Frame(0))), second.clone())
+            .export(
+                Arc::new(project_at(Frame(0))),
+                second.clone(),
+                ExportSettings::default()
+            )
             .is_err()
     );
     outcome(&events);
     assert!(!second.exists());
+}
+
+/// The compress tool's outcome, and how many times it said it would make the file again.
+fn compressed(events: &mpsc::Receiver<EngineEvent>) -> (ExportEvent, usize) {
+    let mut again = 0;
+    loop {
+        match events.recv_timeout(PATIENCE).expect("the compression ends") {
+            EngineEvent::Export(ExportEvent::Progress { .. }) => {}
+            EngineEvent::Export(ExportEvent::Again { .. }) => again += 1,
+            EngineEvent::Export(outcome) => return (outcome, again),
+            _ => {}
+        }
+    }
+}
+
+fn video_size(path: &Path) -> (u32, u32) {
+    let mut decoder = VideoDecoder::open(path, Acceleration::Software).unwrap();
+    let picture = decoder.frame_at(MediaTime(0)).unwrap().unwrap().picture;
+    (picture.width, picture.height)
+}
+
+#[test]
+fn the_compress_tool_aims_at_a_size() {
+    let (engine, events) = engine();
+    let path = output("compressed-to-size.mp4");
+    let info = media_info(&sample()).unwrap();
+    let _job = engine
+        .compress(sample(), info, path.clone(), CompressTarget::Size(100_000))
+        .unwrap();
+    match compressed(&events).0 {
+        ExportEvent::Finished { bytes, .. } => {
+            assert_eq!(bytes, std::fs::metadata(&path).unwrap().len());
+            assert!((40_000..=150_000).contains(&bytes), "{bytes} bytes");
+        }
+        other => panic!("expected the compression to finish, got {other:?}"),
+    }
+    assert_eq!(video_size(&path), (320, 240));
+    assert!(!part(&path).exists());
+}
+
+#[test]
+fn the_compress_tool_keeps_a_turned_video_upright() {
+    let rotated = Path::new(env!("CARGO_MANIFEST_DIR")).join("../testdata/sample-rotated.mp4");
+    let (engine, events) = engine();
+    let path = output("compressed-upright.mp4");
+    let info = media_info(&rotated).unwrap();
+    let _job = engine
+        .compress(rotated, info, path.clone(), CompressTarget::Quality(60))
+        .unwrap();
+    assert!(matches!(
+        compressed(&events).0,
+        ExportEvent::Finished { .. }
+    ));
+    assert_eq!(video_size(&path), (240, 320));
+}
+
+#[test]
+fn the_compress_tool_refuses_a_size_too_small() {
+    let (engine, _events) = engine();
+    let path = output("compressed-too-small.mp4");
+    let info = media_info(&sample()).unwrap();
+    let refused = engine.compress(sample(), info, path.clone(), CompressTarget::Size(10_000));
+    assert!(
+        matches!(refused, Err(EngineError::TooSmall { smallest: 31_959 })),
+        "{refused:?}"
+    );
+    assert!(!path.exists() && !part(&path).exists());
+}
+
+#[test]
+fn the_compress_tool_makes_a_file_too_far_over_again() {
+    // Half a second of noise: the container's own share of so small a file is more than the
+    // 3% the plan leaves it, so the first file comes out too far over.
+    let source = output("short-noise.mp4");
+    let video = dusk_media::VideoSettings {
+        encoder: Some("libopenh264"),
+        quality: Quality::Level(95),
+        ..dusk_media::VideoSettings::h264(320, 240, (30, 1))
+    };
+    let mut writer = dusk_media::Writer::create(&source, Container::Mp4, video, None).unwrap();
+    let mut state = 0x9e37_79b9_u32;
+    for n in 0..15 {
+        let planes = [0; 3].map(|_| {
+            (0..320 * 240)
+                .map(|_| {
+                    state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                    (state >> 24) as u8
+                })
+                .collect()
+        });
+        let picture = dusk_core::SdrPicture {
+            width: 320,
+            height: 240,
+            planes,
+        };
+        writer.write_sdr(&picture, MediaTime(n * 33_333)).unwrap();
+    }
+    writer.finish().unwrap();
+    let (engine, events) = engine();
+    let path = output("compressed-again.mp4");
+    let info = media_info(&source).unwrap();
+    let _job = engine
+        .compress(source, info, path.clone(), CompressTarget::Size(15_000))
+        .unwrap();
+    let (outcome, again) = compressed(&events);
+    assert!(
+        matches!(outcome, ExportEvent::Finished { .. }),
+        "{outcome:?}"
+    );
+    assert_eq!(again, 1);
+    assert!(!part(&path).exists());
+}
+
+/// The pinned build's own `ffmpeg` program, standing in for a user's GPL one: it has OpenH264
+/// where theirs has x264, and the export drives either the same way.
+fn own_ffmpeg() -> Option<PathBuf> {
+    let program = PathBuf::from(std::env::var_os("FFMPEG_DIR")?)
+        .join("bin")
+        .join(if cfg!(windows) {
+            "ffmpeg.exe"
+        } else {
+            "ffmpeg"
+        });
+    if !program.is_file() {
+        eprintln!("skipped: no ffmpeg program in the pinned build");
+        return None;
+    }
+    Some(program)
+}
+
+fn through(program: PathBuf, encoder: &str) -> ExternalEncoder {
+    let encoder = dusk_media::encoder_named(encoder)
+        .or_else(|| dusk_media::external_encoder_named(encoder))
+        .unwrap();
+    ExternalEncoder { program, encoder }
+}
+
+/// The picture shown at `time` in the video at `path`.
+fn picture_at(path: &Path, time: MediaTime) -> Picture {
+    let mut decoder = VideoDecoder::open(path, Acceleration::Software).unwrap();
+    decoder.frame_at(time).unwrap().unwrap().picture
+}
+
+fn psnr(a: &[u8], b: &[u8]) -> f64 {
+    let squared: f64 = a
+        .iter()
+        .zip(b)
+        .map(|(a, b)| (f64::from(*a) - f64::from(*b)).powi(2))
+        .sum();
+    10.0 * (255.0f64.powi(2) / (squared / a.len() as f64).max(1e-9)).log10()
+}
+
+#[test]
+fn an_export_runs_through_the_users_own_ffmpeg() {
+    let Some(program) = own_ffmpeg() else {
+        return;
+    };
+    let (engine, events) = engine();
+    let path = output("external.mp4");
+    let _job = engine
+        .export_external(
+            Arc::new(project_at(Frame(0))),
+            path.clone(),
+            ExportSettings::default(),
+            through(program, "libopenh264"),
+        )
+        .unwrap();
+    let (outcome, progress) = outcome(&events);
+    match outcome {
+        ExportEvent::Finished { encoder, bytes, .. } => {
+            assert_eq!(encoder, "libopenh264 in your ffmpeg");
+            assert_eq!(bytes, std::fs::metadata(&path).unwrap().len());
+        }
+        other => panic!("expected the export to finish, got {other:?}"),
+    }
+    assert!(!part(&path).exists());
+    assert_eq!(progress.last(), Some(&(30, 30)));
+    assert_eq!(
+        (video_codec(&path), audio_codec(&path)),
+        ("h264".into(), "aac".into())
+    );
+    let duration = duration_of(&path);
+    assert!((950_000..=1_100_000).contains(&duration), "{duration} µs");
+    // The frames went in as Dusk draws them: the same picture as its own export shows,
+    // tagged limited-range BT.709 (a 320x240 file without tags would read as BT.601).
+    let external = picture_at(&path, MediaTime(500_000));
+    assert_eq!((external.width, external.height), (320, 240));
+    assert_eq!(
+        (external.matrix, external.range),
+        (ColorMatrix::Bt709, ColorRange::Limited)
+    );
+    let own = picture_at(
+        &export_with(
+            project_at(Frame(0)),
+            "external-own.mp4",
+            ExportSettings::default(),
+        ),
+        MediaTime(500_000),
+    );
+    let luma = psnr(&external.luma, &own.luma);
+    let chroma = psnr(&external.chroma, &own.chroma);
+    assert!(
+        luma >= 30.0 && chroma >= 30.0,
+        "{luma:.1} dB, {chroma:.1} dB"
+    );
+}
+
+#[test]
+fn an_external_export_writes_over_a_part_file_left_behind() {
+    let Some(program) = own_ffmpeg() else {
+        return;
+    };
+    let (engine, events) = engine();
+    let path = output("external-stale.mp4");
+    // As a crash mid-export would leave it.
+    std::fs::write(part(&path), b"half a file").unwrap();
+    let _job = engine
+        .export_external(
+            Arc::new(project_at(Frame(0))),
+            path.clone(),
+            ExportSettings::default(),
+            through(program, "libopenh264"),
+        )
+        .unwrap();
+    let outcome = outcome(&events).0;
+    assert!(
+        matches!(outcome, ExportEvent::Finished { .. }),
+        "{outcome:?}"
+    );
+    assert!(path.is_file() && !part(&path).exists());
+}
+
+#[test]
+fn a_cancelled_external_export_leaves_nothing_behind() {
+    let Some(program) = own_ffmpeg() else {
+        return;
+    };
+    let (engine, events) = engine();
+    let path = output("external-cancelled.mp4");
+    // Ten seconds of black first, so the export is still running when it is cancelled.
+    let job = engine
+        .export_external(
+            Arc::new(project_at(Frame(300))),
+            path.clone(),
+            ExportSettings::default(),
+            through(program, "libopenh264"),
+        )
+        .unwrap();
+    loop {
+        match events.recv_timeout(PATIENCE).expect("progress") {
+            EngineEvent::Export(ExportEvent::Progress { .. }) => break,
+            EngineEvent::Export(other) => panic!("the export ended early: {other:?}"),
+            _ => {}
+        }
+    }
+    job.cancel();
+    assert!(matches!(outcome(&events).0, ExportEvent::Cancelled));
+    assert!(!path.exists());
+    assert!(!part(&path).exists());
+    assert!(!sound_part(&path).exists());
+}
+
+/// Where an external export mixes the sound for the program to read.
+fn sound_part(path: &Path) -> PathBuf {
+    let mut name = part(path).into_os_string();
+    name.push(".wav");
+    PathBuf::from(name)
+}
+
+#[test]
+fn an_external_program_that_fails_says_why() {
+    let Some(program) = own_ffmpeg() else {
+        return;
+    };
+    // The pinned build has no x264, so the program stops at once.
+    let (engine, events) = engine();
+    let path = output("external-failed.mp4");
+    let _job = engine
+        .export_external(
+            Arc::new(project_at(Frame(0))),
+            path.clone(),
+            ExportSettings::default(),
+            through(program, "libx264"),
+        )
+        .unwrap();
+    match outcome(&events).0 {
+        ExportEvent::Failed(error @ EngineError::ExternalFailed { .. }) => {
+            assert!(error.to_string().contains("libx264"), "{error}");
+        }
+        other => panic!("expected the program's error, got {other:?}"),
+    }
+    assert!(!path.exists() && !part(&path).exists() && !sound_part(&path).exists());
+}
+
+#[test]
+fn an_external_program_that_is_missing_is_reported() {
+    let (engine, events) = engine();
+    let path = output("external-missing.mp4");
+    let _job = engine
+        .export_external(
+            Arc::new(project_at(Frame(0))),
+            path.clone(),
+            ExportSettings::default(),
+            through(PathBuf::from("no such folder/ffmpeg.exe"), "libx264"),
+        )
+        .unwrap();
+    assert!(matches!(
+        outcome(&events).0,
+        ExportEvent::Failed(EngineError::ExternalProgram { .. })
+    ));
+    assert!(!path.exists() && !part(&path).exists() && !sound_part(&path).exists());
 }

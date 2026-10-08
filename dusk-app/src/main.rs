@@ -6,9 +6,13 @@
 
 mod app;
 mod clip_editor;
+mod compress_choices;
+mod compress_dialog;
 mod document;
 mod draft;
 mod editing;
+mod export_choices;
+mod export_dialog;
 mod files;
 mod history;
 mod platform;
@@ -146,6 +150,18 @@ fn connect(window: &MainWindow) {
     });
     window.on_play_pause(|| {
         with_app(App::play_pause);
+    });
+    window.on_export_changed(|what, value| {
+        with_app(|app| app.export_changed(&what, value));
+    });
+    window.on_export_done(|export| {
+        with_app(|app| app.export_done(export));
+    });
+    window.on_compress_changed(|what, value| {
+        with_app(|app| app.compress_changed(&what, value));
+    });
+    window.on_compress_done(|go| {
+        with_app(|app| app.compress_done(go));
     });
     window.on_prompt_answered(|index| {
         with_app(|app| app.answer(usize::try_from(index).unwrap_or(usize::MAX)));

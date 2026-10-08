@@ -241,6 +241,139 @@ pub fn to_sdr_bt709(
     bt709.map(|light| linear_to_sdr(curve, light))
 }
 
+/// Color step 3 for whole pictures on the CPU, as dusq's transcode path runs it on every pixel
+/// (docs/ARCHITECTURE.md, "Compress tool paths"): [`to_sdr_bt709`] split into what acts on one
+/// channel, worked out once into tables, and the little that needs the whole pixel. It stays
+/// within a twentieth of an 8-bit code of the reference at a small part of its cost.
+#[derive(Clone, Debug)]
+pub struct SdrConverter {
+    transfer: Transfer,
+    /// Each 16-bit value as light: scene light for HLG, nits for PQ, linear light for SDR.
+    decode: Vec<f32>,
+    /// Linear light into BT.709.
+    matrix: [[f32; 3]; 3],
+    /// HDR: the peak, in nits, and BT.2390's knee, below which tone mapping only rescales.
+    peak: f32,
+    knee: f32,
+    /// HDR: the scale for all three channels, by the brightest, from the knee to the peak,
+    /// looked up by the square root of the way there, which puts more steps where the
+    /// roll-off bends, just above the knee.
+    tone: Vec<f32>,
+    /// Linear BT.709 light back to SDR values, looked up by the light's square root, which
+    /// keeps the steep start of the curve accurate.
+    encode: Vec<f32>,
+}
+
+/// Steps in the tone and encoding tables of an [`SdrConverter`].
+const TABLE_STEPS: usize = 4096;
+
+impl SdrConverter {
+    /// The converter for full-range RGB with `primaries` and `transfer`, HDR peaking at
+    /// `source_peak` nits; `None` for BT.709 SDR, which step 3 leaves as it is.
+    pub fn new(primaries: Primaries, transfer: Transfer, source_peak: f64) -> Option<SdrConverter> {
+        if primaries == Primaries::Bt709 && !transfer.is_hdr() {
+            return None;
+        }
+        // HLG is shown at its 1000-nit reference, as in `to_sdr_bt709`.
+        let peak = if transfer == Transfer::Hlg {
+            DEFAULT_HDR_PEAK
+        } else {
+            source_peak
+        };
+        let decode = (0..=u16::MAX)
+            .map(|code| {
+                let value = f64::from(code) / f64::from(u16::MAX);
+                let light = match transfer {
+                    Transfer::Pq => pq_to_nits(value),
+                    Transfer::Hlg => hlg_to_scene(value),
+                    Transfer::Bt1886 | Transfer::Srgb => sdr_to_linear(transfer, value),
+                };
+                light as f32
+            })
+            .collect();
+        let (knee, tone) = if transfer.is_hdr() {
+            // Where `eetf` starts to roll off, in nits.
+            let peak_pq = nits_to_pq(peak);
+            let max_luminance = nits_to_pq(SDR_PEAK) / peak_pq;
+            let knee = pq_to_nits((1.5 * max_luminance - 0.5) * peak_pq).min(peak);
+            let tone = (0..=TABLE_STEPS)
+                .map(|step| {
+                    let root = step as f64 / TABLE_STEPS as f64;
+                    let brightest = knee + (peak - knee) * root * root;
+                    let mapped = pq_to_nits(eetf(nits_to_pq(brightest), peak));
+                    (mapped / brightest / SDR_PEAK) as f32
+                })
+                .collect();
+            (knee, tone)
+        } else {
+            (0.0, Vec::new())
+        };
+        // SDR goes back through its own curve; HDR comes out as SDR video, BT.1886.
+        let curve = if transfer.is_hdr() {
+            Transfer::Bt1886
+        } else {
+            transfer
+        };
+        let encode = (0..=TABLE_STEPS)
+            .map(|step| {
+                let root = step as f64 / TABLE_STEPS as f64;
+                linear_to_sdr(curve, root * root) as f32
+            })
+            .collect();
+        Some(SdrConverter {
+            transfer,
+            decode,
+            matrix: to_bt709(primaries).map(|row| row.map(|factor| factor as f32)),
+            peak: peak as f32,
+            knee: knee as f32,
+            tone,
+            encode,
+        })
+    }
+
+    /// Step 3 for one pixel of full-range RGB from 0 to 1: SDR BT.709 values from 0 to 1.
+    pub fn convert(&self, rgb: [f32; 3]) -> [f32; 3] {
+        let last = self.decode.len() - 1;
+        let mut light = rgb.map(|value| {
+            let code = (value.clamp(0.0, 1.0) * last as f32 + 0.5) as usize;
+            self.decode[code.min(last)]
+        });
+        if self.transfer == Transfer::Hlg {
+            // `hlg_ootf`, at the 1000-nit reference.
+            let [red, green, blue] = light;
+            let luminance = 0.2627 * red + 0.6780 * green + 0.0593 * blue;
+            let gain = DEFAULT_HDR_PEAK as f32 * luminance.max(0.0).powf(0.2);
+            light = light.map(|scene| gain * scene);
+        }
+        if self.transfer.is_hdr() {
+            // `tone_map`: what the EETF does to the brightest channel scales all three.
+            light = light.map(|nits| nits.clamp(0.0, self.peak));
+            let brightest = light[0].max(light[1]).max(light[2]);
+            let scale = if brightest <= self.knee {
+                1.0 / SDR_PEAK as f32
+            } else {
+                let way = (brightest - self.knee) / (self.peak - self.knee);
+                interpolate(&self.tone, way.sqrt())
+            };
+            light = light.map(|nits| nits * scale);
+        }
+        self.matrix.map(|row| {
+            let bt709 = row[0] * light[0] + row[1] * light[1] + row[2] * light[2];
+            interpolate(&self.encode, bt709.clamp(0.0, 1.0).sqrt())
+        })
+    }
+}
+
+/// `table` read at `at`, from 0 for its first entry to 1 for its last, between entries
+/// linearly.
+fn interpolate(table: &[f32], at: f32) -> f32 {
+    let last = table.len() - 1;
+    let position = at.clamp(0.0, 1.0) * last as f32;
+    let index = (position as usize).min(last - 1);
+    let fraction = position - index as f32;
+    table[index] + fraction * (table[index + 1] - table[index])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -424,6 +557,68 @@ mod tests {
         // Dim light is left alone, but for the change of scale.
         let dim = tone_map([20.0, 10.0, 5.0], 1000.0);
         assert!(near(dim[0], 0.2, 1e-9) && near(dim[2], 0.05, 1e-9));
+    }
+
+    /// A fixed spread of 16-bit colors: random ones, the gray ramp and the cube's corners.
+    fn sample_colors() -> Vec<[u16; 3]> {
+        let mut seed = 0x2545_f491_4f6c_dd1d_u64;
+        let mut next = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed >> 48) as u16
+        };
+        let random = (0..20_000).map(|_| [next(), next(), next()]);
+        let grays = (0..=256u32).map(|step| [(step * 65_535 / 256) as u16; 3]);
+        let corners =
+            (0..8).map(|corner: u16| [1, 2, 4].map(|bit| (corner & bit != 0) as u16 * u16::MAX));
+        random.chain(grays).chain(corners).collect()
+    }
+
+    #[test]
+    fn bt709_sdr_pictures_need_no_conversion() {
+        assert!(SdrConverter::new(Primaries::Bt709, Transfer::Bt1886, 0.0).is_none());
+        assert!(SdrConverter::new(Primaries::Bt709, Transfer::Srgb, 0.0).is_none());
+        assert!(SdrConverter::new(Primaries::Bt709, Transfer::Hlg, 1000.0).is_some());
+        assert!(SdrConverter::new(Primaries::DisplayP3, Transfer::Srgb, 0.0).is_some());
+    }
+
+    #[test]
+    fn whole_pictures_convert_as_the_reference_does() {
+        let sources = [
+            (Primaries::Bt2020, Transfer::Hlg, DEFAULT_HDR_PEAK),
+            (Primaries::Bt2020, Transfer::Pq, 1000.0),
+            (Primaries::Bt2020, Transfer::Pq, 4000.0),
+            (Primaries::Bt2020, Transfer::Pq, 80.0),
+            (Primaries::Bt709, Transfer::Pq, 10_000.0),
+            (Primaries::DisplayP3, Transfer::Srgb, 0.0),
+            (Primaries::DisplayP3, Transfer::Bt1886, 0.0),
+            (Primaries::Bt2020, Transfer::Bt1886, 0.0),
+            (Primaries::Bt601_625, Transfer::Bt1886, 0.0),
+        ];
+        let colors = sample_colors();
+        for (primaries, transfer, peak) in sources {
+            let converter = SdrConverter::new(primaries, transfer, peak).expect("not BT.709 SDR");
+            let mut worst = 0.0f64;
+            for rgb in &colors {
+                let reference = to_sdr_bt709(
+                    rgb.map(|v| f64::from(v) / 65_535.0),
+                    primaries,
+                    transfer,
+                    peak,
+                );
+                let converted = converter.convert(rgb.map(|v| f32::from(v) / 65_535.0));
+                for (converted, reference) in converted.iter().zip(reference) {
+                    worst = worst.max((f64::from(*converted) - reference).abs());
+                }
+            }
+            // In 8-bit codes, a twentieth of a step at most.
+            assert!(
+                worst * 255.0 <= 0.05,
+                "{primaries:?} {transfer:?} {peak}: {}",
+                worst * 255.0
+            );
+        }
     }
 
     #[test]

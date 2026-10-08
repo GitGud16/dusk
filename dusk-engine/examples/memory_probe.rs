@@ -52,6 +52,7 @@ fn main() {
         primaries: dusk_core::color::Primaries::Bt709,
         transfer: dusk_core::color::Transfer::Bt1886,
         peak_nits: 0,
+        siting: dusk_core::ChromaSiting::LEFT,
         luma: vec![128; 16 * 16],
         chroma: vec![128; 8 * 8 * 2],
     };

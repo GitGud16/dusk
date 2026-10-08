@@ -4,7 +4,6 @@
 //! the project as one undoable step. What each change does to the draft is in `draft`; the
 //! session and its command are in `dusk-core`.
 
-use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use dusk_core::{
@@ -17,8 +16,8 @@ use slint::{CloseRequestResponse, ComponentHandle, Model, SharedString};
 use crate::app::{App, factor_label, sentence, texture_image, with_app};
 use crate::document::Next;
 use crate::draft::{self, EditorView, Sides, Source};
-use crate::files::{clip_export_path, same_file};
-use crate::platform::{self, Dialog};
+use crate::export_dialog::ExportTarget;
+use crate::platform;
 use crate::shortcuts::{self, Action};
 use crate::speed::{SpeedKey, next_factor};
 use crate::timeline::timecode;
@@ -193,6 +192,9 @@ impl App {
 
     /// Lets go of the clip editor's session and preview; whoever closes the window hides it.
     fn forget_editor(&mut self) {
+        if self.export_dialog_in_editor() {
+            self.cancel_export_dialog();
+        }
         if self.editor.take().is_some() {
             self.engine.close_preview(Preview::ClipEditor);
         }
@@ -695,6 +697,9 @@ impl App {
             self.editor_answer_with_key(text);
             return true;
         }
+        if self.export_dialog_key(text, true) {
+            return true;
+        }
         let key = platform::pressed_key();
         match shortcuts::action_for_key(text, key, ctrl, shift, alt) {
             Some(action) => self.editor_act(action),
@@ -750,6 +755,7 @@ impl App {
             | Action::SaveAs
             | Action::Import
             | Action::Export
+            | Action::CompressVideo
             | Action::CancelExport
             | Action::Quit => self.act(action),
             Action::Split
@@ -809,21 +815,15 @@ impl App {
         window.set_playhead(fraction);
     }
 
-    /// Export as file: asks where, then writes the draft alone as a video file of its own,
-    /// at the clip's own frame rate and size (docs/ARCHITECTURE.md, "Pop-out clip editor").
+    /// Export as file: the export dialog for the draft alone, at the clip's own frame rate
+    /// and size (docs/ARCHITECTURE.md, "Pop-out clip editor"); a clip without a picture
+    /// exports as sound.
     pub(crate) fn export_clip(&mut self) {
         let Some(editor) = &self.editor else {
             return;
         };
         if self.export.is_some() {
             return self.editor_say("An export is already running.");
-        }
-        let view = draft::editor_view(&self.project, &editor.session);
-        if !view.video {
-            return self.editor_fail(
-                "A clip without a picture can't be exported as a file yet; place it on the \
-                 timeline and export that instead.",
-            );
         }
         let project = match editor.session.export_project(&self.project) {
             Ok(project) => project,
@@ -838,60 +838,10 @@ impl App {
         else {
             return;
         };
-        // Beside the project file once it has one, otherwise beside the source.
-        let folder = self
-            .document
-            .path
-            .as_deref()
-            .or(Some(source.as_path()))
-            .and_then(Path::parent)
-            .map(Path::to_path_buf)
-            .unwrap_or_default();
-        let suggested = clip_export_path(&folder, &source);
-        let Some(window) = self
-            .editor_window
-            .as_ref()
-            .map(ComponentHandle::clone_strong)
-        else {
-            return;
-        };
-        self.show_dialog_over(
-            window.window(),
-            Dialog::ExportClip { suggested },
-            move |paths| {
-                if let Some(path) = paths.into_iter().next() {
-                    with_app(|app| app.export_clip_to(project, path));
-                }
-            },
-        );
-    }
-
-    /// Writes `project`, the clip alone, to the MP4 file at `path`; never over a media file
-    /// the project uses.
-    fn export_clip_to(&mut self, project: Project, path: PathBuf) {
-        if self.export.is_some() {
-            return self.editor_say("An export is already running.");
-        }
-        if self
-            .project
-            .media()
-            .iter()
-            .any(|media| same_file(&media.path, &path))
-        {
-            return self.editor_fail(
-                "That file is used in the project, and Dusk never writes over media. Export \
-                 under another name.",
-            );
-        }
-        match self.engine.export(Arc::new(project), path.clone()) {
-            Ok(job) => {
-                self.export_started(job, true);
-                let message = format!("Exporting the clip to {}…", path.display());
-                self.say(&message);
-                self.editor_say(&message);
-            }
-            Err(error) => self.editor_fail(&error.to_string()),
-        }
+        self.open_export_dialog(ExportTarget::Clip {
+            project: Box::new(project),
+            source,
+        });
     }
 
     /// Where the clip editor's playhead is, while it is open.
@@ -994,6 +944,12 @@ fn connect(window: &ClipEditorWindow) {
     });
     window.on_prompt_answered(|index| {
         with_app(|app| app.editor_answer(usize::try_from(index).unwrap_or(usize::MAX)));
+    });
+    window.on_export_changed(|what, value| {
+        with_app(|app| app.export_changed(&what, value));
+    });
+    window.on_export_done(|export| {
+        with_app(|app| app.export_done(export));
     });
     window.on_action(|name| {
         if let Some(action) = shortcuts::action_named(&name) {

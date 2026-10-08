@@ -52,15 +52,15 @@ Import one file, see it as a linked video clip and audio clip on one video track
 
 ## M4 — Export, compress, extract
 
-- Export dialog: container (MP4/MKV/MOV, WebM as VP9/AV1), resolution presets, Quality 0–100 mapped per encoder, Advanced target bitrate for any encoder and CRF only where the encoder has one (SVT-AV1, VP9), encoders shown by availability.
-- Compress tool: open a single file, target quality or target size (bitrate ladder + one corrective re-encode), export, no project.
-- Optional external GPL `ffmpeg.exe` export path (raw frames piped).
-- Encoder probing by real session at 640×480 on first export, fall-through on open failure, per-encoder limits table with fixed values; per-encoder memory measured (SVT-AV1 threads and lookahead fixed) and the encoder line in REQUIREMENTS.md updated.
-- CPU path in dusq (normalize → tone-map/rotate in Rust → encoder format) verified against the GPU path by the per-plane PSNR test (≥ 45 dB unscaled, ≥ 40 dB scaled); `--threads`; dusq memory ceiling measured per size class and recorded in REQUIREMENTS.md.
-- Audio-only export (MP3/AAC/Opus/WAV), including the clip editor's Export as file for a sound-only clip.
-- `dusq` (the `dusk-cli` binary) with `compress` and `extract-audio`, built without the `gpu` feature on the CPU transcode path.
+- Export dialog: container (MP4/MKV/MOV, WebM as VP9/AV1), resolution presets, Quality 0–100 mapped per encoder, Advanced target bitrate for any encoder and CRF only where the encoder has one (SVT-AV1, VP9, and x264 and x265 in a user's own `ffmpeg.exe`), encoders shown by availability. Done: one dialog for the timeline and the clip editor (ARCHITECTURE.md, "Export details"), which names the encoder each codec will use.
+- Compress tool: open a single file, target quality or target size (bitrate ladder + one corrective re-encode), export, no project. Done: File → Compress a video… (Ctrl+M), one dialog (ARCHITECTURE.md, "Compress tool paths"), and `dusq compress --size`.
+- Optional external GPL `ffmpeg.exe` export path (raw frames piped). Done: Advanced → *Use my own ffmpeg.exe…* offers its `libx264` and `libx265` beside Dusk's own encoders for the session (ARCHITECTURE.md, "Optional GPL encoders"); M5 keeps the path.
+- Encoder probing by real session at 640×480 on first export, fall-through on open failure, per-encoder limits table with fixed values; per-encoder memory measured (SVT-AV1 threads and lookahead fixed) and the encoder line in REQUIREMENTS.md updated. Done: measured with `dusk-media`'s `encoder_memory` example; SVT-AV1 works on two pictures at once (one, without its lookahead, above 1080p), which took it from 4.7 GB to 1.0 GB at 4K, and VP9 on four threads instead of one.
+- CPU path in dusq (normalize → tone-map/rotate in Rust → encoder format) verified against the GPU path by the per-plane PSNR test (≥ 45 dB unscaled, ≥ 40 dB scaled); `--threads`; dusq memory ceiling measured per size class and recorded in REQUIREMENTS.md. The path, `--threads` and the PSNR test are done (ARCHITECTURE.md, "Compress tool paths": every plane 56 to 67 dB), and so are the ceilings (REQUIREMENTS.md: 158 MB at 1080p, 446 MB at 4K, 974 MB at 8K).
+- Audio-only export (MP3/AAC/Opus/WAV), including the clip editor's Export as file for a sound-only clip. Done: *Sound only* in the export dialog writes the mix of the timeline or of the clip, at 48 kHz.
+- `dusq` (the `dusk-cli` binary) with `compress` and `extract-audio`, built without the `gpu` feature on the CPU transcode path. Done, `--size` included.
 
-**Done when**: a 2 GB phone video can be compressed to a 25 MB file from the compress tool in one dialog.
+**Done when**: a 2 GB phone video can be compressed to a 25 MB file from the compress tool in one dialog. Holds: a 2.1 GB, 5.5-minute portrait 4K H.264 video at 50 Mbit/s with sound, made for the test, came out at 23.5 MB, 360 × 640 and upright, in 197 s from one *Compress a video* dialog, which started at 25 MB, peaking at 531 MB private (REQUIREMENTS.md, "During export").
 
 ## M5 — Keyboard and settings
 

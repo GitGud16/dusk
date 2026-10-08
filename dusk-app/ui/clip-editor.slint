@@ -7,6 +7,7 @@ import { Theme } from "theme.slint";
 import { FieldLabel, NumberField, PanelTitle, Segmented, Slider, Switch, Timecode, ToolButton } from "widgets.slint";
 import { Prompt } from "dialogs.slint";
 import { ShortcutPanel, ShortcutView } from "shortcut-list.slint";
+import { ExportDialog, ExportView } from "export-dialog.slint";
 
 // Pixels cut from each side of the picture as it shows.
 export struct EditorSides {
@@ -229,6 +230,11 @@ export component ClipEditorWindow inherits Window {
     in property <bool> status-is-error;
     // An export runs, so another cannot start.
     in property <bool> exporting;
+    // The export dialog, for the clip alone.
+    in property <bool> export-open;
+    in property <ExportView> export-view;
+    callback export-changed(what: string, value: int);
+    callback export-done(export: bool);
 
     // A question over the window.
     in property <bool> prompt-open;
@@ -787,7 +793,7 @@ export component ClipEditorWindow inherits Window {
                     ToolButton {
                         y: (parent.height - self.height) / 2;
                         text: "Export as file…";
-                        enabled: root.props.video && !root.exporting;
+                        enabled: !root.exporting;
                         clicked => {
                             root.action("export-clip");
                             keys.focus();
@@ -805,6 +811,20 @@ export component ClipEditorWindow inherits Window {
                         }
                     }
                 }
+            }
+        }
+
+        if root.export-open: ExportDialog {
+            view: root.export-view;
+            changed(what, value) => {
+                root.export-changed(what, value);
+            }
+            done(export) => {
+                root.export-done(export);
+                keys.focus();
+            }
+            finished => {
+                keys.focus();
             }
         }
 

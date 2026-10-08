@@ -4,11 +4,13 @@ use dusk_core::{ClipEdits, Frame, Orientation, Project};
 use dusk_render::Placement;
 
 /// How the picture shown at `frame` is placed: upright as its file says, then cropped,
-/// turned, mirrored and fitted as its clip says. Plain where no clip is visible.
+/// turned, mirrored and fitted as its clip says, against the sequence's shape whatever size
+/// the frame is drawn at. Plain where no clip is visible.
 pub(crate) fn placement_at(project: &Project, frame: Frame) -> Placement {
     let Some(clip) = project.sequence().visible_video_at(frame) else {
         return Placement::default();
     };
+    let shape = Some(project.sequence().resolution());
     let orientation = project
         .media_ref(clip.media_id)
         .map_or(Orientation::UPRIGHT, |media| media.info.orientation);
@@ -18,9 +20,11 @@ pub(crate) fn placement_at(project: &Project, frame: Frame) -> Placement {
             crop: edits.crop,
             edits: Orientation::from_edits(edits.rotate, edits.flip_h, edits.flip_v),
             fit: edits.fit,
+            shape,
         },
         ClipEdits::Audio(_) => Placement {
             orientation,
+            shape,
             ..Placement::default()
         },
     }
@@ -87,6 +91,8 @@ mod tests {
         assert_eq!(placement.crop, Some(crop));
         assert_eq!(placement.edits, Orientation::new(2, false));
         assert_eq!(placement.fit, Fit::Fill);
+        // Fitted or filled against the sequence's shape, whatever size it is drawn at.
+        assert_eq!(placement.shape, Some((1920, 1080)));
         // In a gap nothing is placed.
         assert_eq!(placement_at(&project, Frame(40)), Placement::default());
     }

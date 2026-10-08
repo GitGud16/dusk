@@ -1,0 +1,182 @@
+// The compress tool's dialog (docs/ARCHITECTURE.md, "Compress tool paths"): one video aimed at
+// a file size or at a quality, and what it will come out as. The Rust side works out what is
+// shown; the dialog says what changed.
+
+import { Theme } from "theme.slint";
+import { FieldLabel, NumberField, Segmented, Slider, ToolButton } from "widgets.slint";
+import { DialogPanel, DialogTitle } from "dialogs.slint";
+
+// The dialog as the Rust side worked it out.
+export struct CompressView {
+    // The video is still being read.
+    reading: bool,
+    name: string,
+    // How long it is, its size and its file's size.
+    facts: string,
+    by-size: bool,
+    // The size aimed at, in whole megabytes, and the Quality slider, 0 to 100.
+    megabytes: int,
+    level: int,
+    // What it will come out as, and whether that is a problem.
+    outcome: string,
+    warning: bool,
+    // When the size is too small: the smallest it can be, in megabytes; 0 otherwise.
+    smallest: int,
+    // Compress can go ahead.
+    ready: bool,
+}
+
+export component CompressDialog inherits Rectangle {
+    in property <CompressView> view;
+    // `what` changed to `value`: "by-size" (0 a size, 1 a quality), "megabytes", "level", or
+    // "smallest" (use the smallest size).
+    callback changed(what: string, value: int);
+    // Compress (`go`) or cancel.
+    callback done(go: bool);
+    // Typing in a field is over.
+    callback finished();
+
+    DialogPanel {
+        panel-width: 480px;
+        keep-top: true;
+
+        DialogTitle {
+            text: "Compress a video";
+        }
+
+        VerticalLayout {
+            spacing: Theme.space-1;
+
+            Text {
+                text: root.view.name;
+                color: Theme.text-1;
+                font-size: Theme.font-title;
+                font-weight: Theme.weight-semibold;
+                overflow: elide;
+            }
+
+            Text {
+                text: root.view.reading ? "Reading the video…" : root.view.facts;
+                color: Theme.text-2;
+                font-size: Theme.font-tiny;
+            }
+        }
+
+        if !root.view.reading: Segmented {
+            options: ["To a file size", "At a quality"];
+            selected: root.view.by-size ? 0 : 1;
+            chosen(index) => {
+                root.changed("by-size", index);
+            }
+        }
+
+        if !root.view.reading && root.view.by-size: VerticalLayout {
+            spacing: Theme.space-1;
+
+            FieldLabel {
+                text: "File size";
+            }
+
+            HorizontalLayout {
+                spacing: Theme.space-2;
+
+                NumberField {
+                    horizontal-stretch: 1;
+                    value: root.view.megabytes;
+                    minimum: 1;
+                    maximum: 100000;
+                    suffix: "MB";
+                    edited(value) => {
+                        root.changed("megabytes", value);
+                    }
+                    finished => {
+                        root.finished();
+                    }
+                }
+
+                for preset in [8, 25, 50, 100]: ToolButton {
+                    text: preset + " MB";
+                    clicked => {
+                        root.changed("megabytes", preset);
+                    }
+                }
+            }
+        }
+
+        if !root.view.reading && !root.view.by-size: VerticalLayout {
+            spacing: Theme.space-1;
+
+            HorizontalLayout {
+                FieldLabel {
+                    text: "Quality";
+                    horizontal-stretch: 1;
+                }
+
+                Text {
+                    text: Math.round(quality.shown);
+                    color: Theme.text-1;
+                    font-family: Theme.font-numeric;
+                    font-size: Theme.font-tiny;
+                }
+            }
+
+            Segmented {
+                options: ["High", "Medium", "Small"];
+                selected: root.view.level == 80 ? 0 : root.view.level == 60 ? 1 : root.view.level == 40 ? 2 : -1;
+                chosen(index) => {
+                    root.changed("level", index == 0 ? 80 : index == 1 ? 60 : 40);
+                }
+            }
+
+            quality := Slider {
+                minimum: 0;
+                maximum: 100;
+                value: root.view.level;
+                changed(level) => {
+                    root.changed("level", Math.round(level));
+                }
+                reset => {
+                    root.changed("level", 60);
+                }
+            }
+        }
+
+        if !root.view.reading: Text {
+            text: root.view.outcome;
+            color: root.view.warning ? Theme.signal : Theme.text-2;
+            font-size: Theme.font-tiny;
+            wrap: word-wrap;
+        }
+
+        HorizontalLayout {
+            spacing: Theme.space-2;
+
+            if root.view.smallest > 0: ToolButton {
+                text: "Use " + root.view.smallest + " MB";
+                clicked => {
+                    root.changed("smallest", 0);
+                }
+            }
+
+            Rectangle {
+                horizontal-stretch: 1;
+            }
+
+            ToolButton {
+                text: "Compress…";
+                primary: true;
+                enabled: root.view.ready;
+                clicked => {
+                    root.done(true);
+                }
+            }
+
+            ToolButton {
+                text: "Cancel";
+                clicked => {
+                    root.done(false);
+                }
+            }
+        }
+    }
+}

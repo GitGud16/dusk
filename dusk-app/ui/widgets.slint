@@ -252,6 +252,17 @@ export component NumberField inherits Rectangle {
         }
     }
 
+    // A click anywhere in the box, on its suffix or padding too, goes to the number, all of it
+    // selected so typing replaces it.
+    TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: text;
+        clicked => {
+            input.focus();
+            input.select-all();
+        }
+    }
+
     HorizontalLayout {
         padding-left: Theme.space-2;
         padding-right: Theme.space-2;
