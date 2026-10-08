@@ -30,6 +30,8 @@ export global Theme {
     out property <color> text-1: #EAE9ED;
     out property <color> text-2: #A39FAD;
     out property <color> text-3: #706B7B;
+    // Behind dialogs: bg-0 at 80%, so the editor shows through dimmed.
+    out property <color> scrim: #0E0D12CC;
 
     // Typography. Inter for UI text, JetBrains Mono for timecodes and numbers, both bundled
     // (imported above).
@@ -60,6 +62,10 @@ export global Theme {
     out property <length> radius-clip: 3px;
     out property <length> border-width: 1px;
     out property <length> focus-width: 2px;
+    out property <length> icon-size: 16px;
+    // The media bin and the properties panel beside the preview.
+    out property <length> side-panel-width: 248px;
+    out property <length> dialog-width: 400px;
 
     // Timeline.
     out property <length> ruler-height: 24px;
@@ -67,4 +73,10 @@ export global Theme {
     out property <length> audio-track-height: 36px;
     out property <length> clip-gap: 2px;
     out property <length> playhead-width: 2px;
+    out property <length> playhead-head: 10px;
+    out property <length> track-header-width: 92px;
+    // How far the pointer moves before a press becomes a drag.
+    out property <length> drag-threshold: 4px;
+    // Disabled clips and clips on hidden or muted tracks.
+    out property <float> dimmed-opacity: 0.4;
 }

@@ -1,21 +1,24 @@
 //! The video thread (docs/ARCHITECTURE.md, "Data flow" and "Decoder pool"): it finds the clip
 //! visible at a timeline frame, takes that clip's frame from the cache or decodes it, draws it
-//! at the preview size and reports it. While playing it follows the playback clock.
+//! at the preview size and reports it. While playing it follows the playback clock, and a
+//! worker thread gets the next clip to come into view ready.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
-use crossbeam_channel::{Receiver, RecvTimeoutError, Sender};
+use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, TryRecvError};
 use dusk_audio::PlaybackClock;
 use dusk_core::time::{frame_at, frame_to_media};
-use dusk_core::{Frame, MediaId, MediaTime, Picture, Project};
-use dusk_media::{Acceleration, Following, VideoDecoder};
-use dusk_render::{Compositor, Gpu};
+use dusk_core::{ClipId, Frame, MediaId, MediaInfo, MediaKind, MediaTime, Picture, Project};
+use dusk_media::{Acceleration, DecodedFrame, Following, Step, VideoDecoder};
+use dusk_render::{Compositor, Gpu, fit_size};
 
 use crate::EngineError;
 use crate::cache::FrameCache;
 use crate::engine::{EngineEvent, EngineOptions, Report, SharedTransport, lock};
+use crate::info::still_size;
+use crate::placement::placement_at;
 
 /// What the front asks of the video thread.
 pub(crate) enum VideoRequest {
@@ -33,6 +36,14 @@ const PLAYBACK_POLL: Duration = Duration::from_millis(10);
 /// Sources with more pixels than this get a decoder to themselves (docs/ARCHITECTURE.md,
 /// "Decoder pool": the 1080p class ends at 2.1 Mpx).
 const LARGE_FRAME: u64 = 2_100_000;
+/// While playing, the next clip to come into view within this much playback is made ready
+/// (docs/ARCHITECTURE.md, "Decoder pool").
+const LOOKAHEAD: Duration = Duration::from_secs(2);
+
+/// Whether a source is above the 1080p class, so that it gets a decoder to itself.
+fn is_large(info: &MediaInfo) -> bool {
+    u64::from(info.width) * u64::from(info.height) > LARGE_FRAME
+}
 
 /// Starts the video thread.
 pub(crate) fn spawn(
@@ -60,6 +71,8 @@ pub(crate) fn spawn(
                 size: (0, 0),
                 cache: FrameCache::new(cap),
                 decoders: Vec::new(),
+                upcoming: None,
+                lookahead_busy: Arc::new(AtomicBool::new(false)),
                 playing: None,
                 target: None,
                 shown_exactly: None,
@@ -92,6 +105,30 @@ enum Fetch {
     /// Decode its group of pictures from the keyframe and cache every frame of it, for
     /// playing backwards.
     Gop,
+    /// Take the keyframe at or before it, for playing too fast to decode every frame.
+    Keyframe,
+}
+
+/// Where the frames kept from a group of pictures decoded for playing backwards start: as
+/// many as fit in half of a cache of `cap` bytes, frames of `frame_bytes` each and `frame`
+/// long, ending with the one at `time`; at least that one (docs/ARCHITECTURE.md, "Playback").
+fn reverse_window(time: MediaTime, frame_bytes: usize, cap: usize, frame: MediaTime) -> MediaTime {
+    let kept = (cap / 2 / frame_bytes.max(1)).max(1);
+    let before = i64::try_from(kept - 1).unwrap_or(i64::MAX);
+    MediaTime(time.0.saturating_sub(before.saturating_mul(frame.0)))
+}
+
+/// How frames are fetched while playing at `rate`, the playback factor times the clip's
+/// speed (docs/ARCHITECTURE.md, "Playback"): every frame forwards up to 8x, every frame
+/// backwards from a group-of-pictures buffer up to 2x, and only keyframes beyond either.
+fn playback_fetch(rate: f64) -> Fetch {
+    if rate > 8.0 || rate < -2.0 {
+        Fetch::Keyframe
+    } else if rate > 0.0 {
+        Fetch::Decode
+    } else {
+        Fetch::Gop
+    }
 }
 
 struct OpenDecoder {
@@ -99,6 +136,49 @@ struct OpenDecoder {
     decoder: VideoDecoder,
     large: bool,
     last_used: Instant,
+}
+
+/// The next clip to come into view while playing, made ready by a worker thread so that
+/// playback does not wait for it: the clip's own decoder opened and moved to the frame the
+/// clip comes into view with, and that frame in the cache.
+struct Upcoming {
+    clip: ClipId,
+    media: MediaId,
+    /// The time in its source of the frame it comes into view with.
+    time: MediaTime,
+    state: Readiness,
+}
+
+/// How far the upcoming clip is.
+enum Readiness {
+    /// Not started: one worker at a time, and an earlier one is still busy.
+    Waiting,
+    /// A worker is on it.
+    Working(Receiver<Prepared>),
+    /// Done. A video clip's decoder joins the pool when the clip comes into view.
+    Ready(Option<VideoDecoder>),
+}
+
+/// What a lookahead worker made ready.
+enum Prepared {
+    /// A video clip's decoder at the frame the clip comes into view with, that frame, and when
+    /// the one after it starts.
+    Video {
+        decoder: VideoDecoder,
+        frame: Option<DecodedFrame>,
+        following: Following,
+    },
+    /// A still's picture at the size the sequence needs.
+    Still(Picture),
+}
+
+/// Marks the lookahead worker busy for as long as it lives, even if it panics.
+struct Busy(Arc<AtomicBool>);
+
+impl Drop for Busy {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
 }
 
 struct VideoThread {
@@ -113,6 +193,10 @@ struct VideoThread {
     size: (u32, u32),
     cache: FrameCache,
     decoders: Vec<OpenDecoder>,
+    /// While playing forwards, the next clip to come into view.
+    upcoming: Option<Upcoming>,
+    /// A lookahead worker is running, holding a decoder; there is one at a time.
+    lookahead_busy: Arc<AtomicBool>,
     /// The playback this thread follows, by generation.
     playing: Option<u64>,
     /// The frame the preview should show.
@@ -145,8 +229,9 @@ impl VideoThread {
                 match request {
                     VideoRequest::Project(project) => {
                         self.project = Some(project);
-                        // An edit can change what any frame shows.
+                        // An edit can change what any frame shows, and what comes next.
                         self.shown_exactly = None;
+                        self.upcoming = None;
                     }
                     VideoRequest::Size(size) => {
                         self.size = size;
@@ -154,10 +239,12 @@ impl VideoThread {
                     }
                     VideoRequest::Show(frame) => {
                         self.playing = None;
+                        self.upcoming = None;
                         wanted = Some((frame, true));
                     }
                     VideoRequest::Scrub(frame) => {
                         self.playing = None;
+                        self.upcoming = None;
                         wanted = Some((frame, false));
                     }
                     VideoRequest::Play { generation } => {
@@ -180,13 +267,26 @@ impl VideoThread {
             } else if let Some(frame) = self.target.filter(|_| redraw) {
                 self.show_exact(frame);
             }
+            if self.playing.is_none() {
+                self.upcoming = None;
+            }
             let now = Instant::now();
             let idle = self.idle;
             self.decoders
                 .retain(|open| now.duration_since(open.last_used) < idle);
             self.open_decoders
-                .store(self.decoders.len(), Ordering::Relaxed);
+                .store(self.decoders_open(), Ordering::Relaxed);
         }
+    }
+
+    /// The video decoders open: the pool's, the upcoming clip's, and a lookahead worker's.
+    fn decoders_open(&self) -> usize {
+        let ready = self
+            .upcoming
+            .as_ref()
+            .is_some_and(|upcoming| matches!(upcoming.state, Readiness::Ready(Some(_))));
+        let working = self.lookahead_busy.load(Ordering::Acquire);
+        self.decoders.len() + usize::from(ready) + usize::from(working)
     }
 
     /// How long to wait for a request before there is work of its own; `None` for as long as
@@ -302,9 +402,13 @@ impl VideoThread {
             return self.stop_at(generation, Frame(0));
         }
         if self.shown_exactly == Some(frame) {
-            return;
+            return self.tend_upcoming(&project);
         }
-        let fetch = if forward { Fetch::Decode } else { Fetch::Gop };
+        let speed = project
+            .sequence()
+            .visible_video_at(frame)
+            .map_or(1.0, |clip| clip.speed);
+        let fetch = playback_fetch(factor * speed);
         match self.shown_at(frame, fetch) {
             Ok(shown) => self.present(frame, shown, true),
             Err(error) => {
@@ -312,7 +416,11 @@ impl VideoThread {
                 return self.stop_at(generation, frame);
             }
         }
-        // Get the next frame ready while this one is on screen.
+        // Get the next frame ready while this one is on screen; keyframes come as they come.
+        if matches!(fetch, Fetch::Keyframe) {
+            self.upcoming = None;
+            return;
+        }
         let step = (factor.abs().round() as i64).max(1);
         let next = if forward {
             frame + Frame(step)
@@ -321,6 +429,191 @@ impl VideoThread {
         };
         if (Frame(0)..=last).contains(&next) {
             let _ = self.shown_at(next, fetch);
+        }
+        // Playing forwards, the clip to come into view after that one, too.
+        if forward && matches!(fetch, Fetch::Decode) {
+            self.plan_upcoming(&project, next.min(last), factor);
+            self.tend_upcoming(&project);
+        } else {
+            self.upcoming = None;
+        }
+    }
+
+    /// Picks the next clip to come into view within [`LOOKAHEAD`] of playback after `from`,
+    /// for a worker to make ready. A source above the 1080p class, in view or coming, means no
+    /// lookahead: it may have the only decoder.
+    fn plan_upcoming(&mut self, project: &Project, from: Frame, factor: f64) {
+        let sequence = project.sequence();
+        let rate = sequence.frame_rate();
+        let ahead = LOOKAHEAD.as_secs_f64() * factor.max(1.0);
+        let within = frame_at(MediaTime((ahead * 1e6) as i64), rate);
+        let Some((at, clip)) = sequence.next_visible_video(from, within) else {
+            self.upcoming = None;
+            return;
+        };
+        if self
+            .upcoming
+            .as_ref()
+            .is_some_and(|upcoming| upcoming.clip == clip.id)
+        {
+            return;
+        }
+        let large = |media: MediaId| {
+            project
+                .media_ref(media)
+                .is_some_and(|media| is_large(&media.info))
+        };
+        let in_view = sequence.visible_video_at(from).map(|clip| clip.media_id);
+        if large(clip.media_id) || in_view.is_some_and(large) {
+            self.upcoming = None;
+            return;
+        }
+        self.upcoming = Some(Upcoming {
+            clip: clip.id,
+            media: clip.media_id,
+            time: clip.source_time_at(at, rate),
+            state: Readiness::Waiting,
+        });
+    }
+
+    /// Starts a worker on the upcoming clip when none is busy, and takes what it made ready
+    /// once it has.
+    fn tend_upcoming(&mut self, project: &Project) {
+        match self.upcoming.as_ref().map(|upcoming| &upcoming.state) {
+            Some(Readiness::Waiting) if !self.lookahead_busy.load(Ordering::Acquire) => {
+                self.start_upcoming(project);
+            }
+            Some(Readiness::Working(_)) => self.receive_upcoming(false),
+            _ => {}
+        }
+    }
+
+    /// Hands the upcoming clip to a worker thread. Its decoder takes the place of every
+    /// decoder in the pool but the one of the clip in view, so that at most two are open; a
+    /// decoder of the same media kept for a clip out of view goes with it.
+    fn start_upcoming(&mut self, project: &Project) {
+        let in_view = self
+            .shown_exactly
+            .and_then(|frame| project.sequence().visible_video_at(frame))
+            .map(|clip| clip.media_id);
+        let Some(upcoming) = self.upcoming.as_mut() else {
+            return;
+        };
+        let Some(media_ref) = project.media_ref(upcoming.media) else {
+            upcoming.state = Readiness::Ready(None);
+            return;
+        };
+        let (media, time, path) = (upcoming.media, upcoming.time, media_ref.path.clone());
+        let job: Box<dyn FnOnce() -> Option<Prepared> + Send> =
+            if media_ref.info.kind == MediaKind::Still {
+                let size = still_size(&media_ref.info, project.sequence().resolution());
+                let cached = self.cache.get(media, MediaTime(0));
+                if cached.is_some_and(|picture| (picture.width, picture.height) == size) {
+                    upcoming.state = Readiness::Ready(None);
+                    return;
+                }
+                Box::new(move || {
+                    dusk_media::decode_still(&path, size)
+                        .ok()
+                        .map(Prepared::Still)
+                })
+            } else {
+                let spare = self
+                    .decoders
+                    .iter()
+                    .position(|open| open.media == media && in_view != Some(media));
+                let spare = spare.map(|index| self.decoders.remove(index).decoder);
+                self.decoders.retain(|open| in_view == Some(open.media));
+                Box::new(move || {
+                    let mut decoder = match spare {
+                        Some(decoder) => decoder,
+                        None => VideoDecoder::open(&path, Acceleration::Software).ok()?,
+                    };
+                    let frame = decoder.frame_at(time).ok()?;
+                    let following = decoder.following();
+                    Some(Prepared::Video {
+                        decoder,
+                        frame,
+                        following,
+                    })
+                })
+            };
+        let (sender, receiver) = crossbeam_channel::bounded(1);
+        self.lookahead_busy.store(true, Ordering::Release);
+        let busy = Busy(Arc::clone(&self.lookahead_busy));
+        let spawned = std::thread::Builder::new()
+            .name("dusk lookahead".to_owned())
+            .spawn(move || {
+                let prepared = job();
+                drop(busy);
+                // Nobody is waiting any more if playback moved on meanwhile.
+                if let Some(prepared) = prepared {
+                    let _ = sender.send(prepared);
+                }
+            });
+        // Without a thread there is no lookahead; the clip is decoded when it is due.
+        upcoming.state = match spawned {
+            Ok(_) => Readiness::Working(receiver),
+            Err(_) => Readiness::Ready(None),
+        };
+    }
+
+    /// Takes what the worker made ready, waiting for it when `wait` is set; a worker that
+    /// failed leaves the clip to be decoded when it is due, which reports the error.
+    fn receive_upcoming(&mut self, wait: bool) {
+        let Some(upcoming) = self.upcoming.as_mut() else {
+            return;
+        };
+        let Readiness::Working(receiver) = &upcoming.state else {
+            return;
+        };
+        let prepared = if wait {
+            receiver.recv().ok()
+        } else {
+            match receiver.try_recv() {
+                Ok(prepared) => Some(prepared),
+                Err(TryRecvError::Empty) => return,
+                Err(TryRecvError::Disconnected) => None,
+            }
+        };
+        let decoder = match prepared {
+            Some(Prepared::Video {
+                decoder,
+                frame,
+                following,
+            }) => {
+                if let Some(frame) = frame {
+                    self.cache
+                        .insert(upcoming.media, frame.time, following, frame.picture);
+                }
+                Some(decoder)
+            }
+            Some(Prepared::Still(picture)) => {
+                self.cache
+                    .insert(upcoming.media, MediaTime(0), Following::End, picture);
+                None
+            }
+            None => None,
+        };
+        upcoming.state = Readiness::Ready(decoder);
+    }
+
+    /// The upcoming clip comes into view: its decoder joins the pool, in place of any other
+    /// for the same media. A worker still busy with it is waited for, being the quickest way
+    /// to its frame.
+    fn take_upcoming(&mut self) {
+        self.receive_upcoming(true);
+        let Some(upcoming) = self.upcoming.take() else {
+            return;
+        };
+        if let Readiness::Ready(Some(decoder)) = upcoming.state {
+            self.decoders.retain(|open| open.media != upcoming.media);
+            self.decoders.push(OpenDecoder {
+                media: upcoming.media,
+                decoder,
+                large: false,
+                last_used: Instant::now(),
+            });
         }
     }
 
@@ -352,6 +645,19 @@ impl VideoThread {
         let Some(clip) = sequence.visible_video_at(frame) else {
             return Ok(Shown::Black);
         };
+        if self
+            .upcoming
+            .as_ref()
+            .is_some_and(|upcoming| upcoming.clip == clip.id)
+        {
+            self.take_upcoming();
+        }
+        let still = project
+            .media_ref(clip.media_id)
+            .is_some_and(|media| media.info.kind == MediaKind::Still);
+        if still {
+            return self.still(&project, clip.media_id, fetch);
+        }
         let (media, time) = (
             clip.media_id,
             clip.source_time_at(frame, sequence.frame_rate()),
@@ -367,7 +673,57 @@ impl VideoThread {
                 .map_or(Shown::Unknown, Shown::Picture)),
             Fetch::Decode => self.decode(&project, media, time),
             Fetch::Gop => self.decode_gop(&project, media, time),
+            Fetch::Keyframe => self.decode_keyframe(&project, media, time),
         }
+    }
+
+    /// Decodes the keyframe of `media` at or before `time` into the cache, without the
+    /// frames after it.
+    fn decode_keyframe(
+        &mut self,
+        project: &Project,
+        media: MediaId,
+        time: MediaTime,
+    ) -> Result<Shown, EngineError> {
+        let index = self.decoder(project, media)?;
+        let decoder = &mut self.decoders[index].decoder;
+        decoder.seek(time)?;
+        let Some(decoded) = decoder.next_frame()? else {
+            return Ok(Shown::Black);
+        };
+        let picture = self
+            .cache
+            .insert(media, decoded.time, Following::Unknown, decoded.picture);
+        Ok(Shown::Picture(picture))
+    }
+
+    /// The picture of the still `media`, at the size the sequence needs: cached once at time
+    /// 0, covering every time, and decoded again when that size changes. While `fetch` allows
+    /// no decoding, any cached size stands in.
+    fn still(
+        &mut self,
+        project: &Project,
+        media: MediaId,
+        fetch: Fetch,
+    ) -> Result<Shown, EngineError> {
+        let Some(media_ref) = project.media_ref(media) else {
+            return Ok(Shown::Black);
+        };
+        let size = still_size(&media_ref.info, project.sequence().resolution());
+        let cached = self.cache.get(media, MediaTime(0));
+        let decode = matches!(fetch, Fetch::Decode | Fetch::Gop);
+        match cached {
+            Some(picture) if (picture.width, picture.height) == size || !decode => {
+                return Ok(Shown::Picture(picture));
+            }
+            None if !decode => return Ok(Shown::Unknown),
+            _ => {}
+        }
+        let picture = dusk_media::decode_still(&media_ref.path, size)?;
+        let picture = self
+            .cache
+            .insert(media, MediaTime(0), Following::End, picture);
+        Ok(Shown::Picture(picture))
     }
 
     /// Decodes the frame of `media` shown at `time` into the cache.
@@ -390,21 +746,41 @@ impl VideoThread {
         Ok(Shown::Picture(picture))
     }
 
-    /// Decodes every frame of `media` from the keyframe before `time` up to the frame shown
-    /// at `time` into the cache, so that playing backwards finds the frames before it there.
+    /// Decodes the frames of `media` from the keyframe before `time` up to the frame shown at
+    /// `time` into the cache, so that playing backwards finds the frames before it there. Of
+    /// a group too long for half the cache, only the last frames that fit are kept; the ones
+    /// before them are decoded without a copy, and decoded again from the keyframe once
+    /// playback gets to them.
     fn decode_gop(
         &mut self,
         project: &Project,
         media: MediaId,
         time: MediaTime,
     ) -> Result<Shown, EngineError> {
+        // The length of a frame, from the snapped rate, to count frames back from `time`.
+        let frame = project
+            .media_ref(media)
+            .and_then(|media| media.info.frame_rate)
+            .map_or(MediaTime(33_333), |rate| frame_to_media(Frame(1), rate));
+        let cap = self.cache.cap();
         let index = self.decoder(project, media)?;
         let decoder = &mut self.decoders[index].decoder;
         decoder.seek(time)?;
-        let mut at = match decoder.next_frame()? {
-            Some(first) if first.time <= time => first.time,
+        let first = match decoder.next_frame()? {
+            Some(first) if first.time <= time => first,
             _ => return Ok(Shown::Black),
         };
+        let start = reverse_window(time, first.picture.byte_size(), cap, frame);
+        let mut at = first.time;
+        if at < start {
+            at = loop {
+                match decoder.step_to(start)? {
+                    Step::Working => {}
+                    Step::Done(Some(frame)) => break frame.time,
+                    Step::Done(None) => return Ok(Shown::Black),
+                }
+            };
+        }
         loop {
             let Some(decoded) = decoder.frame_at(at)? else {
                 return Ok(Shown::Black);
@@ -433,14 +809,14 @@ impl VideoThread {
                 reason: "the project lists a clip without its media file",
             });
         };
-        let info = &media_ref.info;
-        let large = u64::from(info.width) * u64::from(info.height) > LARGE_FRAME;
-        // At most two video decoders, or one for a source above the 1080p class
-        // (docs/ARCHITECTURE.md, "Decoder pool").
+        let large = is_large(&media_ref.info);
+        // At most two video decoders, the upcoming clip's included, or one for a source above
+        // the 1080p class (docs/ARCHITECTURE.md, "Decoder pool").
         if large || self.decoders.iter().any(|open| open.large) {
             self.decoders.clear();
+            self.upcoming = None;
         }
-        while self.decoders.len() >= 2 {
+        while self.decoders_open() >= 2 && !self.decoders.is_empty() {
             let oldest = (0..self.decoders.len())
                 .min_by_key(|index| self.decoders[*index].last_used)
                 .unwrap_or(0);
@@ -455,7 +831,7 @@ impl VideoThread {
             last_used: now,
         });
         self.open_decoders
-            .store(self.decoders.len(), Ordering::Relaxed);
+            .store(self.decoders_open(), Ordering::Relaxed);
         Ok(self.decoders.len() - 1)
     }
 
@@ -463,15 +839,28 @@ impl VideoThread {
     /// or a stand-in while scrubbing.
     fn present(&mut self, frame: Frame, shown: Shown, exact: bool) {
         self.target = Some(frame);
-        let texture = match shown {
-            Shown::Unknown => return,
-            Shown::Black => None,
-            // Nothing to draw into before the preview has a size.
-            Shown::Picture(_) if self.size.0 == 0 || self.size.1 == 0 => return,
-            Shown::Picture(picture) => match self.compositor.render(&picture, self.size) {
-                Ok(texture) => Some(texture),
-                Err(error) => return self.fail(error.into()),
-            },
+        // Nothing to draw into before the preview has a size.
+        if matches!(shown, Shown::Unknown) || self.size.0 == 0 || self.size.1 == 0 {
+            return;
+        }
+        // The sequence's frame, as large as fits in the preview; the preview's own
+        // background shows around it.
+        let project = self.project.as_deref();
+        let size = project.map_or(self.size, |project| {
+            fit_size(project.sequence().resolution(), self.size)
+        });
+        let drawn = match shown {
+            Shown::Picture(picture) => {
+                let placement = project
+                    .map(|project| placement_at(project, frame))
+                    .unwrap_or_default();
+                self.compositor.render_placed(&picture, &placement, size)
+            }
+            Shown::Black | Shown::Unknown => self.compositor.blank(size),
+        };
+        let texture = match drawn {
+            Ok(texture) => Some(texture),
+            Err(error) => return self.fail(error.into()),
         };
         self.shown_exactly = exact.then_some(frame);
         (self.report)(EngineEvent::Frame { frame, texture });
@@ -479,5 +868,47 @@ impl VideoThread {
 
     fn fail(&self, error: EngineError) {
         (self.report)(EngineEvent::Error(error));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn kind(fetch: Fetch) -> &'static str {
+        match fetch {
+            Fetch::Cached => "cached",
+            Fetch::Nearest => "nearest",
+            Fetch::Decode => "every frame",
+            Fetch::Gop => "groups of pictures",
+            Fetch::Keyframe => "keyframes",
+        }
+    }
+
+    #[test]
+    fn a_long_group_keeps_only_what_fits_in_half_the_cache() {
+        let frame = MediaTime(33_333);
+        // 10 MB of cache, 1 MB frames: 5 frames, the one asked for and 4 before it.
+        let start = reverse_window(MediaTime(1_000_000), 1_000_000, 10_000_000, frame);
+        assert_eq!(start, MediaTime(1_000_000 - 4 * 33_333));
+        // Always at least the frame asked for.
+        let start = reverse_window(MediaTime(1_000_000), 8_000_000, 10_000_000, frame);
+        assert_eq!(start, MediaTime(1_000_000));
+    }
+
+    #[test]
+    fn fast_playback_takes_only_keyframes() {
+        let cases = [
+            (1.0, "every frame"),
+            (8.0, "every frame"),
+            (16.0, "keyframes"),
+            (0.1, "every frame"),
+            (-1.0, "groups of pictures"),
+            (-2.0, "groups of pictures"),
+            (-4.0, "keyframes"),
+        ];
+        for (rate, expected) in cases {
+            assert_eq!(kind(playback_fetch(rate)), expected, "at {rate}x");
+        }
     }
 }

@@ -8,10 +8,12 @@ use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, mpsc};
 
-use dusk_core::{ColorMatrix, ColorRange, Picture, PictureLayout};
+use dusk_core::color::{self, Primaries, Transfer};
+use dusk_core::{Picture, PictureLayout};
 use wgpu::util::DeviceExt;
 
 use crate::Gpu;
+use crate::placement::{FrameRect, Placement, mapping};
 
 /// Why a picture could not be rendered.
 #[derive(Debug, thiserror::Error)]
@@ -205,6 +207,17 @@ impl Compositor {
         picture: &Picture,
         size: (u32, u32),
     ) -> Result<wgpu::Texture, RenderError> {
+        self.render_placed(picture, &Placement::default(), size)
+    }
+
+    /// Draws `picture` in a frame of `size` as `placement` says: turned upright, cropped,
+    /// turned and mirrored as its clip says, and fitted between bars or filling the frame.
+    pub fn render_placed(
+        &self,
+        picture: &Picture,
+        placement: &Placement,
+        size: (u32, u32),
+    ) -> Result<wgpu::Texture, RenderError> {
         let limit = self.gpu.device.limits().max_texture_dimension_2d;
         for (width, height) in [(picture.width, picture.height), size] {
             if width == 0 || height == 0 || width > limit || height > limit {
@@ -225,7 +238,7 @@ impl Compositor {
             return Err(RenderError::Malformed);
         }
 
-        let rect = fit((picture.width, picture.height), size);
+        let map = mapping((picture.width, picture.height), placement, size);
         let ten_bit = picture.layout == PictureLayout::P010;
         let (luma_format, chroma_format) = if ten_bit {
             (wgpu::TextureFormat::R16Uint, wgpu::TextureFormat::Rg16Uint)
@@ -242,39 +255,57 @@ impl Compositor {
             ),
         ];
         let ([luma, chroma], upload) = self.upload(&mut encoder, planes)?;
-        // Each plane is resampled across into an intermediate as tall as the plane; the final
-        // pass resamples both down and converts to RGB.
+        // Each plane is resampled along the source axis that output x follows, into an
+        // intermediate as long as the plane is along the other axis; the final pass
+        // resamples both along that other axis and converts to RGB.
+        let (luma_rows, chroma_rows) = if map.transposed {
+            (picture.width, chroma_width)
+        } else {
+            (picture.height, chroma_height)
+        };
         let intermediate =
             wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING;
         let luma_across = self.spare(
-            (rect.width, picture.height),
+            (map.rect.width, luma_rows),
             INTERMEDIATE[LUMA],
             intermediate,
         );
         let chroma_across = self.spare(
-            (rect.width, chroma_height),
+            (map.rect.width, chroma_rows),
             INTERMEDIATE[CHROMA],
             intermediate,
         );
         let frame = self.frame(size);
 
-        // Source texels per output texel. 4:2:0 chroma is sited left (MPEG-2): horizontally
-        // on the even luma columns, a quarter chroma texel right of where centered chroma
-        // would be, and vertically halfway between two luma rows.
-        let across = picture.width as f32 / rect.width as f32;
-        let down = picture.height as f32 / rect.height as f32;
+        // The shown part of the source along each pass's axis.
+        let (x_min, x_max, y_min, y_max) = map.window;
+        let (across_window, down_window) = if map.transposed {
+            ((y_min, y_max), (x_min, x_max))
+        } else {
+            ((x_min, x_max), (y_min, y_max))
+        };
+        // 4:2:0 chroma has half as many texels each way. It is sited left (MPEG-2): along
+        // the source's x a chroma texel sits on the even luma columns, a quarter of a chroma
+        // texel right of centered; along its y it sits halfway between two luma rows.
+        let half = |(min, max): (u32, u32)| (min / 2, max.div_ceil(2));
+        let siting = |along_x: bool| if along_x { 0.25 } else { 0.0 };
         let passes = [
             (
                 &luma,
                 &luma_across,
                 LUMA,
-                Pass::new(picture.width, across, 0.0),
+                Pass::new(across_window, map.x_step, map.x_origin, map.transposed),
             ),
             (
                 &chroma,
                 &chroma_across,
                 CHROMA,
-                Pass::new(chroma_width, across / 2.0, 0.25),
+                Pass::new(
+                    half(across_window),
+                    map.x_step / 2.0,
+                    map.x_origin / 2.0 + siting(!map.transposed),
+                    map.transposed,
+                ),
             ),
         ];
         for (source, target, plane, pass) in passes {
@@ -289,10 +320,17 @@ impl Compositor {
         }
         let bits = if ten_bit { 10 } else { 8 };
         let convert = Convert {
-            rect,
-            to_rgb: yuv_to_rgb(picture.matrix, picture.range, bits),
-            luma_down: Pass::new(picture.height, down, 0.0),
-            chroma_down: Pass::new(chroma_height, down / 2.0, 0.0),
+            rect: map.rect,
+            to_rgb: dusk_core::yuv_to_rgb(picture.matrix, picture.range, bits)
+                .map(|row| row.map(|factor| factor as f32)),
+            color: ColorStep::of(picture),
+            luma_down: Pass::new(down_window, map.y_step, map.y_origin, false),
+            chroma_down: Pass::new(
+                half(down_window),
+                map.y_step / 2.0,
+                map.y_origin / 2.0 + siting(map.transposed),
+                false,
+            ),
         };
         let uniforms = self.uniforms(&convert.bytes());
         let bind_group = self.bind_group(
@@ -652,36 +690,47 @@ pub(crate) fn draw(
     pass.draw(0..3, 0..1);
 }
 
-/// One direction of resampling: how many texels the source has along it, how many source
-/// texels one output texel covers, and the source offset (chroma siting).
+/// One direction of resampling: the source texels it may read, how many source texels one
+/// output texel covers (negative where mirrored), where the output's edge falls in the source
+/// (crop and chroma siting), and whether it reads down the source's columns.
 #[derive(Clone, Copy)]
 struct Pass {
-    source_texels: u32,
+    window: (u32, u32),
     step: f32,
     offset: f32,
+    transposed: bool,
 }
 
 impl Pass {
-    fn new(source_texels: u32, step: f32, offset: f32) -> Pass {
+    fn new(window: (u32, u32), step: f32, offset: f32, transposed: bool) -> Pass {
         Pass {
-            source_texels,
+            window,
             step,
             offset,
+            transposed,
         }
     }
 
     /// Kernel scale: a downscale widens the kernel so it does not alias.
     fn scale(&self) -> f32 {
-        self.step.max(1.0)
+        self.step.abs().max(1.0)
+    }
+
+    /// The window's ends as the shader takes them.
+    fn ends(&self) -> [[u8; 4]; 2] {
+        [self.window.0, self.window.1].map(|end| (end as i32).to_le_bytes())
     }
 
     /// The shader's `Resample` uniform.
     fn bytes(&self) -> Vec<u8> {
+        let [min, max] = self.ends();
         [
-            &(self.source_texels as i32).to_le_bytes()[..],
+            &min[..],
+            &max,
             &self.step.to_le_bytes(),
             &self.offset.to_le_bytes(),
             &self.scale().to_le_bytes(),
+            &i32::from(self.transposed).to_le_bytes(),
         ]
         .concat()
     }
@@ -689,15 +738,74 @@ impl Pass {
 
 /// The final pass, as the shader's `Convert` uniform.
 struct Convert {
-    rect: Rect,
+    rect: FrameRect,
     to_rgb: [[f32; 4]; 3],
+    color: ColorStep,
     luma_down: Pass,
     chroma_down: Pass,
 }
 
+/// Color step 3 for a picture (docs/ARCHITECTURE.md): skipped for BT.709 SDR; otherwise the
+/// picture's light is moved into BT.709, tone-mapped first when it is HDR.
+struct ColorStep {
+    /// 0 skips the step, 1 is SDR with other primaries, 2 is PQ and 3 HLG.
+    kind: i32,
+    srgb: bool,
+    peak_nits: f32,
+    peak_pq: f32,
+    knee: f32,
+    max_lum: f32,
+    gamut: [[f64; 3]; 3],
+}
+
+impl ColorStep {
+    fn of(picture: &Picture) -> ColorStep {
+        let kind = match picture.transfer {
+            Transfer::Pq => 2,
+            Transfer::Hlg => 3,
+            _ if picture.primaries != Primaries::Bt709 => 1,
+            _ => 0,
+        };
+        // HLG is shown at its 1000-nit reference; PQ peaks where its metadata says.
+        let peak = match picture.transfer {
+            Transfer::Pq if picture.peak_nits > 0 => f64::from(picture.peak_nits),
+            _ => color::DEFAULT_HDR_PEAK,
+        };
+        let peak_pq = color::nits_to_pq(peak);
+        let max_lum = color::nits_to_pq(color::SDR_PEAK) / peak_pq;
+        ColorStep {
+            kind,
+            srgb: picture.transfer == Transfer::Srgb,
+            peak_nits: peak as f32,
+            peak_pq: peak_pq as f32,
+            knee: (1.5 * max_lum - 0.5) as f32,
+            max_lum: max_lum as f32,
+            gamut: color::to_bt709(picture.primaries),
+        }
+    }
+
+    /// The shader's fields, from `color_step` to `gamut_b`, with the padding before the
+    /// rows, which WGSL aligns to 16 bytes.
+    fn bytes(&self) -> Vec<u8> {
+        let integers = [self.kind, i32::from(self.srgb)].map(i32::to_le_bytes);
+        let floats = [self.peak_nits, self.peak_pq, self.knee, self.max_lum].map(f32::to_le_bytes);
+        let rows = self
+            .gamut
+            .iter()
+            .flat_map(|row| [row[0] as f32, row[1] as f32, row[2] as f32, 0.0])
+            .map(f32::to_le_bytes);
+        integers
+            .into_iter()
+            .chain(floats)
+            .chain(rows)
+            .flatten()
+            .collect()
+    }
+}
+
 impl Convert {
     fn bytes(&self) -> Vec<u8> {
-        let Rect {
+        let FrameRect {
             x,
             y,
             width,
@@ -706,7 +814,7 @@ impl Convert {
         let corners = [x, y, x + width, y + height].map(|v| (v as i32).to_le_bytes());
         let rows = self.to_rgb.iter().flatten().map(|v| v.to_le_bytes());
         let (luma, chroma) = (self.luma_down, self.chroma_down);
-        let counts = [luma.source_texels, chroma.source_texels].map(|v| (v as i32).to_le_bytes());
+        let windows = [luma.ends(), chroma.ends()].into_iter().flatten();
         let down = [
             luma.step,
             luma.offset,
@@ -716,158 +824,14 @@ impl Convert {
             chroma.scale(),
         ]
         .map(f32::to_le_bytes);
-        corners
+        let mut bytes: Vec<u8> = corners
             .into_iter()
             .chain(rows)
-            .chain(counts)
+            .chain(windows)
             .chain(down)
             .flatten()
-            .collect()
-    }
-}
-
-/// Where a picture lands in the frame, in frame pixels.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct Rect {
-    x: u32,
-    y: u32,
-    width: u32,
-    height: u32,
-}
-
-/// Where a picture of size `picture` lands in a frame of size `frame`: aspect ratio kept,
-/// centered, at least one pixel each way.
-fn fit(picture: (u32, u32), frame: (u32, u32)) -> Rect {
-    let (picture_width, picture_height) = (u64::from(picture.0), u64::from(picture.1));
-    let (frame_width, frame_height) = (u64::from(frame.0), u64::from(frame.1));
-    let (width, height) = if picture_width * frame_height >= frame_width * picture_height {
-        let height = (picture_height * frame_width + picture_width / 2) / picture_width;
-        (frame_width, height.clamp(1, frame_height))
-    } else {
-        let width = (picture_width * frame_height + picture_height / 2) / picture_height;
-        (width.clamp(1, frame_width), frame_height)
-    };
-    // Every value is at most the frame's size, which is a u32.
-    Rect {
-        x: ((frame_width - width) / 2) as u32,
-        y: ((frame_height - height) / 2) as u32,
-        width: width as u32,
-        height: height as u32,
-    }
-}
-
-/// The rows that turn (Y, U, V, 1), in codes of a `bits`-deep picture, into R', G' and B'
-/// from 0 to 1.
-fn yuv_to_rgb(matrix: ColorMatrix, range: ColorRange, bits: u32) -> [[f32; 4]; 3] {
-    let (kr, kb) = match matrix {
-        ColorMatrix::Bt601 => (0.299, 0.114),
-        ColorMatrix::Bt709 => (0.2126, 0.0722),
-        ColorMatrix::Bt2020 => (0.2627, 0.0593),
-    };
-    let kg = 1.0 - kr - kb;
-    let max = f64::from((1u32 << bits) - 1);
-    let k = f64::from(1u32 << (bits - 8));
-    // Y' = (Y - y_zero) / y_span; Cb and Cr = (U or V - c_zero) / c_span.
-    let (y_zero, y_span, c_zero, c_span) = match range {
-        ColorRange::Limited => (16.0 * k, 219.0 * k, 128.0 * k, 224.0 * k),
-        ColorRange::Full => (0.0, max, f64::from(1u32 << (bits - 1)), max),
-    };
-    let rows: [[f64; 3]; 3] = [
-        [1.0, 0.0, 2.0 * (1.0 - kr)],
-        [
-            1.0,
-            -2.0 * kb * (1.0 - kb) / kg,
-            -2.0 * kr * (1.0 - kr) / kg,
-        ],
-        [1.0, 2.0 * (1.0 - kb), 0.0],
-    ];
-    rows.map(|[y, cb, cr]| {
-        let (y, cb, cr) = (y / y_span, cb / c_span, cr / c_span);
-        let constant = -y * y_zero - (cb + cr) * c_zero;
-        [y as f32, cb as f32, cr as f32, constant as f32]
-    })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn rect(x: u32, y: u32, width: u32, height: u32) -> Rect {
-        Rect {
-            x,
-            y,
-            width,
-            height,
-        }
-    }
-
-    #[test]
-    fn a_picture_with_the_frames_shape_fills_it() {
-        assert_eq!(fit((1920, 1080), (960, 540)), rect(0, 0, 960, 540));
-    }
-
-    #[test]
-    fn a_wider_picture_gets_bars_above_and_below() {
-        assert_eq!(fit((64, 32), (64, 64)), rect(0, 16, 64, 32));
-        assert_eq!(fit((2560, 1080), (1920, 1080)), rect(0, 135, 1920, 810));
-    }
-
-    #[test]
-    fn a_taller_picture_gets_bars_left_and_right() {
-        assert_eq!(fit((1080, 1920), (1920, 1080)), rect(656, 0, 608, 1080));
-    }
-
-    #[test]
-    fn a_tiny_picture_still_covers_a_pixel() {
-        assert_eq!(fit((10_000, 1), (100, 100)).height, 1);
-    }
-
-    fn apply(rows: [[f32; 4]; 3], yuv: [f32; 3]) -> [f32; 3] {
-        rows.map(|[a, b, c, d]| a * yuv[0] + b * yuv[1] + c * yuv[2] + d)
-    }
-
-    fn near(actual: [f32; 3], expected: [f32; 3], tolerance: f32) -> bool {
-        actual
-            .iter()
-            .zip(expected)
-            .all(|(a, e)| (a - e).abs() <= tolerance)
-    }
-
-    #[test]
-    fn limited_range_maps_16_and_235_to_black_and_white() {
-        let rows = yuv_to_rgb(ColorMatrix::Bt709, ColorRange::Limited, 8);
-        assert!(near(apply(rows, [16.0, 128.0, 128.0]), [0.0; 3], 1e-6));
-        assert!(near(apply(rows, [235.0, 128.0, 128.0]), [1.0; 3], 1e-6));
-    }
-
-    #[test]
-    fn the_textbook_reds_come_out_red() {
-        let bt601 = yuv_to_rgb(ColorMatrix::Bt601, ColorRange::Limited, 8);
-        let bt709 = yuv_to_rgb(ColorMatrix::Bt709, ColorRange::Limited, 8);
-        assert!(near(
-            apply(bt601, [81.0, 90.0, 240.0]),
-            [1.0, 0.0, 0.0],
-            0.01
-        ));
-        assert!(near(
-            apply(bt709, [63.0, 102.0, 240.0]),
-            [1.0, 0.0, 0.0],
-            0.01
-        ));
-    }
-
-    #[test]
-    fn ten_bit_codes_are_four_times_eight_bit_ones() {
-        let eight = yuv_to_rgb(ColorMatrix::Bt709, ColorRange::Limited, 8);
-        let ten = yuv_to_rgb(ColorMatrix::Bt709, ColorRange::Limited, 10);
-        let rgb = apply(eight, [63.0, 102.0, 240.0]);
-        assert!(near(apply(ten, [252.0, 408.0, 960.0]), rgb, 1e-5));
-    }
-
-    #[test]
-    fn full_range_spans_every_code() {
-        let rows = yuv_to_rgb(ColorMatrix::Bt601, ColorRange::Full, 8);
-        assert!(near(apply(rows, [0.0, 128.0, 128.0]), [0.0; 3], 1e-6));
-        assert!(near(apply(rows, [255.0, 128.0, 128.0]), [1.0; 3], 1e-6));
+            .collect();
+        bytes.extend(self.color.bytes());
+        bytes
     }
 }

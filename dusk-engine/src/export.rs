@@ -11,13 +11,15 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use dusk_core::time::frame_to_media;
-use dusk_core::{Frame, MediaId, MediaTime, Picture, Project, TrackKind};
+use dusk_core::{Frame, MediaId, MediaKind, MediaTime, Picture, Project, TrackKind};
 use dusk_media::{Acceleration, AudioSettings, Mp4Writer, VideoDecoder, VideoSettings};
 use dusk_render::{Compositor, Gpu, ToYuv};
 
 use crate::EngineError;
 use crate::engine::{EngineEvent, Report};
+use crate::info::still_size;
 use crate::mixer::Mixer;
+use crate::placement::placement_at;
 
 /// What an export reports, as [`EngineEvent::Export`].
 #[derive(Debug)]
@@ -173,7 +175,10 @@ fn write(
             return Ok(None);
         }
         let texture = match decoders.picture(project, Frame(frame))? {
-            Some(picture) => compositor.render(&picture, size)?,
+            Some(picture) => {
+                let placement = placement_at(project, Frame(frame));
+                compositor.render_placed(&picture, &placement, size)?
+            }
             None => compositor.blank(size)?,
         };
         writer.write_video(&to_yuv.convert(&texture)?)?;
@@ -198,19 +203,39 @@ fn write(
 }
 
 /// The export's own decoders, at most two open (docs/ARCHITECTURE.md, "Decoder pool"). An
-/// export decodes every frame in order, so each frame is used once and never cached.
+/// export decodes every frame in order, so each video frame is used once and never cached;
+/// the still shown last is kept, since it shows for many frames.
 #[derive(Default)]
 struct Decoders {
     open: Vec<(MediaId, VideoDecoder)>,
+    still: Option<(MediaId, Arc<Picture>)>,
 }
 
 impl Decoders {
     /// The picture shown at `frame`, or `None` where it is black.
-    fn picture(&mut self, project: &Project, frame: Frame) -> Result<Option<Picture>, EngineError> {
+    fn picture(
+        &mut self,
+        project: &Project,
+        frame: Frame,
+    ) -> Result<Option<Arc<Picture>>, EngineError> {
         let sequence = project.sequence();
         let Some(clip) = sequence.visible_video_at(frame) else {
             return Ok(None);
         };
+        if let Some(media) = project
+            .media_ref(clip.media_id)
+            .filter(|media| media.info.kind == MediaKind::Still)
+        {
+            if let Some((id, picture)) = &self.still
+                && *id == media.id
+            {
+                return Ok(Some(Arc::clone(picture)));
+            }
+            let size = still_size(&media.info, sequence.resolution());
+            let picture = Arc::new(dusk_media::decode_still(&media.path, size)?);
+            self.still = Some((media.id, Arc::clone(&picture)));
+            return Ok(Some(picture));
+        }
         let time = clip.source_time_at(frame, sequence.frame_rate());
         let index = match self
             .open
@@ -231,6 +256,6 @@ impl Decoders {
             }
         };
         let decoded = self.open[index].1.frame_at(time)?;
-        Ok(decoded.map(|decoded| decoded.picture))
+        Ok(decoded.map(|decoded| Arc::new(decoded.picture)))
     }
 }

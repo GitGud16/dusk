@@ -3,17 +3,25 @@
 //!
 //! Depends only on `serde`; no FFmpeg, wgpu, Slint or I/O (see docs/ARCHITECTURE.md).
 
+pub mod color;
 mod command;
+pub mod file;
 mod import;
 mod model;
+mod orientation;
 mod picture;
 pub mod time;
 
-pub use command::{Command, Edge, InsertClips, Notice, Rejection, TrimClips};
-pub use import::import;
-pub use model::{
-    AudioEdits, Clip, ClipEdits, ClipId, FreshIds, LinkId, MediaId, MediaInfo, MediaKind, MediaRef,
-    Project, Sequence, Track, TrackId, TrackKind, VideoEdits,
+pub use command::{
+    Command, Edge, InsertClips, MoveClips, Notice, Rejection, RemoveClips, SEQUENCE_SIDES,
+    SetAudioEdits, SetClipEnabled, SetSequenceSettings, SetTrackLocked, SetTrackMuted,
+    SetVideoEdits, SplitClips, TrimClips, Unlink, nearest_free_position, remove_one, split_at,
 };
-pub use picture::{ColorMatrix, ColorRange, Picture, PictureLayout};
+pub use import::{STILL_LENGTH, add_media, import, nearest_free_place, place, place_where_free};
+pub use model::{
+    AudioEdits, Clip, ClipEdits, ClipId, Fit, FreshIds, LinkId, MediaId, MediaInfo, MediaKind,
+    MediaRef, Project, Rect, Rotation, Sequence, Track, TrackId, TrackKind, VideoEdits,
+};
+pub use orientation::Orientation;
+pub use picture::{ColorMatrix, ColorRange, Picture, PictureLayout, yuv_to_rgb};
 pub use time::{Frame, MediaTime, Rational};

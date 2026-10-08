@@ -72,6 +72,11 @@ impl FrameCache {
         Some(Arc::clone(&entry.picture))
     }
 
+    /// The most bytes of pictures it holds.
+    pub fn cap(&self) -> usize {
+        self.cap
+    }
+
     /// Keeps the frame of `media` that starts at `time`, followed by `following`, and makes
     /// room for it by dropping the least recently used frames.
     pub fn insert(
@@ -142,6 +147,9 @@ mod tests {
             layout: PictureLayout::Nv12,
             matrix: ColorMatrix::Bt709,
             range: ColorRange::Limited,
+            primaries: dusk_core::color::Primaries::Bt709,
+            transfer: dusk_core::color::Transfer::Bt1886,
+            peak_nits: 0,
             luma: vec![shade; 256],
             chroma: vec![128; 128],
         }

@@ -13,7 +13,11 @@ mod info;
 #[cfg(feature = "gpu")]
 mod mixer;
 #[cfg(feature = "gpu")]
+mod placement;
+#[cfg(feature = "gpu")]
 mod sound;
+#[cfg(feature = "gpu")]
+mod thumbnail;
 #[cfg(feature = "gpu")]
 mod video;
 
@@ -25,3 +29,5 @@ pub use error::EngineError;
 #[cfg(feature = "gpu")]
 pub use export::{ExportEvent, ExportJob};
 pub use info::media_info;
+#[cfg(feature = "gpu")]
+pub use thumbnail::{THUMBNAIL_SIDE, Thumbnail, thumbnail_of};

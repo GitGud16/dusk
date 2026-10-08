@@ -5,18 +5,27 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod app;
+mod document;
+mod editing;
 mod files;
 mod history;
+mod platform;
+mod recovery;
 mod shortcuts;
+mod speed;
 mod stats;
+mod thumbnails;
 mod timeline;
 
 use std::path::PathBuf;
 
 use anyhow::anyhow;
 use dusk_engine::{Engine, EngineOptions, Gpu};
+use slint::{CloseRequestResponse, ComponentHandle};
 
 use crate::app::{App, with_app};
+use crate::document::AUTOSAVE_EVERY;
+use crate::files::Worker;
 use crate::shortcuts::SHORTCUTS;
 
 slint::include_modules!();
@@ -35,17 +44,9 @@ fn main() -> anyhow::Result<()> {
     let gpu: &'static Gpu = Box::leak(Box::new(select_renderer()?));
     let window = MainWindow::new()?;
     let engine = Engine::new(gpu, EngineOptions::default(), app::engine_events())?;
-    app::install(App::new(&window, engine));
+    let files = Worker::start().map_err(|e| anyhow!("Dusk could not start a thread: {e}."))?;
+    app::install(App::new(&window, engine, files));
     connect(&window);
-
-    // M1 opens one clip from the command line (docs/ROADMAP.md); the media bin comes in M2.
-    match std::env::args_os().nth(1) {
-        Some(path) => {
-            with_app(|app| app.open(PathBuf::from(path)));
-        }
-        None => window
-            .set_preview_message("Open a clip by starting Dusk with it: dusk.exe clip.mp4".into()),
-    }
     window.show()?;
     // The preview and the timeline have their sizes now that the window is shown.
     with_app(|app| {
@@ -55,8 +56,17 @@ fn main() -> anyhow::Result<()> {
         );
         app.timeline_resized(window.get_timeline_width());
     });
+    // Files named on the command line: a project to open, or media to import and place.
+    let named: Vec<PathBuf> = std::env::args_os().skip(1).map(PathBuf::from).collect();
+    with_app(|app| app.start(named));
+    let autosave = slint::Timer::default();
+    autosave.start(slint::TimerMode::Repeated, AUTOSAVE_EVERY, || {
+        with_app(App::autosave);
+    });
     slint::run_event_loop()?;
+    drop(autosave);
     window.hide()?;
+    with_app(App::shut_down);
     app::uninstall();
     Ok(())
 }
@@ -75,17 +85,74 @@ fn connect(window: &MainWindow) {
     window.on_scrub_end(|frame| {
         with_app(|app| app.scrub_end(frame));
     });
+    window.on_select_clip(|clip| {
+        with_app(|app| app.select_clip(clip));
+    });
     window.on_trim(|clip, start, frame| {
         with_app(|app| app.trim(clip, start, frame));
+    });
+    window.on_snap_move(|clip, frame, row| {
+        with_app(|app| app.snap_move(clip, frame, row)).unwrap_or(-1)
+    });
+    window.on_move_clip(|clip, frame, row| {
+        with_app(|app| app.move_clip(clip, frame, row));
+    });
+    window.on_toggle_lock(|track| {
+        with_app(|app| app.toggle_track_by_id(track, true));
+    });
+    window.on_toggle_mute(|track| {
+        with_app(|app| app.toggle_track_by_id(track, false));
+    });
+    window.on_scroll_by(|frames| {
+        with_app(|app| app.scroll_by(frames));
+    });
+    window.on_zoom_by(|factor, frame| {
+        with_app(|app| app.zoom_by(factor, dusk_core::Frame(frame.into())));
+    });
+    window.on_select_media(|media| {
+        with_app(|app| app.select_media(media));
+    });
+    window.on_place_media_at_playhead(|media| {
+        with_app(|app| app.place_media_at_playhead(media));
+    });
+    window.on_snap_place(|media, row, frame| {
+        with_app(|app| app.snap_place(media, row, frame)).unwrap_or(-1)
+    });
+    window.on_place_media(|media, row, frame| {
+        with_app(|app| app.place_media(media, row, frame));
+    });
+    window.on_media_item(|media| with_app(|app| app.media_view(media)).unwrap_or_default());
+    window.on_set_clip_enabled(|enabled| {
+        with_app(|app| app.set_clip_enabled(enabled));
+    });
+    window.on_set_clip_fill(|fill| {
+        with_app(|app| app.set_clip_fill(fill));
+    });
+    window.on_set_clip_length(|frames| {
+        with_app(|app| app.set_clip_length(frames));
+    });
+    window.on_set_clip_volume(|decibels| {
+        with_app(|app| app.set_clip_volume(decibels));
+    });
+    window.on_set_clip_fades(|fade_in, fade_out| {
+        with_app(|app| app.set_clip_fades(fade_in, fade_out));
+    });
+    window.on_unlink_clip(|| {
+        with_app(App::unlink);
     });
     window.on_play_pause(|| {
         with_app(App::play_pause);
     });
-    window.on_export(|| {
-        with_app(App::export);
+    window.on_prompt_answered(|index| {
+        with_app(|app| app.answer(usize::try_from(index).unwrap_or(usize::MAX)));
     });
-    window.on_cancel_export(|| {
-        with_app(App::cancel_export);
+    window.on_sequence_settings_done(|apply, rate, width, height| {
+        with_app(|app| app.sequence_settings_done(apply, rate, width, height));
+    });
+    window.on_action(|name| {
+        if let Some(action) = shortcuts::action_named(&name) {
+            with_app(|app| app.act(action));
+        }
     });
     let list: Vec<ShortcutView> = SHORTCUTS
         .iter()
@@ -96,12 +163,28 @@ fn connect(window: &MainWindow) {
         .collect();
     window.set_shortcuts(std::rc::Rc::new(slint::VecModel::from(list)).into());
     window.on_key(|text, ctrl, shift, alt| {
-        let Some(action) = shortcuts::action_for(&text, ctrl, shift, alt) else {
-            return false;
-        };
-        with_app(|app| app.act(action));
-        true
+        with_app(|app| app.key(&text, ctrl, shift, alt)).unwrap_or(false)
     });
+    // Closing the window asks about unsaved changes first.
+    window.window().on_close_requested(|| {
+        if with_app(App::may_close).unwrap_or(true) {
+            CloseRequestResponse::HideWindow
+        } else {
+            CloseRequestResponse::KeepWindowShown
+        }
+    });
+    let weak = window.as_weak();
+    platform::watch_window(
+        window.window(),
+        |paths| {
+            with_app(|app| app.import_dropped(paths));
+        },
+        move |hovering| {
+            if let Some(window) = weak.upgrade() {
+                window.set_files_hovering(hovering);
+            }
+        },
+    );
 }
 
 /// Creates Dusk's GPU device and has Slint's FemtoVG renderer use it, so the compositor and

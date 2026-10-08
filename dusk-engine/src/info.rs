@@ -5,18 +5,80 @@ use std::path::Path;
 
 use dusk_core::time::{STANDARD_RATES, snap_to_standard};
 use dusk_core::{MediaInfo, MediaKind, MediaTime, Rational};
-use dusk_media::{ProbeInfo, StreamDetail, StreamKind};
+use dusk_media::{HUGE_FRAME, ProbeInfo, StillInfo, StreamDetail, StreamKind};
 
 use crate::EngineError;
 
 /// Probes the local file at `path` and describes it for the project.
 pub fn media_info(path: &Path) -> Result<MediaInfo, EngineError> {
     let probe = dusk_media::probe(path)?;
-    describe(&probe).map_err(|reason| EngineError::Unsupported {
+    let described = if dusk_media::is_still(&probe) {
+        // A photo's orientation is only on its decoded picture.
+        describe_still(&dusk_media::still_info(path)?)
+    } else {
+        describe(&probe)
+    };
+    described.map_err(|reason| EngineError::Unsupported {
         path: path.to_path_buf(),
         reason,
     })
 }
+
+/// What the decoder of one source above the 1080p class may take (docs/REQUIREMENTS.md: the
+/// measured ceiling of about 550 MB).
+const LARGE_DECODER_CEILING: u64 = 550_000_000;
+
+/// The pictures a decoder of a source above [`HUGE_FRAME`] holds at once: up to 6 references
+/// and pictures waiting to be shown, the most a conforming stream may keep at that size, and
+/// the 3 Dusk holds while stepping through them (docs/ARCHITECTURE.md, "Decoder pool").
+const HUGE_PICTURES_HELD: u64 = 9;
+
+/// The most memory decoding one still may take: half the default frame cache cap
+/// (docs/ARCHITECTURE.md, "Decoder pool"), since the decode is a transient inside the cap.
+pub(crate) const STILL_PEAK_LIMIT: u64 = 192 * 1024 * 1024;
+
+/// Describes a still image, or says why Dusk cannot use it.
+fn describe_still(still: &StillInfo) -> Result<MediaInfo, &'static str> {
+    if still.peak_bytes > STILL_PEAK_LIMIT {
+        return Err(
+            "it is too large to decode within the memory Dusk keeps for pictures; save a smaller copy and import that",
+        );
+    }
+    let (width, height) = still.orientation.apply_to_size((still.width, still.height));
+    Ok(MediaInfo {
+        kind: MediaKind::Still,
+        duration: MediaTime(0),
+        has_video: true,
+        has_audio: false,
+        frame_rate: None,
+        vfr: false,
+        width,
+        height,
+        orientation: still.orientation,
+    })
+}
+
+/// The size, as stored, a still described by `info` is decoded at for a sequence of `frame`
+/// size: enough to cover the frame whether it fits or fills, never more pixels than the photo
+/// has, and no side over [`TEXTURE_LIMIT`].
+// The preview and export draw stills; both come with the `gpu` feature.
+#[cfg_attr(not(feature = "gpu"), allow(dead_code))]
+pub(crate) fn still_size(info: &MediaInfo, frame: (u32, u32)) -> (u32, u32) {
+    let (width, height) = (f64::from(info.width.max(1)), f64::from(info.height.max(1)));
+    let cover = (f64::from(frame.0) / width)
+        .max(f64::from(frame.1) / height)
+        .min(1.0);
+    let limit = f64::from(TEXTURE_LIMIT);
+    let scale = cover.min(limit / width).min(limit / height);
+    let side = |length: f64| ((length * scale).round() as u32).clamp(1, TEXTURE_LIMIT);
+    // Turning back to stored swaps the sides exactly when turning upright did.
+    info.orientation.apply_to_size((side(width), side(height)))
+}
+
+/// The largest texture side every GPU Dusk runs on takes (wgpu's default limits, which
+/// dusk-render asks for).
+#[cfg_attr(not(feature = "gpu"), allow(dead_code))]
+pub(crate) const TEXTURE_LIMIT: u32 = 8192;
 
 /// Describes a probed file, or says why Dusk cannot use it.
 fn describe(probe: &ProbeInfo) -> Result<MediaInfo, &'static str> {
@@ -32,7 +94,16 @@ fn describe(probe: &ProbeInfo) -> Result<MediaInfo, &'static str> {
             frame_rate,
             base_frame_rate,
             cover_art: false,
-        } => Some((width, height, frame_rate, base_frame_rate)),
+            orientation,
+            bit_depth,
+        } => Some((
+            width,
+            height,
+            frame_rate,
+            base_frame_rate,
+            orientation,
+            bit_depth,
+        )),
         _ => None,
     });
     let has_audio = probe
@@ -46,9 +117,14 @@ fn describe(probe: &ProbeInfo) -> Result<MediaInfo, &'static str> {
         .duration_us
         .filter(|us| *us > 0)
         .ok_or("FFmpeg cannot tell how long it is; convert it to MP4 and try again")?;
-    let (width, height, frame_rate, vfr) = match video {
-        None => (0, 0, None, false),
-        Some((width, height, average, base)) => {
+    let (width, height, frame_rate, vfr, orientation) = match video {
+        None => (0, 0, None, false, dusk_core::Orientation::UPRIGHT),
+        Some((width, height, average, base, orientation, bit_depth)) => {
+            if !fits_one_decoder(width, height, bit_depth) {
+                return Err(
+                    "it is too large for Dusk to decode within its memory budget; make a smaller copy with dusq compress and import that",
+                );
+            }
             let rate = |rate: Option<(i32, i32)>| {
                 let (num, den) = rate?;
                 Rational::new(u32::try_from(num).ok()?, u32::try_from(den).ok()?)
@@ -63,7 +139,9 @@ fn describe(probe: &ProbeInfo) -> Result<MediaInfo, &'static str> {
                 // No rate at all: 30 fps, the default sequence rate.
                 None => STANDARD_RATES[4],
             };
-            (width, height, Some(rate), vfr)
+            // Width and height are the upright picture's.
+            let (width, height) = orientation.apply_to_size((width, height));
+            (width, height, Some(rate), vfr, orientation)
         }
     };
     Ok(MediaInfo {
@@ -79,7 +157,21 @@ fn describe(probe: &ProbeInfo) -> Result<MediaInfo, &'static str> {
         vfr,
         width,
         height,
+        orientation,
     })
+}
+
+/// Whether video of `width` by `height` pictures, `bit_depth` deep, fits the decoder budget:
+/// always up to [`HUGE_FRAME`], where the pool's rules apply; above it, if a decoder's
+/// pictures, 4:2:0 as phones and cameras record them, stay under the ceiling.
+fn fits_one_decoder(width: u32, height: u32, bit_depth: u8) -> bool {
+    let pixels = u64::from(width) * u64::from(height);
+    if pixels <= HUGE_FRAME {
+        return true;
+    }
+    let bytes_per_sample = if bit_depth > 8 { 2 } else { 1 };
+    let picture = pixels * 3 / 2 * bytes_per_sample;
+    picture * HUGE_PICTURES_HELD <= LARGE_DECODER_CEILING
 }
 
 #[cfg(test)]
@@ -102,8 +194,31 @@ mod tests {
                 frame_rate: Some(average),
                 base_frame_rate: Some(base),
                 cover_art: false,
+                orientation: dusk_core::Orientation::UPRIGHT,
+                bit_depth: 8,
             },
         }
+    }
+
+    /// 30 fps HEVC of `width` by `height` pictures, `bits` deep.
+    fn hevc(width: u32, height: u32, bits: u8) -> StreamSummary {
+        let mut stream = video(width, height, (30, 1), (30, 1));
+        stream.codec = "hevc".to_owned();
+        if let StreamDetail::Video { bit_depth, .. } = &mut stream.detail {
+            *bit_depth = bits;
+        }
+        stream
+    }
+
+    #[test]
+    fn a_turned_video_is_described_upright() {
+        let mut phone = video(1920, 1080, (30, 1), (30, 1));
+        if let StreamDetail::Video { orientation, .. } = &mut phone.detail {
+            *orientation = dusk_core::Orientation::new(1, false);
+        }
+        let info = describe(&file("mov,mp4,m4a,3gp,3g2,mj2", vec![phone])).unwrap();
+        assert_eq!((info.width, info.height), (1080, 1920));
+        assert_eq!(info.orientation, dusk_core::Orientation::new(1, false));
     }
 
     fn audio() -> StreamSummary {
@@ -129,6 +244,8 @@ mod tests {
                 frame_rate: None,
                 base_frame_rate: None,
                 cover_art: true,
+                orientation: dusk_core::Orientation::UPRIGHT,
+                bit_depth: 8,
             },
         }
     }
@@ -138,6 +255,7 @@ mod tests {
             format: format.to_owned(),
             duration_us: Some(13_680_000),
             streams,
+            heif: false,
         }
     }
 
@@ -159,6 +277,7 @@ mod tests {
                 vfr: false,
                 width: 1920,
                 height: 1080,
+                orientation: dusk_core::Orientation::UPRIGHT,
             }
         );
     }
@@ -186,13 +305,112 @@ mod tests {
     }
 
     #[test]
+    fn video_above_9_megapixels_must_fit_one_decoder() {
+        let mov = "mov,mp4,m4a,3gp,3g2,mj2";
+        // 8-bit 8K fits a single decoder's share of memory; 10-bit 8K does not.
+        assert!(describe(&file(mov, vec![hevc(7680, 4320, 8)])).is_ok());
+        let refused = describe(&file(mov, vec![hevc(7680, 4320, 10)])).unwrap_err();
+        assert!(refused.contains("dusq compress"), "{refused}");
+        // 10-bit 4K is under the line, where the decoder pool's own rules apply.
+        assert!(describe(&file(mov, vec![hevc(3840, 2160, 10)])).is_ok());
+    }
+
+    #[test]
     fn files_dusk_cannot_use_yet_are_refused() {
         assert!(describe(&file("srt", vec![])).is_err());
-        assert!(describe(&file("png_pipe", vec![video(640, 480, (25, 1), (25, 1))])).is_err());
-        assert!(describe(&file("image2", vec![video(640, 480, (25, 1), (25, 1))])).is_err());
         let mut unknown_length = file("mpegts", vec![video(640, 480, (25, 1), (25, 1))]);
         unknown_length.duration_us = None;
         assert!(describe(&unknown_length).is_err());
+    }
+
+    fn photo(width: u32, height: u32, orientation: dusk_core::Orientation) -> MediaInfo {
+        describe_still(&StillInfo {
+            width,
+            height,
+            orientation,
+            peak_bytes: u64::from(width) * u64::from(height) * 3 / 2,
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn a_photo_is_a_still_described_upright() {
+        let info = photo(4032, 3024, dusk_core::Orientation::new(1, false));
+        assert_eq!(info.kind, MediaKind::Still);
+        assert_eq!((info.width, info.height), (3024, 4032));
+        assert_eq!(info.orientation, dusk_core::Orientation::new(1, false));
+        assert!(info.has_video && !info.has_audio);
+        assert_eq!((info.duration, info.frame_rate), (MediaTime(0), None));
+    }
+
+    #[test]
+    fn a_photo_too_large_to_decode_is_refused() {
+        let huge = StillInfo {
+            width: 12_000,
+            height: 9_000,
+            orientation: dusk_core::Orientation::UPRIGHT,
+            // 16-bit RGBA.
+            peak_bytes: 12_000 * 9_000 * 8,
+        };
+        assert!(describe_still(&huge).is_err());
+    }
+
+    #[test]
+    fn a_still_is_decoded_just_large_enough_to_cover_the_frame() {
+        let upright = dusk_core::Orientation::UPRIGHT;
+        assert_eq!(
+            still_size(&photo(4032, 3024, upright), (1920, 1080)),
+            (1920, 1440)
+        );
+        // Never larger than the photo.
+        assert_eq!(
+            still_size(&photo(640, 480, upright), (1920, 1080)),
+            (640, 480)
+        );
+        // A photo turned upright: the size is worked out upright, then given as stored.
+        let turned = photo(4032, 3024, dusk_core::Orientation::new(1, false));
+        assert_eq!(still_size(&turned, (1920, 1080)), (2560, 1920));
+        // A panorama is kept within the largest texture.
+        assert_eq!(
+            still_size(&photo(20_000, 3_000, upright), (8192, 8192)),
+            (8192, 1229)
+        );
+    }
+
+    #[test]
+    fn a_photo_file_is_described() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../testdata/photo-turned.jpg");
+        let info = media_info(&path).unwrap();
+        assert_eq!(info.kind, MediaKind::Still);
+        assert_eq!((info.width, info.height), (240, 320));
+        assert_eq!(info.orientation, dusk_core::Orientation::new(1, false));
+    }
+
+    #[test]
+    fn voice_notes_and_music_are_audio() {
+        for name in ["voice.opus", "voice.m4a", "voice.amr", "song.mp3"] {
+            let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../testdata")
+                .join(name);
+            let info = media_info(&path).unwrap();
+            assert_eq!(info.kind, MediaKind::Audio, "{name}");
+            // The MP3's cover art is not video.
+            assert!(info.has_audio && !info.has_video, "{name}");
+            let duration = info.duration.0;
+            assert!(
+                (950_000..=1_100_000).contains(&duration),
+                "{name}: {duration} us"
+            );
+        }
+    }
+
+    #[test]
+    fn a_heic_grid_is_a_photo_described_upright() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../testdata/photo-grid.heic");
+        let info = media_info(&path).unwrap();
+        assert_eq!(info.kind, MediaKind::Still);
+        // 320x240 as stored, turned a quarter clockwise.
+        assert_eq!((info.width, info.height), (240, 320));
     }
 
     #[test]

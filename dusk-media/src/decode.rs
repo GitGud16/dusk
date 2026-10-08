@@ -4,6 +4,7 @@
 
 use std::path::{Path, PathBuf};
 
+use dusk_core::color::{Primaries, Transfer, source_peak};
 use dusk_core::{ColorMatrix, ColorRange, MediaTime, Picture, PictureLayout};
 use ffmpeg_next as ffmpeg;
 use ffmpeg_next::format::Pixel;
@@ -32,6 +33,16 @@ pub enum Following {
     End,
     /// Not decoded yet.
     Unknown,
+}
+
+/// How far [`VideoDecoder::step_to`] got.
+#[derive(Debug)]
+pub enum Step {
+    /// On the way: one more frame was decoded.
+    Working,
+    /// There: the frame shown at the time asked for, or `None` before the stream's first
+    /// frame, as [`VideoDecoder::frame_at`] returns it.
+    Done(Option<DecodedFrame>),
 }
 
 /// A decoded frame: when it starts in the source and its picture.
@@ -91,10 +102,12 @@ impl VideoDecoder {
         let parameters = stream.parameters();
         let decoder = match acceleration {
             // A hardware decoder that fails to open falls back to software for this file.
-            Acceleration::Hardware => open_decoder(&parameters, true)
-                .or_else(|_| open_decoder(&parameters, false))
+            Acceleration::Hardware => open_decoder(&parameters, time_base, true)
+                .or_else(|_| open_decoder(&parameters, time_base, false))
                 .map_err(open_error)?,
-            Acceleration::Software => open_decoder(&parameters, false).map_err(open_error)?,
+            Acceleration::Software => {
+                open_decoder(&parameters, time_base, false).map_err(open_error)?
+            }
         };
         let start = ffi::start_time(&input);
         Ok(VideoDecoder {
@@ -127,14 +140,29 @@ impl VideoDecoder {
             self.seek(time)?;
         }
         loop {
+            if let Step::Done(frame) = self.step_to(time)? {
+                return Ok(frame);
+            }
+        }
+    }
+
+    /// Goes on toward the frame shown at `time`, decoding at most one frame, so that getting
+    /// there from a [`seek`](Self::seek) can be spread over several calls. Once there,
+    /// [`following`](Self::following) knows when the next frame starts, as after
+    /// [`frame_at`](Self::frame_at). It never seeks: the frame wanted must not be behind.
+    pub fn step_to(&mut self, time: MediaTime) -> Result<Step, MediaError> {
+        loop {
             match &self.ahead {
                 Some((next, _)) if *next > time => break,
                 Some(_) => self.shown = self.ahead.take(),
                 None if self.ended => break,
-                None => self.ahead = self.decode_next()?,
+                None => {
+                    self.ahead = self.decode_next()?;
+                    return Ok(Step::Working);
+                }
             }
         }
-        self.copy_shown()
+        self.copy_shown().map(Step::Done)
     }
 
     /// What comes after the frame returned last: [`frame_at`](Self::frame_at) always knows,
@@ -242,9 +270,27 @@ impl VideoDecoder {
     }
 }
 
-/// Opens a decoder for `parameters`, on the GPU when `hardware` is set and possible.
+/// Pictures with more pixels than this, 6K and 8K video, decode on one thread: every further
+/// thread holds frames of its own, which at that size adds up to more than the decoder budget
+/// (docs/ARCHITECTURE.md, "Decoder pool").
+pub const HUGE_FRAME: u64 = 9_000_000;
+
+/// How many threads a software decoder of `width` by `height` pictures uses: half the cores,
+/// at most 4, and one above [`HUGE_FRAME`].
+fn software_threads(width: i32, height: i32) -> usize {
+    let pixels = u64::try_from(width).unwrap_or(0) * u64::try_from(height).unwrap_or(0);
+    if pixels > HUGE_FRAME {
+        return 1;
+    }
+    let cores = std::thread::available_parallelism().map_or(2, |cores| cores.get());
+    (cores / 2).clamp(1, 4)
+}
+
+/// Opens a decoder for `parameters`, whose packets come in `time_base`, on the GPU when
+/// `hardware` is set and possible.
 fn open_decoder(
     parameters: &ffmpeg::codec::Parameters,
+    time_base: ffmpeg::Rational,
     hardware: bool,
 ) -> Result<ffmpeg::decoder::Video, ffmpeg::Error> {
     let mut context = ffmpeg::codec::Context::from_parameters(parameters.clone())?;
@@ -253,14 +299,17 @@ fn open_decoder(
     let count = if on_gpu {
         1
     } else {
-        let cores = std::thread::available_parallelism().map_or(2, |cores| cores.get());
-        (cores / 2).clamp(1, 4)
+        let fields = ffi::codec_fields(parameters);
+        software_threads(fields.width, fields.height)
     };
     context.set_threading(ffmpeg::codec::threading::Config {
         kind: ffmpeg::codec::threading::Type::Frame,
         count,
     });
-    context.decoder().video()
+    let mut decoder = context.decoder();
+    // As for audio (see `AudioDecoder::open`), FFmpeg wants the packets' time base.
+    decoder.set_packet_time_base(time_base);
+    decoder.video()
 }
 
 /// Sets `context` up to decode on a D3D11VA device, if the codec and the machine allow it.
@@ -332,12 +381,16 @@ fn picture_of(frame: &frame::Video, path: &Path) -> Result<(Picture, bool), Medi
         to_top_bits(&mut chroma);
     }
     // The color tags come from the decoded frame; a transferred copy does not carry them.
+    let transfer = transfer_of(frame, false);
     let picture = Picture {
         width,
         height,
         layout,
         matrix: matrix_of(frame, width, height),
         range: range_of(frame),
+        primaries: primaries_of(frame),
+        transfer,
+        peak_nits: peak_of(frame, transfer),
         luma,
         chroma,
     };
@@ -392,6 +445,40 @@ fn matrix_of(frame: &frame::Video, width: u32, height: u32) -> ColorMatrix {
     }
 }
 
+/// The frame's color primaries; untagged frames are taken as BT.709.
+pub(crate) fn primaries_of(frame: &frame::Video) -> Primaries {
+    use ffmpeg::color::Primaries as Tag;
+    match frame.color_primaries() {
+        Tag::BT470BG => Primaries::Bt601_625,
+        Tag::SMPTE170M | Tag::SMPTE240M => Primaries::Bt601_525,
+        Tag::BT2020 => Primaries::Bt2020,
+        Tag::SMPTE432 => Primaries::DisplayP3,
+        _ => Primaries::Bt709,
+    }
+}
+
+/// The frame's transfer; an untagged photo is sRGB, untagged video BT.1886.
+pub(crate) fn transfer_of(frame: &frame::Video, photo: bool) -> Transfer {
+    use ffmpeg::color::TransferCharacteristic as Tag;
+    match frame.color_transfer_characteristic() {
+        Tag::SMPTE2084 => Transfer::Pq,
+        Tag::ARIB_STD_B67 => Transfer::Hlg,
+        Tag::IEC61966_2_1 => Transfer::Srgb,
+        _ if photo => Transfer::Srgb,
+        _ => Transfer::Bt1886,
+    }
+}
+
+/// For an HDR frame, the peak tone mapping starts from, in nits; 0 for SDR.
+fn peak_of(frame: &frame::Video, transfer: Transfer) -> u16 {
+    if !transfer.is_hdr() {
+        return 0;
+    }
+    let (max_cll, mastering_max) = ffi::light_levels(frame);
+    // At most 10 000 nits, which fits.
+    source_peak(max_cll, mastering_max).round() as u16
+}
+
 /// The frame's YUV range; untagged frames are limited range unless the format says full.
 fn range_of(frame: &frame::Video) -> ColorRange {
     match frame.color_range() {
@@ -406,5 +493,18 @@ fn decode_error(path: &Path, source: ffmpeg::Error) -> MediaError {
     MediaError::Decode {
         path: path.to_path_buf(),
         source,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pictures_above_9_megapixels_decode_on_one_thread() {
+        assert_eq!(software_threads(7680, 4320), 1);
+        assert_eq!(software_threads(6144, 3456), 1);
+        assert!((1..=4).contains(&software_threads(3840, 2160)));
+        assert!((1..=4).contains(&software_threads(1920, 1080)));
     }
 }

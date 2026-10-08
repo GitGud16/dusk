@@ -28,7 +28,7 @@ dusk-engine = { path = "dusk-engine", default-features = false }
 
 # Pinned exactly: see docs/ARCHITECTURE.md ("FFmpeg (Windows)", "Slint specifics").
 ffmpeg-next = { version = "=9.0.0", default-features = false, features = ["codec", "format", "software-resampling", "software-scaling"] }
-slint = { version = "=1.18.1", default-features = false, features = ["std", "compat-1-18", "backend-winit", "renderer-femtovg-wgpu", "unstable-wgpu-30", "accessibility"] }
+slint = { version = "=1.18.1", default-features = false, features = ["std", "compat-1-18", "backend-winit", "renderer-femtovg-wgpu", "unstable-wgpu-30", "accessibility", "unstable-winit-030"] }
 slint-build = "=1.18.1"
 # Must be the wgpu major that Slint's `unstable-wgpu-30` feature uses; no extra backends.
 wgpu = { version = "30", default-features = false }
@@ -37,6 +37,10 @@ anyhow = "1"
 cpal = "0.18"
 crossbeam-channel = "0.5"
 rtrb = "0.4"
+serde = { version = "1", features = ["derive"] }
+# `float_roundtrip` reads every float back to the last bit; a clip's length must keep
+# matching its speed after a save and a load.
+serde_json = { version = "1", features = ["float_roundtrip"] }
 thiserror = "2"
 
 [profile.release]

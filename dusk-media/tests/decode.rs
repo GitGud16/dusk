@@ -4,7 +4,7 @@
 use std::path::{Path, PathBuf};
 
 use dusk_core::{ColorMatrix, ColorRange, MediaTime, PictureLayout};
-use dusk_media::{Acceleration, Following, MediaError, VideoDecoder};
+use dusk_media::{Acceleration, Following, MediaError, Step, VideoDecoder};
 
 fn sample() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../testdata/sample-h264-aac.mp4")
@@ -195,6 +195,26 @@ fn frames_come_one_after_another_from_a_seek() {
 }
 
 #[test]
+fn stepping_decodes_one_frame_at_a_time_to_what_frame_at_finds() {
+    let mut stepped = decoder();
+    stepped.seek(frame_time(12)).unwrap();
+    let mut steps = 0;
+    let frame = loop {
+        match stepped.step_to(frame_time(12)).unwrap() {
+            Step::Working => steps += 1,
+            Step::Done(frame) => break frame.expect("a frame"),
+        }
+    };
+    // From the keyframe at frame 0 up to frame 13, which shows frame 12 is the one wanted.
+    assert_eq!(steps, 14);
+    assert_eq!(stepped.following(), Following::Next(frame_time(13)));
+    let expected = decoder().frame_at(frame_time(12)).unwrap().unwrap();
+    assert_eq!(frame.time, expected.time);
+    assert_eq!(frame.picture.luma, expected.picture.luma);
+    assert_eq!(frame.picture.chroma, expected.picture.chroma);
+}
+
+#[test]
 fn next_frame_continues_after_frame_at() {
     let mut decoder = decoder();
     assert_eq!(time_at(&mut decoder, frame_time(5)), frame_time(5));
@@ -220,4 +240,14 @@ fn the_decoder_knows_when_the_next_frame_starts() {
     decoder.seek(frame_time(0)).unwrap();
     decoder.next_frame().unwrap();
     assert_eq!(decoder.following(), Following::Unknown);
+}
+
+#[test]
+fn an_untagged_video_is_sdr_bt709() {
+    let mut decoder = VideoDecoder::open(&sample(), Acceleration::Software).unwrap();
+    let frame = decoder.frame_at(dusk_core::MediaTime(0)).unwrap().unwrap();
+    let picture = frame.picture;
+    assert_eq!(picture.primaries, dusk_core::color::Primaries::Bt709);
+    assert_eq!(picture.transfer, dusk_core::color::Transfer::Bt1886);
+    assert_eq!(picture.peak_nits, 0);
 }

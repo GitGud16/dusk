@@ -1,0 +1,264 @@
+// The properties of the selected clip: whether it plays, how a picture fills the frame, a
+// photo's duration, and a sound's volume and fades. Each change is one undoable edit.
+
+import { Theme } from "theme.slint";
+import { FieldLabel, NumberField, PanelTitle, Segmented, Slider, Switch, Timecode, ToolButton } from "widgets.slint";
+
+// The selected clip as the panel shows it.
+export struct ClipProps {
+    // False when no clip is selected.
+    shown: bool,
+    name: string,
+    // What it is and where, such as "Audio on A2".
+    place: string,
+    video: bool,
+    still: bool,
+    enabled: bool,
+    linked: bool,
+    // On a locked track nothing can change.
+    locked: bool,
+    start: string,
+    length: string,
+    // A photo's length, in frames.
+    frames: int,
+    fill: bool,
+    // Volume in decibels; fades in frames.
+    volume: float,
+    fade-in: int,
+    fade-out: int,
+}
+
+export component ClipProperties inherits Rectangle {
+    in property <ClipProps> props;
+    callback set-enabled(enabled: bool);
+    callback set-fill(fill: bool);
+    callback set-length(frames: int);
+    callback set-volume(decibels: float);
+    callback set-fades(fade-in: int, fade-out: int);
+    callback unlink();
+    // Typing in a field is over.
+    callback finished();
+
+    background: Theme.bg-1;
+
+    Rectangle {
+        width: Theme.border-width;
+        x: 0;
+        background: Theme.border;
+    }
+
+    VerticalLayout {
+        Rectangle {
+            height: Theme.toolbar-height;
+
+            PanelTitle {
+                x: Theme.panel-padding;
+                text: "Clip";
+            }
+
+            Rectangle {
+                y: parent.height - self.height;
+                height: Theme.border-width;
+                background: Theme.border;
+            }
+        }
+
+        if !root.props.shown: Text {
+            vertical-stretch: 1;
+            text: "Select a clip on the timeline to see and change it here.";
+            color: Theme.text-3;
+            wrap: word-wrap;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+
+        if root.props.shown: VerticalLayout {
+            padding: Theme.panel-padding;
+            spacing: Theme.space-3;
+            alignment: start;
+
+            VerticalLayout {
+                spacing: 2px;
+
+                Text {
+                    text: root.props.name;
+                    color: Theme.text-1;
+                    font-size: Theme.font-title;
+                    overflow: elide;
+                }
+
+                Text {
+                    text: root.props.locked ? root.props.place + " · locked track" : root.props.place;
+                    color: Theme.text-2;
+                    font-size: Theme.font-tiny;
+                }
+            }
+
+            HorizontalLayout {
+                spacing: Theme.space-4;
+
+                VerticalLayout {
+                    FieldLabel {
+                        text: "Start";
+                    }
+
+                    Timecode {
+                        text: root.props.start;
+                        color: Theme.text-1;
+                        font-size: Theme.font-body;
+                    }
+                }
+
+                VerticalLayout {
+                    FieldLabel {
+                        text: "Length";
+                    }
+
+                    Timecode {
+                        text: root.props.length;
+                        color: Theme.text-1;
+                        font-size: Theme.font-body;
+                    }
+                }
+            }
+
+            HorizontalLayout {
+                Text {
+                    text: root.props.video ? "Shown" : "Heard";
+                    color: Theme.text-2;
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                }
+
+                Switch {
+                    checked: root.props.enabled;
+                    enabled: !root.props.locked;
+                    toggled => {
+                        root.set-enabled(!root.props.enabled);
+                    }
+                }
+            }
+
+            if root.props.video: VerticalLayout {
+                spacing: Theme.space-1;
+
+                FieldLabel {
+                    text: "When its shape differs from the sequence";
+                }
+
+                Segmented {
+                    options: ["Fit with bars", "Fill and crop"];
+                    selected: root.props.fill ? 1 : 0;
+                    enabled: !root.props.locked;
+                    chosen(index) => {
+                        root.set-fill(index == 1);
+                    }
+                }
+            }
+
+            if root.props.still: VerticalLayout {
+                spacing: Theme.space-1;
+
+                FieldLabel {
+                    text: "Duration";
+                }
+
+                NumberField {
+                    value: root.props.frames;
+                    minimum: 1;
+                    suffix: "frames";
+                    enabled: !root.props.locked;
+                    edited(frames) => {
+                        root.set-length(frames);
+                    }
+                    finished => {
+                        root.finished();
+                    }
+                }
+            }
+
+            if !root.props.video: VerticalLayout {
+                spacing: Theme.space-1;
+
+                HorizontalLayout {
+                    FieldLabel {
+                        text: "Volume";
+                        horizontal-stretch: 1;
+                    }
+
+                    Text {
+                        text: (volume.shown > 0 ? "+" : "") + (Math.round(volume.shown * 10) / 10) + " dB";
+                        color: Theme.text-1;
+                        font-family: Theme.font-numeric;
+                        font-size: Theme.font-tiny;
+                    }
+                }
+
+                volume := Slider {
+                    minimum: -60;
+                    maximum: 12;
+                    value: root.props.volume;
+                    enabled: !root.props.locked;
+                    changed(decibels) => {
+                        root.set-volume(Math.round(decibels * 10) / 10);
+                    }
+                    reset => {
+                        root.set-volume(0);
+                    }
+                }
+            }
+
+            if !root.props.video: HorizontalLayout {
+                spacing: Theme.space-2;
+
+                VerticalLayout {
+                    spacing: Theme.space-1;
+
+                    FieldLabel {
+                        text: "Fade in";
+                    }
+
+                    NumberField {
+                        value: root.props.fade-in;
+                        suffix: "frames";
+                        enabled: !root.props.locked;
+                        edited(frames) => {
+                            root.set-fades(frames, root.props.fade-out);
+                        }
+                        finished => {
+                            root.finished();
+                        }
+                    }
+                }
+
+                VerticalLayout {
+                    spacing: Theme.space-1;
+
+                    FieldLabel {
+                        text: "Fade out";
+                    }
+
+                    NumberField {
+                        value: root.props.fade-out;
+                        suffix: "frames";
+                        enabled: !root.props.locked;
+                        edited(frames) => {
+                            root.set-fades(root.props.fade-in, frames);
+                        }
+                        finished => {
+                            root.finished();
+                        }
+                    }
+                }
+            }
+
+            if root.props.linked: ToolButton {
+                text: root.props.video ? "Detach the audio" : "Detach from the video";
+                enabled: !root.props.locked;
+                clicked => {
+                    root.unlink();
+                }
+            }
+        }
+    }
+}

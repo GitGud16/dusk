@@ -1134,6 +1134,7 @@ dependencies = [
  "dusk-engine",
  "slint",
  "slint-build",
+ "windows",
 ]
 
 [[package]]
@@ -1156,6 +1157,8 @@ dependencies = [
 name = "dusk-core"
 version = "0.0.0"
 dependencies = [
+ "serde",
+ "serde_json",
  "thiserror 2.0.21",
 ]
 
@@ -4150,6 +4153,7 @@ dependencies = [
  "const-field-offset",
  "i-slint-backend-android-activity",
  "i-slint-backend-selector",
+ "i-slint-backend-winit",
  "i-slint-common",
  "i-slint-core",
  "i-slint-core-macros",

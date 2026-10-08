@@ -6,10 +6,12 @@
 
 mod compositor;
 mod gpu;
+mod placement;
 mod yuv;
 
 pub use compositor::{Compositor, RenderError};
 pub use gpu::{Gpu, GpuError};
+pub use placement::{Placement, fit_size};
 /// The wgpu version Dusk renders with, for crates that pass its textures on.
 pub use wgpu;
 pub use yuv::ToYuv;

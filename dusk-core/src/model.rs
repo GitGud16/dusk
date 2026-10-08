@@ -5,6 +5,7 @@
 
 use std::path::PathBuf;
 
+use crate::orientation::Orientation;
 use crate::time::{Frame, MediaTime, Rational, length_for, source_span};
 
 /// Identifies a media file within a project.
@@ -55,6 +56,9 @@ pub struct MediaInfo {
     pub width: u32,
     /// Picture height in pixels, after rotation; 0 without video.
     pub height: u32,
+    /// How the stored picture is turned and mirrored to show it upright: the display matrix
+    /// of a video, the EXIF orientation of a photo. `width` and `height` are already upright.
+    pub orientation: Orientation,
 }
 
 /// A media file the project uses. Dusk never modifies or copies it.
@@ -86,13 +90,74 @@ pub enum ClipEdits {
     Audio(AudioEdits),
 }
 
-/// The edits of a video clip. Crop, rotation, flips and fit arrive with the pop-out editor.
+/// The edits of a video clip. Fit is set on the timeline; crop, rotation and flips arrive
+/// with the pop-out editor (M3).
 #[derive(Clone, Debug, Default, PartialEq)]
-pub struct VideoEdits {}
+pub struct VideoEdits {
+    /// The part of the upright source picture to show; `None` for all of it.
+    pub crop: Option<Rect>,
+    /// Turned clockwise after the crop.
+    pub rotate: Rotation,
+    /// Mirrored left to right, after the rotation.
+    pub flip_h: bool,
+    /// Mirrored top to bottom, after the rotation.
+    pub flip_v: bool,
+    /// How a picture whose shape differs from the sequence fills the frame.
+    pub fit: Fit,
+}
 
-/// The edits of an audio clip. Volume and fades arrive in M2.
+/// How a clip whose shape differs from the sequence fills the frame.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Fit {
+    /// All of the picture shows, centered, with black bars where it does not reach.
+    #[default]
+    Fit,
+    /// The picture covers the frame, centered; what overflows is cropped.
+    Fill,
+}
+
+/// A clockwise turn by a multiple of 90 degrees.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Rotation {
+    /// Upright.
+    #[default]
+    None,
+    /// A quarter turn clockwise.
+    Quarter,
+    /// Upside down.
+    Half,
+    /// Three quarter turns clockwise, a quarter turn counterclockwise.
+    ThreeQuarters,
+}
+
+/// A rectangle in a picture, in pixels from its top-left corner.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Rect {
+    /// Pixels from the left edge.
+    pub x: u32,
+    /// Pixels from the top edge.
+    pub y: u32,
+    /// Width in pixels.
+    pub width: u32,
+    /// Height in pixels.
+    pub height: u32,
+}
+
+/// The edits of an audio clip.
 #[derive(Clone, Debug, Default, PartialEq)]
-pub struct AudioEdits {}
+pub struct AudioEdits {
+    /// Gain in decibels: 0 leaves the sound as recorded.
+    pub volume_db: f32,
+    /// How long the sound rises from silence at the clip's start.
+    pub fade_in: Frame,
+    /// How long it falls to silence at the clip's end.
+    pub fade_out: Frame,
+}
+
+impl AudioEdits {
+    /// The quietest and loudest volumes a clip can be set to, in decibels.
+    pub const VOLUME_RANGE: std::ops::RangeInclusive<f32> = -60.0..=12.0;
+}
 
 /// A piece of a media file placed on a track.
 #[derive(Clone, Debug, PartialEq)]
@@ -146,6 +211,23 @@ impl Clip {
                 TrackKind::Video => ClipEdits::Video(VideoEdits::default()),
                 TrackKind::Audio => ClipEdits::Audio(AudioEdits::default()),
             },
+        }
+    }
+
+    /// An enabled, unlinked clip that shows a still image for `length` frames from
+    /// `position`.
+    pub fn still(id: ClipId, media_id: MediaId, position: Frame, length: Frame) -> Clip {
+        Clip {
+            id,
+            media_id,
+            source_in: MediaTime(0),
+            source_out: MediaTime(0),
+            position,
+            length,
+            speed: 1.0,
+            enabled: true,
+            link: None,
+            edits: ClipEdits::Video(VideoEdits::default()),
         }
     }
 
@@ -250,6 +332,30 @@ impl Sequence {
             })
     }
 
+    /// The first video clip other than the one visible at `frame` to come into view within
+    /// `within` frames after it, and the frame it does: what the preview gets ready while
+    /// playing (docs/ARCHITECTURE.md, "Decoder pool").
+    pub fn next_visible_video(&self, frame: Frame, within: Frame) -> Option<(Frame, &Clip)> {
+        let shown = self.visible_video_at(frame).map(|clip| clip.id);
+        let last = frame + within;
+        // What is visible changes only where a clip on a shown video track starts or ends.
+        let mut edges: Vec<Frame> = self
+            .tracks
+            .iter()
+            .filter(|track| track.kind == TrackKind::Video && !track.muted)
+            .flat_map(|track| &track.clips)
+            .flat_map(|clip| [clip.position, clip.end()])
+            .filter(|edge| *edge > frame && *edge <= last)
+            .collect();
+        edges.sort_unstable();
+        edges.dedup();
+        edges.into_iter().find_map(|edge| {
+            self.visible_video_at(edge)
+                .filter(|clip| Some(clip.id) != shown)
+                .map(|clip| (edge, clip))
+        })
+    }
+
     /// The first frame after the last clip; 0 for an empty sequence.
     pub fn end(&self) -> Frame {
         self.tracks
@@ -272,7 +378,8 @@ pub struct Project {
 }
 
 impl Project {
-    /// An empty project with one video track and one audio track (the M1 layout).
+    /// An empty project with two video tracks, V1 and V2 (drawn over V1), then two audio
+    /// tracks, A1 and A2.
     pub fn new(frame_rate: Rational, resolution: (u32, u32)) -> Project {
         let track = |id, kind| Track {
             id: TrackId(id),
@@ -286,7 +393,12 @@ impl Project {
             sequence: Sequence {
                 frame_rate,
                 resolution,
-                tracks: vec![track(1, TrackKind::Video), track(2, TrackKind::Audio)],
+                tracks: vec![
+                    track(1, TrackKind::Video),
+                    track(2, TrackKind::Video),
+                    track(3, TrackKind::Audio),
+                    track(4, TrackKind::Audio),
+                ],
             },
         }
     }
@@ -425,7 +537,7 @@ mod tests {
     }
 
     #[test]
-    fn a_new_project_has_one_video_track_and_one_audio_track() {
+    fn a_new_project_has_two_video_tracks_then_two_audio_tracks() {
         let project = Project::new(rate(30000, 1001), (1920, 1080));
         let kinds: Vec<_> = project
             .sequence()
@@ -433,12 +545,21 @@ mod tests {
             .iter()
             .map(Track::kind)
             .collect();
-        assert_eq!(kinds, [TrackKind::Video, TrackKind::Audio]);
+        assert_eq!(
+            kinds,
+            [
+                TrackKind::Video,
+                TrackKind::Video,
+                TrackKind::Audio,
+                TrackKind::Audio
+            ]
+        );
         assert_eq!(project.sequence().frame_rate(), rate(30000, 1001));
         assert_eq!(project.sequence().resolution(), (1920, 1080));
         assert!(project.media().is_empty());
-        let ids: Vec<_> = project.sequence().tracks().iter().map(Track::id).collect();
-        assert_ne!(ids[0], ids[1]);
+        let mut ids: Vec<_> = project.sequence().tracks().iter().map(Track::id).collect();
+        ids.dedup();
+        assert_eq!(ids.len(), 4);
     }
 
     #[test]
@@ -447,11 +568,9 @@ mod tests {
         let low = clip_at(0, 0, 1.0); // frames 0..120
         let mut high = clip_at(60, 0, 1.0); // frames 60..180
         high.id = ClipId(2);
-        let mut upper = project.sequence.tracks[0].clone();
-        upper.id = TrackId(3);
-        upper.clips = vec![high];
+        // V1 holds the low clip, V2 (drawn over it) the high one.
         project.sequence.tracks[0].clips.push(low);
-        project.sequence.tracks.insert(1, upper);
+        project.sequence.tracks[1].clips.push(high);
         let shown = |project: &Project, frame| {
             project
                 .sequence()
@@ -470,13 +589,57 @@ mod tests {
     }
 
     #[test]
+    fn the_next_clip_to_come_into_view_is_found_within_a_window() {
+        let mut project = Project::new(rate(30, 1), (1920, 1080));
+        let first = clip_at(0, 0, 1.0); // V1, frames 0..120
+        let mut second = clip_at(150, 0, 1.0); // V1, frames 150..270, after a gap
+        second.id = ClipId(2);
+        let mut above = clip_at(200, 0, 1.0); // V2, frames 200..320, over the second
+        above.id = ClipId(3);
+        project.sequence.tracks[0].clips.extend([first, second]);
+        project.sequence.tracks[1].clips.push(above);
+        let next = |project: &Project, frame, within| {
+            project
+                .sequence()
+                .next_visible_video(Frame(frame), Frame(within))
+                .map(|(at, clip)| (at.0, clip.id))
+        };
+
+        // Past the gap after the first clip comes the second.
+        assert_eq!(next(&project, 100, 60), Some((150, ClipId(2))));
+        assert_eq!(next(&project, 30, 60), None);
+        // The clip above covers the second before it ends; after it, nothing.
+        assert_eq!(next(&project, 160, 60), Some((200, ClipId(3))));
+        assert_eq!(next(&project, 250, 200), None);
+        // A hidden track hides its clips.
+        project.sequence.tracks[1].muted = true;
+        assert_eq!(next(&project, 160, 60), None);
+    }
+
+    #[test]
+    fn a_covered_clip_comes_back_into_view() {
+        let mut project = Project::new(rate(30, 1), (1920, 1080));
+        let low = clip_at(0, 0, 1.0); // V1, frames 0..120
+        let mut high = clip_at(30, 0, 1.0);
+        high.id = ClipId(2);
+        high.length = Frame(30); // V2, frames 30..60
+        project.sequence.tracks[0].clips.push(low);
+        project.sequence.tracks[1].clips.push(high);
+        let next = project.sequence().next_visible_video(Frame(40), Frame(60));
+        assert_eq!(
+            next.map(|(at, clip)| (at, clip.id)),
+            Some((Frame(60), ClipId(1)))
+        );
+    }
+
+    #[test]
     fn the_sequence_ends_after_its_last_clip() {
         let mut project = Project::new(rate(30, 1), (1920, 1080));
         assert_eq!(project.sequence().end(), Frame(0));
         project.sequence.tracks[0].clips.push(clip_at(10, 0, 1.0));
         let mut audio = clip_at(200, 0, 1.0);
         audio.edits = ClipEdits::Audio(AudioEdits::default());
-        project.sequence.tracks[1].clips.push(audio);
+        project.sequence.tracks[2].clips.push(audio);
         assert_eq!(project.sequence().end(), Frame(320));
     }
 
@@ -505,7 +668,7 @@ mod tests {
         let mut alone = clip_at(500, 0, 1.0);
         alone.id = ClipId(3);
         project.sequence.tracks[0].clips.extend([video, alone]);
-        project.sequence.tracks[1].clips.push(audio);
+        project.sequence.tracks[2].clips.push(audio);
 
         let mut group = project.link_group(ClipId(2));
         group.sort();

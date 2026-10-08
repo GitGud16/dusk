@@ -1,24 +1,12 @@
 import { AboutSlint } from "std-widgets.slint";
 import { Theme } from "theme.slint";
+import { Timecode, ToolButton } from "widgets.slint";
+import { ClipView, Timeline, TickView, TrackView } from "timeline.slint";
+import { MediaBin, MediaView } from "media-bin.slint";
+import { ClipProperties, ClipProps } from "properties.slint";
+import { Prompt, SequenceSettings } from "dialogs.slint";
 
-// A clip as the timeline draws it; positions and lengths in timeline frames.
-export struct ClipView {
-    id: int,
-    // 0 for the video track, 1 for the audio track.
-    track: int,
-    start: int,
-    length: int,
-    name: string,
-    // The link group; 0 when unlinked.
-    link: int,
-    video: bool,
-}
-
-// A labeled mark on the ruler.
-export struct TickView {
-    frame: int,
-    label: string,
-}
+export { ClipView, TickView, TrackView, MediaView, ClipProps }
 
 // A line of the shortcut list.
 export struct ShortcutView {
@@ -26,288 +14,70 @@ export struct ShortcutView {
     description: string,
 }
 
-// A flat button: a background step and a 1px border, no shadow (docs/THEME.md).
-component ToolButton inherits Rectangle {
-    in property <string> text;
-    in property <bool> enabled: true;
-    in property <bool> primary;
-    callback clicked;
-
-    height: Theme.control-height;
-    min-width: label.preferred-width + 2 * Theme.space-3;
-    border-radius: Theme.radius-control;
-    border-width: Theme.border-width;
-    border-color: root.primary && root.enabled ? Theme.primary : Theme.border;
-    background: !root.enabled ? Theme.bg-1
-        : root.primary ? (touch.has-hover ? Theme.primary-hover : Theme.primary)
-        : (touch.has-hover ? Theme.bg-3 : Theme.bg-2);
-
-    label := Text {
-        text: root.text;
-        color: !root.enabled ? Theme.text-3 : root.primary ? Theme.on-brand : Theme.text-1;
-        horizontal-alignment: center;
-        vertical-alignment: center;
-    }
-
-    touch := TouchArea {
-        enabled: root.enabled;
-        mouse-cursor: pointer;
-        clicked => {
-            root.clicked();
-        }
-    }
-}
-
-// A timecode readout in the numeric font.
-component Timecode inherits Text {
-    font-family: Theme.font-numeric;
-    font-size: Theme.font-title;
-    vertical-alignment: center;
-}
-
-// The ruler, one video track and one audio track (the M1 layout), the clips with their trim
-// handles, and the playhead.
-component Timeline inherits Rectangle {
-    in property <[ClipView]> clips;
-    in property <[TickView]> ticks;
-    in property <int> playhead;
-    // Pixels per frame.
-    in property <float> zoom: 1;
-    // The width clips are laid out in, in pixels.
-    out property <length> tracks-width: tracks.width;
-    // The playhead is dragged to `frame`; `scrub-end` when the drag ends.
-    callback scrub(frame: int);
-    callback scrub-end(frame: int);
-    // A trim handle was dragged: the clip, whether its start edge, and the frame it ended on.
-    callback trim(clip: int, start: bool, frame: int);
-
-    // The trim being dragged: the clip, its link group (or 0), which edge, and where.
-    property <int> drag-clip: -1;
-    property <int> drag-link;
-    property <bool> drag-start;
-    property <int> drag-frame;
-
-    background: Theme.bg-1;
-    height: Theme.ruler-height + Theme.video-track-height + Theme.audio-track-height;
-
-    pure function frame-at(x: length) -> int {
-        return Math.max(0, Math.round(x / 1px / root.zoom));
-    }
-    pure function track-y(track: int) -> length {
-        return Theme.ruler-height + (track == 0 ? 0px : Theme.video-track-height);
-    }
-    pure function track-height(track: int) -> length {
-        return track == 0 ? Theme.video-track-height : Theme.audio-track-height;
-    }
-    // Whether a trim drag moves this clip: the dragged clip and its linked partners.
-    pure function dragged(clip: ClipView) -> bool {
-        return root.drag-clip >= 0 && (clip.id == root.drag-clip || (clip.link != 0 && clip.link == root.drag-link));
-    }
-
-    HorizontalLayout {
-        // Track labels.
-        Rectangle {
-            width: 40px;
-            background: Theme.bg-2;
-
-            Text {
-                y: root.track-y(0);
-                height: root.track-height(0);
-                x: Theme.space-2;
-                text: "V1";
-                color: Theme.text-2;
-                font-size: Theme.font-tiny;
-                vertical-alignment: center;
-            }
-
-            Text {
-                y: root.track-y(1);
-                height: root.track-height(1);
-                x: Theme.space-2;
-                text: "A1";
-                color: Theme.text-2;
-                font-size: Theme.font-tiny;
-                vertical-alignment: center;
-            }
-
-            Rectangle {
-                x: parent.width - self.width;
-                width: Theme.border-width;
-                background: Theme.border;
-            }
-        }
-
-        tracks := Rectangle {
-            clip: true;
-
-            // The ruler.
-            Rectangle {
-                y: 0;
-                height: Theme.ruler-height;
-                background: Theme.bg-2;
-
-                for tick in root.ticks: Rectangle {
-                    x: tick.frame * root.zoom * 1px;
-                    width: Theme.border-width;
-                    background: Theme.border;
-
-                    Text {
-                        x: Theme.space-1;
-                        text: tick.label;
-                        color: Theme.text-3;
-                        font-family: Theme.font-numeric;
-                        font-size: Theme.font-tiny;
-                        vertical-alignment: center;
-                    }
-                }
-
-                Rectangle {
-                    y: parent.height - self.height;
-                    height: Theme.border-width;
-                    background: Theme.border;
-                }
-            }
-
-            // The line between the two tracks.
-            Rectangle {
-                y: root.track-y(1) - Theme.border-width;
-                height: Theme.border-width;
-                background: Theme.border;
-            }
-
-            // Pressing anywhere outside a trim handle moves the playhead there.
-            TouchArea {
-                moved => {
-                    root.scrub(root.frame-at(self.mouse-x));
-                }
-                pointer-event(event) => {
-                    if event.button == PointerEventButton.left && event.kind == PointerEventKind.down {
-                        root.scrub(root.frame-at(self.mouse-x));
-                    }
-                    if event.button == PointerEventButton.left && event.kind == PointerEventKind.up {
-                        root.scrub-end(root.frame-at(self.mouse-x));
-                    }
-                }
-            }
-
-            // The clips, as a trim drag would leave them.
-            for clip in root.clips: Rectangle {
-                property <bool> moving: root.dragged(clip);
-                property <int> first: self.moving && root.drag-start
-                    ? Math.min(root.drag-frame, clip.start + clip.length - 1) : clip.start;
-                property <int> end: self.moving && !root.drag-start
-                    ? Math.max(root.drag-frame, clip.start + 1) : clip.start + clip.length;
-                x: self.first * root.zoom * 1px;
-                width: Math.max(1px, (self.end - self.first) * root.zoom * 1px);
-                y: root.track-y(clip.track) + Theme.clip-gap;
-                height: root.track-height(clip.track) - 2 * Theme.clip-gap;
-                border-radius: Theme.radius-clip;
-                background: clip.video ? Theme.primary : Theme.secondary;
-                border-width: self.moving ? Theme.focus-width : 0px;
-                border-color: Theme.primary-bright;
-
-                Text {
-                    x: Theme.space-2;
-                    width: Math.max(0px, parent.width - 2 * Theme.space-2);
-                    text: clip.name;
-                    color: Theme.on-brand;
-                    font-size: Theme.font-tiny;
-                    vertical-alignment: center;
-                    overflow: elide;
-                }
-            }
-
-            // Trim handles at each clip's edges. They stay where the drag started, so the
-            // pointer position maps straight to a frame.
-            for clip in root.clips: Rectangle {
-                x: clip.start * root.zoom * 1px - 4px;
-                width: clip.length * root.zoom * 1px + 8px;
-                y: root.track-y(clip.track);
-                height: root.track-height(clip.track);
-
-                TouchArea {
-                    x: 0;
-                    width: 8px;
-                    mouse-cursor: ew-resize;
-                    moved => {
-                        root.drag-frame = root.frame-at(parent.x + self.x + self.mouse-x);
-                    }
-                    pointer-event(event) => {
-                        if event.button == PointerEventButton.left && event.kind == PointerEventKind.down {
-                            root.drag-clip = clip.id;
-                            root.drag-link = clip.link;
-                            root.drag-start = true;
-                            root.drag-frame = clip.start;
-                        }
-                        if event.kind == PointerEventKind.up && root.drag-clip == clip.id {
-                            root.drag-clip = -1;
-                            root.trim(clip.id, true, root.drag-frame);
-                        }
-                    }
-                }
-
-                TouchArea {
-                    x: parent.width - self.width;
-                    width: 8px;
-                    mouse-cursor: ew-resize;
-                    moved => {
-                        root.drag-frame = root.frame-at(parent.x + self.x + self.mouse-x);
-                    }
-                    pointer-event(event) => {
-                        if event.button == PointerEventButton.left && event.kind == PointerEventKind.down {
-                            root.drag-clip = clip.id;
-                            root.drag-link = clip.link;
-                            root.drag-start = false;
-                            root.drag-frame = clip.start + clip.length;
-                        }
-                        if event.kind == PointerEventKind.up && root.drag-clip == clip.id {
-                            root.drag-clip = -1;
-                            root.trim(clip.id, false, root.drag-frame);
-                        }
-                    }
-                }
-            }
-
-            // The playhead.
-            Rectangle {
-                x: root.playhead * root.zoom * 1px - self.width / 2;
-                width: Theme.playhead-width;
-                background: Theme.alert;
-            }
-        }
-    }
-}
-
 export component MainWindow inherits Window {
-    title: "Dusk";
+    title: root.window-title;
     preferred-width: 1280px;
     preferred-height: 800px;
-    min-width: 800px;
-    min-height: 500px;
+    min-width: 960px;
+    min-height: 600px;
     background: Theme.bg-0;
     default-font-family: Theme.font-ui;
     default-font-size: Theme.font-body;
     forward-focus: keys;
 
+    in property <string> window-title: "Dusk";
+
     // The latest preview frame, drawn by dusk-render at the preview's size in physical pixels.
     in property <image> preview-image;
-    // Shown over the preview instead of a frame: how to open a clip.
+    // Shown over the preview instead of a frame.
     in property <string> preview-message;
     // The preview's size in physical pixels, so frames are drawn 1:1.
     out property <int> preview-pixel-width: Math.round(preview.width / 1phx);
     out property <int> preview-pixel-height: Math.round(preview.height / 1phx);
     callback preview-resized(width: int, height: int);
 
+    // The media bin.
+    in property <[MediaView]> media;
+    in property <int> selected-media: -1;
+    callback select-media(media: int);
+    callback place-media-at-playhead(media: int);
+    // Where media dragged from the bin onto `row` at `frame` would start, or -1; and the drop.
+    callback snap-place(media: int, row: int, frame: int) -> int;
+    callback place-media(media: int, row: int, frame: int);
+    // Files are being dragged over the window from another application.
+    in property <bool> files-hovering;
+
+    // The selected clip's properties.
+    in property <ClipProps> clip-props;
+    callback set-clip-enabled(enabled: bool);
+    callback set-clip-fill(fill: bool);
+    callback set-clip-length(frames: int);
+    callback set-clip-volume(decibels: float);
+    callback set-clip-fades(fade-in: int, fade-out: int);
+    callback unlink-clip();
+
     // The timeline.
+    in property <[TrackView]> tracks;
+    in property <int> video-rows;
     in property <[ClipView]> clips;
     in property <[TickView]> ticks;
     in property <int> playhead;
     in property <float> zoom: 1;
+    in property <int> scroll;
+    in property <int> selected-clip: -1;
+    in property <int> selected-link;
     out property <float> timeline-width: timeline.tracks-width / 1px;
     callback timeline-resized(width: float);
     callback scrub(frame: int);
     callback scrub-end(frame: int);
+    callback select-clip(clip: int);
     callback trim(clip: int, start: bool, frame: int);
+    callback snap-move(clip: int, frame: int, row: int) -> int;
+    callback move-clip(clip: int, frame: int, row: int);
+    callback toggle-lock(track: int);
+    callback toggle-mute(track: int);
+    callback scroll-by(frames: int);
+    callback zoom-by(factor: float, frame: int);
 
     // The transport.
     in property <string> position-timecode: "00:00:00:00";
@@ -315,25 +85,191 @@ export component MainWindow inherits Window {
     in property <bool> playing;
     // The playback factor while playing, such as "2x"; empty at normal speed.
     in property <string> speed;
-    in property <bool> has-project;
+    // Whether the timeline has clips to play or export.
+    in property <bool> has-clips;
     callback play-pause();
 
     // The export: whether one runs, and how far it got, from 0 to 1.
     in property <bool> exporting;
     in property <float> export-progress;
-    callback export();
-    callback cancel-export();
 
     // The status line: what just happened, or what went wrong.
     in property <string> status;
     in property <bool> status-is-error;
 
+    // A question over the window.
+    in property <bool> prompt-open;
+    in property <string> prompt-title;
+    in property <string> prompt-message;
+    in property <[string]> prompt-answers;
+    in property <int> prompt-destructive: -1;
+    callback prompt-answered(index: int);
+
+    // Sequence settings.
+    in property <bool> sequence-settings-open;
+    in property <[string]> rate-names;
+    in property <int> sequence-rate;
+    in property <int> sequence-width;
+    in property <int> sequence-height;
+    callback sequence-settings-done(apply: bool, rate: int, width: int, height: int);
+
+    // A menu item or button stands for the action named `name` (see shortcuts.rs).
+    callback action(name: string);
     // Every key press goes to the shortcut table; true when it was a shortcut.
     callback key(text: string, ctrl: bool, shift: bool, alt: bool) -> bool;
     // The shortcut table, for the shortcut list.
     in property <[ShortcutView]> shortcuts;
 
+    // Media being dragged from the bin: which, and where the pointer is.
+    property <int> dragged-media: -1;
+    property <length> drag-x;
+    property <length> drag-y;
+
+    public function show-shortcut-list() {
+        shortcut-list.show();
+    }
+
+    // Gives the keyboard back to the shortcuts after a field or a button had it.
+    public function take-keys() {
+        keys.focus();
+    }
+
     MenuBar {
+        Menu {
+            title: "File";
+            MenuItem {
+                title: "New project";
+                activated => {
+                    root.action("new");
+                }
+            }
+            MenuItem {
+                title: "Open project…";
+                activated => {
+                    root.action("open");
+                }
+            }
+            MenuItem {
+                title: "Save";
+                activated => {
+                    root.action("save");
+                }
+            }
+            MenuItem {
+                title: "Save as…";
+                activated => {
+                    root.action("save-as");
+                }
+            }
+            MenuSeparator { }
+            MenuItem {
+                title: "Import media…";
+                activated => {
+                    root.action("import");
+                }
+            }
+            MenuItem {
+                title: "Export to MP4";
+                enabled: root.has-clips && !root.exporting;
+                activated => {
+                    root.action("export");
+                }
+            }
+            MenuSeparator { }
+            MenuItem {
+                title: "Quit";
+                activated => {
+                    root.action("quit");
+                }
+            }
+        }
+        Menu {
+            title: "Edit";
+            MenuItem {
+                title: "Undo";
+                activated => {
+                    root.action("undo");
+                }
+            }
+            MenuItem {
+                title: "Redo";
+                activated => {
+                    root.action("redo");
+                }
+            }
+            MenuSeparator { }
+            MenuItem {
+                title: "Split at the playhead";
+                activated => {
+                    root.action("split");
+                }
+            }
+            MenuItem {
+                title: "Delete";
+                activated => {
+                    root.action("delete");
+                }
+            }
+            MenuItem {
+                title: "Ripple delete";
+                activated => {
+                    root.action("ripple-delete");
+                }
+            }
+            MenuItem {
+                title: "Delete this clip only";
+                activated => {
+                    root.action("delete-one");
+                }
+            }
+            MenuItem {
+                title: "Detach audio";
+                activated => {
+                    root.action("unlink");
+                }
+            }
+            MenuItem {
+                title: "Enable or disable the clip";
+                activated => {
+                    root.action("toggle-enabled");
+                }
+            }
+            MenuSeparator { }
+            MenuItem {
+                title: "Place the selected media at the playhead";
+                activated => {
+                    root.action("place");
+                }
+            }
+        }
+        Menu {
+            title: "Sequence";
+            MenuItem {
+                title: "Sequence settings…";
+                activated => {
+                    root.action("sequence-settings");
+                }
+            }
+            MenuSeparator { }
+            MenuItem {
+                title: "Zoom in";
+                activated => {
+                    root.action("zoom-in");
+                }
+            }
+            MenuItem {
+                title: "Zoom out";
+                activated => {
+                    root.action("zoom-out");
+                }
+            }
+            MenuItem {
+                title: "Fit the sequence";
+                activated => {
+                    root.action("zoom-fit");
+                }
+            }
+        }
         Menu {
             title: "Help";
             MenuItem {
@@ -357,7 +293,7 @@ export component MainWindow inherits Window {
         }
 
         VerticalLayout {
-            // Toolbar: bg-1 with a 1px border below (elevation by background step, no shadow).
+            // The toolbar: bg-1 with a 1px border below (elevation by background step).
             Rectangle {
                 height: Theme.toolbar-height;
                 background: Theme.bg-1;
@@ -365,7 +301,7 @@ export component MainWindow inherits Window {
                 HorizontalLayout {
                     padding-left: Theme.panel-padding;
                     padding-right: Theme.panel-padding;
-                    alignment: start;
+                    spacing: Theme.space-3;
 
                     Text {
                         text: "Dusk";
@@ -373,6 +309,21 @@ export component MainWindow inherits Window {
                         font-size: Theme.font-title;
                         font-weight: Theme.weight-semibold;
                         vertical-alignment: center;
+                    }
+
+                    Rectangle {
+                        horizontal-stretch: 1;
+                    }
+
+                    ToolButton {
+                        y: (parent.height - self.height) / 2;
+                        text: "Export";
+                        primary: true;
+                        enabled: root.has-clips && !root.exporting;
+                        clicked => {
+                            root.action("export");
+                            keys.focus();
+                        }
                     }
                 }
 
@@ -383,31 +334,91 @@ export component MainWindow inherits Window {
                 }
             }
 
-            preview := Rectangle {
-                background: Theme.bg-0;
+            HorizontalLayout {
+                vertical-stretch: 1;
 
-                Image {
-                    width: 100%;
-                    height: 100%;
-                    source: root.preview-image;
-                    image-fit: contain;
+                bin := MediaBin {
+                    width: Theme.side-panel-width;
+                    media: root.media;
+                    selected: root.selected-media;
+                    select(media) => {
+                        root.select-media(media);
+                    }
+                    activate(media) => {
+                        root.place-media-at-playhead(media);
+                    }
+                    import => {
+                        root.action("import");
+                        keys.focus();
+                    }
+                    drag-moved(media, x, y) => {
+                        root.dragged-media = media;
+                        root.drag-x = x;
+                        root.drag-y = y;
+                        timeline.media-hover(x, y);
+                    }
+                    drag-ended(media) => {
+                        timeline.media-drop();
+                        root.dragged-media = -1;
+                    }
                 }
 
-                Text {
-                    width: 100%;
-                    height: 100%;
-                    text: root.preview-message;
-                    color: Theme.text-2;
-                    wrap: word-wrap;
-                    horizontal-alignment: center;
-                    vertical-alignment: center;
+                preview := Rectangle {
+                    background: Theme.bg-0;
+
+                    Image {
+                        width: 100%;
+                        height: 100%;
+                        source: root.preview-image;
+                        image-fit: contain;
+                    }
+
+                    Text {
+                        x: Theme.space-6;
+                        width: parent.width - 2 * Theme.space-6;
+                        text: root.preview-message;
+                        color: Theme.text-2;
+                        wrap: word-wrap;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+
+                    changed width => {
+                        root.preview-resized(root.preview-pixel-width, root.preview-pixel-height);
+                    }
+                    changed height => {
+                        root.preview-resized(root.preview-pixel-width, root.preview-pixel-height);
+                    }
                 }
 
-                changed width => {
-                    root.preview-resized(root.preview-pixel-width, root.preview-pixel-height);
-                }
-                changed height => {
-                    root.preview-resized(root.preview-pixel-width, root.preview-pixel-height);
+                ClipProperties {
+                    width: Theme.side-panel-width;
+                    props: root.clip-props;
+                    set-enabled(enabled) => {
+                        root.set-clip-enabled(enabled);
+                        keys.focus();
+                    }
+                    set-fill(fill) => {
+                        root.set-clip-fill(fill);
+                        keys.focus();
+                    }
+                    set-length(frames) => {
+                        root.set-clip-length(frames);
+                    }
+                    set-volume(decibels) => {
+                        root.set-clip-volume(decibels);
+                        keys.focus();
+                    }
+                    set-fades(fade-in, fade-out) => {
+                        root.set-clip-fades(fade-in, fade-out);
+                    }
+                    unlink => {
+                        root.unlink-clip();
+                        keys.focus();
+                    }
+                    finished => {
+                        keys.focus();
+                    }
                 }
             }
 
@@ -435,7 +446,7 @@ export component MainWindow inherits Window {
                     ToolButton {
                         y: (parent.height - self.height) / 2;
                         text: root.playing ? "Pause" : "Play";
-                        enabled: root.has-project;
+                        enabled: root.has-clips;
                         clicked => {
                             root.play-pause();
                             keys.focus();
@@ -457,33 +468,60 @@ export component MainWindow inherits Window {
                         text: root.end-timecode;
                         color: Theme.text-2;
                     }
-
-                    ToolButton {
-                        y: (parent.height - self.height) / 2;
-                        text: "Export";
-                        primary: true;
-                        enabled: root.has-project && !root.exporting;
-                        clicked => {
-                            root.export();
-                            keys.focus();
-                        }
-                    }
                 }
             }
 
             timeline := Timeline {
+                tracks: root.tracks;
+                video-rows: root.video-rows;
                 clips: root.clips;
                 ticks: root.ticks;
                 playhead: root.playhead;
                 zoom: root.zoom;
+                scroll: root.scroll;
+                selected-clip: root.selected-clip;
+                selected-link: root.selected-link;
+                media-length: root.media-length-of(root.dragged-media);
+                media-video: root.media-has-video(root.dragged-media);
+                media-audio: root.media-has-audio(root.dragged-media);
                 scrub(frame) => {
                     root.scrub(frame);
                 }
                 scrub-end(frame) => {
                     root.scrub-end(frame);
                 }
+                select-clip(clip) => {
+                    root.select-clip(clip);
+                    keys.focus();
+                }
                 trim(clip, start, frame) => {
                     root.trim(clip, start, frame);
+                }
+                snap-move(clip, frame, row) => {
+                    return root.snap-move(clip, frame, row);
+                }
+                move-clip(clip, frame, row) => {
+                    root.move-clip(clip, frame, row);
+                }
+                snap-place(row, frame) => {
+                    return root.snap-place(root.dragged-media, row, frame);
+                }
+                place-media(row, frame) => {
+                    root.place-media(root.dragged-media, row, frame);
+                }
+                toggle-lock(track) => {
+                    root.toggle-lock(track);
+                    keys.focus();
+                }
+                toggle-mute(track) => {
+                    root.toggle-mute(track);
+                    keys.focus();
+                }
+                scroll-by(frames) => {
+                    root.scroll-by(frames);
+                }
+                zoom-by(factor, frame) => {
+                    root.zoom-by(factor, frame);
                 }
                 changed tracks-width => {
                     root.timeline-resized(self.tracks-width / 1px);
@@ -534,19 +572,92 @@ export component MainWindow inherits Window {
                         height: Theme.control-height - Theme.space-1;
                         text: "Cancel";
                         clicked => {
-                            root.cancel-export();
+                            root.action("cancel-export");
                             keys.focus();
                         }
                     }
                 }
             }
         }
+
+        // The media being dragged, under the pointer.
+        if root.dragged-media >= 0: Rectangle {
+            x: root.drag-x - root.absolute-position.x + Theme.space-3;
+            y: root.drag-y - root.absolute-position.y + Theme.space-3;
+            width: label.preferred-width + 2 * Theme.space-2;
+            height: Theme.control-height;
+            border-radius: Theme.radius-control;
+            border-width: Theme.border-width;
+            border-color: Theme.primary-bright;
+            background: Theme.bg-2;
+
+            label := Text {
+                text: root.media-name-of(root.dragged-media);
+                color: Theme.text-1;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
+
+        // Files from another application, over the window.
+        if root.files-hovering: Rectangle {
+            background: Theme.scrim;
+            border-width: Theme.focus-width;
+            border-color: Theme.primary-bright;
+
+            Text {
+                text: "Drop to import";
+                color: Theme.text-1;
+                font-size: Theme.font-heading;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
+
+        if root.prompt-open: Prompt {
+            title: root.prompt-title;
+            message: root.prompt-message;
+            answers: root.prompt-answers;
+            destructive: root.prompt-destructive;
+            answered(index) => {
+                root.prompt-answered(index);
+            }
+        }
+
+        if root.sequence-settings-open: SequenceSettings {
+            rates: root.rate-names;
+            rate: root.sequence-rate;
+            picture-width: root.sequence-width;
+            picture-height: root.sequence-height;
+            done(apply, rate, width, height) => {
+                root.sequence-settings-done(apply, rate, width, height);
+                keys.focus();
+            }
+            finished => {
+                keys.focus();
+            }
+        }
     }
 
+    // Lookups in the media list for the item being dragged.
+    pure function media-length-of(id: int) -> int {
+        return root.media-item(id).length;
+    }
+    pure function media-has-video(id: int) -> bool {
+        return root.media-item(id).video;
+    }
+    pure function media-has-audio(id: int) -> bool {
+        return root.media-item(id).audio;
+    }
+    pure function media-name-of(id: int) -> string {
+        return root.media-item(id).name;
+    }
+    pure callback media-item(id: int) -> MediaView;
+
     shortcut-list := PopupWindow {
-        width: 320px;
+        width: 360px;
         x: (root.width - self.width) / 2;
-        y: (root.height - self.height) / 2;
+        y: Theme.space-6;
 
         Rectangle {
             background: Theme.bg-2;
@@ -569,7 +680,7 @@ export component MainWindow inherits Window {
                     spacing: Theme.space-3;
 
                     Text {
-                        width: 112px;
+                        width: 120px;
                         text: shortcut.keys;
                         color: Theme.primary-bright;
                         font-family: Theme.font-numeric;
@@ -578,14 +689,15 @@ export component MainWindow inherits Window {
                     Text {
                         text: shortcut.description;
                         color: Theme.text-2;
+                        wrap: word-wrap;
                     }
                 }
             }
         }
     }
 
-    // About dialog stub. The AboutSlint widget is the attribution the Slint Royalty-free
-    // License 2.0 requires; it must stay reachable from the top-level menu.
+    // The AboutSlint widget is the attribution the Slint Royalty-free License 2.0 requires; it
+    // must stay reachable from the top-level menu.
     about := PopupWindow {
         width: 360px;
         x: (root.width - self.width) / 2;

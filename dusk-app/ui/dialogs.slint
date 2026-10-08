@@ -1,0 +1,208 @@
+// Dialogs drawn over the editor, which shows through dimmed and takes no clicks meanwhile.
+
+import { Theme } from "theme.slint";
+import { FieldLabel, NumberField, ToolButton } from "widgets.slint";
+
+// The panel a dialog sits on.
+component DialogPanel inherits Rectangle {
+    background: Theme.scrim;
+
+    // Nothing under the dialog can be clicked.
+    TouchArea { }
+
+    panel := Rectangle {
+        width: Theme.dialog-width;
+        height: content.preferred-height;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        background: Theme.bg-2;
+        border-width: Theme.border-width;
+        border-color: Theme.border;
+        border-radius: Theme.radius-panel;
+
+        content := VerticalLayout {
+            padding: Theme.space-4;
+            spacing: Theme.space-3;
+
+            @children
+        }
+    }
+}
+
+component DialogTitle inherits Text {
+    color: Theme.text-1;
+    font-size: Theme.font-dialog;
+    font-weight: Theme.weight-semibold;
+    wrap: word-wrap;
+}
+
+// A question with up to three answers. The first is the default, given with Enter; the last
+// is given with Escape.
+export component Prompt inherits Rectangle {
+    in property <string> title;
+    in property <string> message;
+    in property <[string]> answers;
+    // The answer that discards something, outlined in alert; -1 for none.
+    in property <int> destructive: -1;
+    callback answered(index: int);
+
+    DialogPanel {
+        DialogTitle {
+            text: root.title;
+        }
+
+        Text {
+            text: root.message;
+            color: Theme.text-2;
+            wrap: word-wrap;
+        }
+
+        HorizontalLayout {
+            alignment: end;
+            spacing: Theme.space-2;
+
+            for answer[index] in root.answers: ToolButton {
+                text: answer;
+                primary: index == 0 && index != root.destructive;
+                destructive: index == root.destructive;
+                clicked => {
+                    root.answered(index);
+                }
+            }
+        }
+    }
+}
+
+// The sequence's frame rate and picture size.
+export component SequenceSettings inherits Rectangle {
+    // The rates to choose from, and which one the sequence has.
+    in property <[string]> rates;
+    in property <int> rate;
+    in property <int> picture-width;
+    in property <int> picture-height;
+    callback done(apply: bool, rate: int, width: int, height: int);
+    // Typing in a field is over.
+    callback finished();
+
+    property <int> chosen-rate: root.rate;
+    property <int> chosen-width: root.picture-width;
+    property <int> chosen-height: root.picture-height;
+
+    DialogPanel {
+        DialogTitle {
+            text: "Sequence settings";
+        }
+
+        FieldLabel {
+            text: "Frame rate (fps)";
+        }
+
+        GridLayout {
+            spacing: Theme.space-1;
+
+            for name[index] in root.rates: Rectangle {
+                row: index / 4;
+                col: Math.mod(index, 4);
+                height: Theme.control-height;
+                border-radius: Theme.radius-control;
+                border-width: Theme.border-width;
+                border-color: index == root.chosen-rate ? Theme.primary : Theme.border;
+                background: index == root.chosen-rate ? Theme.primary
+                    : touch.has-hover ? Theme.bg-3 : Theme.bg-2;
+
+                Text {
+                    text: name;
+                    color: index == root.chosen-rate ? Theme.on-brand : Theme.text-1;
+                    font-family: Theme.font-numeric;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+
+                touch := TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => {
+                        root.chosen-rate = index;
+                    }
+                }
+            }
+        }
+
+        FieldLabel {
+            text: "Picture size (pixels)";
+        }
+
+        HorizontalLayout {
+            spacing: Theme.space-2;
+
+            NumberField {
+                value: root.chosen-width;
+                minimum: 16;
+                maximum: 8192;
+                suffix: "wide";
+                edited(value) => {
+                    root.chosen-width = value;
+                }
+                finished => {
+                    root.finished();
+                }
+            }
+
+            NumberField {
+                value: root.chosen-height;
+                minimum: 16;
+                maximum: 8192;
+                suffix: "high";
+                edited(value) => {
+                    root.chosen-height = value;
+                }
+                finished => {
+                    root.finished();
+                }
+            }
+        }
+
+        HorizontalLayout {
+            spacing: Theme.space-1;
+
+            for size in [
+                { label: "1920×1080", width: 1920, height: 1080 },
+                { label: "1080×1920", width: 1080, height: 1920 },
+                { label: "1280×720", width: 1280, height: 720 },
+                { label: "3840×2160", width: 3840, height: 2160 },
+            ]: ToolButton {
+                text: size.label;
+                clicked => {
+                    root.chosen-width = size.width;
+                    root.chosen-height = size.height;
+                }
+            }
+        }
+
+        Text {
+            text: "A new frame rate converts every clip through time and needs every track unlocked.";
+            color: Theme.text-3;
+            font-size: Theme.font-tiny;
+            wrap: word-wrap;
+        }
+
+        HorizontalLayout {
+            alignment: end;
+            spacing: Theme.space-2;
+
+            ToolButton {
+                text: "Apply";
+                primary: true;
+                clicked => {
+                    root.done(true, root.chosen-rate, root.chosen-width, root.chosen-height);
+                }
+            }
+
+            ToolButton {
+                text: "Cancel";
+                clicked => {
+                    root.done(false, root.chosen-rate, root.chosen-width, root.chosen-height);
+                }
+            }
+        }
+    }
+}

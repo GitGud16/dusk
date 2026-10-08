@@ -19,3 +19,70 @@ Half a second of `testsrc2` (320x240, 30 fps) as 10-bit VP9 (profile 2, `yuv420p
 ```powershell
 ffmpeg -hide_banner -y -f lavfi -i "testsrc2=size=320x240:rate=30:duration=0.5" -c:v libvpx-vp9 -pix_fmt yuv420p10le -profile:v 2 -b:v 200k -g 15 -row-mt 0 -threads 1 -map_metadata -1 -fflags +bitexact -flags:v +bitexact testdata/sample-vp9-10bit.webm
 ```
+
+## `sample-rotated.mp4`
+
+`sample-h264-aac.mp4` copied with a display matrix that turns it a quarter clockwise, as a
+portrait phone video is stored (ffprobe reports `rotation=-90`):
+
+```powershell
+ffmpeg -hide_banner -y -display_rotation:v:0 -90 -i testdata/sample-h264-aac.mp4 -c copy -map_metadata -1 -fflags +bitexact testdata/sample-rotated.mp4
+```
+
+## `photo.png` and `photo-turned.jpg`
+
+One frame of `testsrc2` (320x240) as an RGB PNG, and as a full-range JPEG carrying EXIF
+orientation 6 (turn a quarter clockwise), for the still image path. FFmpeg cannot write EXIF,
+so `scripts/exif-orientation.py` adds it:
+
+```powershell
+ffmpeg -hide_banner -y -f lavfi -i "testsrc2=size=320x240:rate=1" -frames:v 1 -pix_fmt rgb24 -map_metadata -1 -fflags +bitexact -flags:v +bitexact testdata/photo.png
+ffmpeg -hide_banner -y -f lavfi -i "testsrc2=size=320x240:rate=1" -frames:v 1 -c:v mjpeg -q:v 3 -pix_fmt yuvj420p -map_metadata -1 -fflags +bitexact -flags:v +bitexact $env:TEMP\dusk-photo.jpg
+python scripts/exif-orientation.py $env:TEMP\dusk-photo.jpg testdata/photo-turned.jpg 6
+```
+
+## `photo-p3.jpg`
+
+The same frame as `photo.png` as a JPEG with an embedded Display P3 ICC profile (FFmpeg's
+`iccgen` filter), for reading primaries through FFmpeg's ICC support:
+
+```powershell
+ffmpeg -hide_banner -y -f lavfi -i "testsrc2=size=320x240:rate=1" -frames:v 1 -vf "format=yuvj420p,iccgen=color_primaries=smpte432:color_trc=iec61966-2-1:force=1" -c:v mjpeg -q:v 3 -map_metadata -1 -fflags +bitexact -flags:v +bitexact testdata/photo-p3.jpg
+```
+
+## `chirp.wav`
+
+One second of a sine sweeping up from 200 Hz (48 kHz mono, 16-bit PCM). PCM decodes and seeks
+to the exact sample, so mixing it backwards can be checked against mixing it forwards, and
+WAV leaves the channel order unspecified, which decoding has to cope with:
+
+```powershell
+ffmpeg -hide_banner -y -f lavfi -i "aevalsrc=0.5*sin(2*PI*t*(200+400*t)):s=48000:d=1" -c:a pcm_s16le -ac 1 -map_metadata -1 -fflags +bitexact -flags:a +bitexact testdata/chirp.wav
+```
+
+## `voice.opus`, `voice.m4a`, `voice.amr` and `song.mp3`
+
+A second of a 440 Hz tone as phones and messengers send audio: Opus in Ogg (WhatsApp and
+Telegram voice notes; Telegram names them `.oga`), mono AAC in M4A, AMR-NB, and stereo MP3
+with a 64x64 PNG as cover art, which must not count as video:
+
+```powershell
+ffmpeg -hide_banner -y -f lavfi -i "sine=frequency=440:sample_rate=16000:duration=1" -c:a libopus -b:a 16k -ac 1 -application voip -map_metadata -1 -fflags +bitexact -flags:a +bitexact testdata/voice.opus
+ffmpeg -hide_banner -y -f lavfi -i "sine=frequency=440:sample_rate=44100:duration=1" -c:a aac -b:a 32k -ac 1 -map_metadata -1 -fflags +bitexact -flags:a +bitexact testdata/voice.m4a
+ffmpeg -hide_banner -y -f lavfi -i "sine=frequency=440:sample_rate=8000:duration=1" -c:a libopencore_amrnb -b:a 12.2k -ac 1 -map_metadata -1 -fflags +bitexact -flags:a +bitexact testdata/voice.amr
+ffmpeg -hide_banner -y -f lavfi -i "color=c=0x5003C0:s=64x64" -frames:v 1 -map_metadata -1 -fflags +bitexact -flags:v +bitexact $env:TEMP\dusk-cover.png
+ffmpeg -hide_banner -y -f lavfi -i "sine=frequency=440:sample_rate=44100:duration=1" -i $env:TEMP\dusk-cover.png -map 0:a -map 1:v -c:a libmp3lame -b:a 64k -ac 2 -c:v copy -disposition:v:0 attached_pic -id3v2_version 3 -map_metadata -1 -fflags +bitexact -flags:a +bitexact testdata/song.mp3
+```
+
+## `photo-grid.heic`
+
+`photo.png` as iPhones store photos: a HEIC grid of HEVC tiles, here 2x2 tiles of 176x128
+cropped to 320x240, with an `irot` property that turns it a quarter clockwise for display and
+the Display P3 profile of `photo-p3.jpg` in a `colr` property, as iPhones mark theirs.
+FFmpeg reads such grids but cannot write them, so `scripts/heif-grid.py` assembles the file
+from tiles FFmpeg encodes:
+
+```powershell
+foreach ($r in 0,1) { foreach ($c in 0,1) { ffmpeg -hide_banner -y -i testdata/photo.png -vf "pad=352:256:0:0:black,crop=176:128:$($c*176):$($r*128),format=yuv420p" -frames:v 1 -c:v libkvazaar -kvazaar-params "preset=medium,qp=18" -f hevc $env:TEMP\dusk-tile$r$c.hevc } }
+python scripts/heif-grid.py testdata/photo-grid.heic 2 2 176 128 320 240 3 testdata/photo-p3.jpg $env:TEMP\dusk-tile00.hevc $env:TEMP\dusk-tile01.hevc $env:TEMP\dusk-tile10.hevc $env:TEMP\dusk-tile11.hevc
+```

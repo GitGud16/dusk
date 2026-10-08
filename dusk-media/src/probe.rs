@@ -4,9 +4,12 @@ use std::path::Path;
 use ffmpeg_next as ffmpeg;
 use ffmpeg_next::media::Type as Medium;
 
+use dusk_core::Orientation;
+
 use crate::MediaError;
 use crate::ffi;
 use crate::input::open_input;
+use crate::orientation::from_display_matrix;
 
 /// What a media file contains, read from its container without decoding any frames.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -17,6 +20,9 @@ pub struct ProbeInfo {
     pub duration_us: Option<i64>,
     /// The streams, in file order.
     pub streams: Vec<StreamSummary>,
+    /// The file is a HEIF image, such as an iPhone photo (HEIC) or an AVIF: one picture,
+    /// which may be stored as a grid of tiles, each a stream of its own.
+    pub heif: bool,
 }
 
 /// One stream of a probed file.
@@ -65,6 +71,11 @@ pub enum StreamDetail {
         base_frame_rate: Option<(i32, i32)>,
         /// Whether the stream is an attached picture (cover art) rather than video.
         cover_art: bool,
+        /// How its frames are turned and mirrored for display, from its display matrix.
+        orientation: Orientation,
+        /// Bits per sample of its decoded pictures: 8, or 10 and more for HDR and much
+        /// camera footage; 8 when FFmpeg cannot tell before decoding.
+        bit_depth: u8,
     },
     /// An audio stream.
     Audio {
@@ -88,7 +99,17 @@ pub fn probe(path: &Path) -> Result<ProbeInfo, MediaError> {
         // duration is AV_NOPTS_VALUE, a negative number.
         duration_us: Some(input.duration()).filter(|us| *us >= 0),
         streams: input.streams().map(summarize).collect(),
+        heif: is_heif(&input),
     })
+}
+
+/// Whether `input` is a HEIF still image: one stored as a tile grid, or one whose brand
+/// says so (image sequences, `msf1` and `avis`, are not stills).
+fn is_heif(input: &ffmpeg::format::context::Input) -> bool {
+    const STILL_BRANDS: [&str; 6] = ["heic", "heix", "heim", "heis", "mif1", "avif"];
+    let brand = input.metadata().get("major_brand").map(str::to_owned);
+    ffi::tile_grid(input).is_some()
+        || brand.is_some_and(|brand| STILL_BRANDS.contains(&brand.trim()))
 }
 
 fn summarize(stream: ffmpeg::format::stream::Stream<'_>) -> StreamSummary {
@@ -116,6 +137,9 @@ fn summarize(stream: ffmpeg::format::stream::Stream<'_>) -> StreamSummary {
                 cover_art: stream
                     .disposition()
                     .contains(ffmpeg::format::stream::Disposition::ATTACHED_PIC),
+                orientation: ffi::display_matrix(&parameters)
+                    .map_or(Orientation::UPRIGHT, |matrix| from_display_matrix(&matrix)),
+                bit_depth: ffi::bit_depth(&parameters),
             }
         }
         StreamKind::Audio => StreamDetail::Audio {

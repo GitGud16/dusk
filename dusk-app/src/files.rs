@@ -1,6 +1,82 @@
-//! Where Dusk writes files.
+//! Where Dusk writes files, and how: never half-written where the user expects them.
 
+use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::mpsc::{Sender, channel};
+use std::thread::JoinHandle;
+
+/// A piece of file work.
+type Job = Box<dyn FnOnce() + Send>;
+
+/// Runs file work on a thread of its own, one job at a time in the order given, so the UI
+/// thread never waits for a disk and writes never overtake each other. Dropping it waits for
+/// the jobs already given, so a save started before quitting still finishes.
+pub struct Worker {
+    jobs: Option<Sender<Job>>,
+    thread: Option<JoinHandle<()>>,
+}
+
+impl Worker {
+    /// Starts the worker's thread.
+    pub fn start() -> io::Result<Worker> {
+        let (jobs, inbox) = channel::<Job>();
+        let thread = std::thread::Builder::new()
+            .name("dusk files".to_owned())
+            .spawn(move || {
+                for job in inbox {
+                    job();
+                }
+            })?;
+        Ok(Worker {
+            jobs: Some(jobs),
+            thread: Some(thread),
+        })
+    }
+
+    /// Queues `job`.
+    pub fn run(&self, job: impl FnOnce() + Send + 'static) {
+        if let Some(jobs) = &self.jobs {
+            // The thread only stops once the sender is gone, so this cannot fail.
+            let _ = jobs.send(Box::new(job));
+        }
+    }
+}
+
+impl Drop for Worker {
+    fn drop(&mut self) {
+        // Without a sender the thread finishes the queued jobs and ends.
+        drop(self.jobs.take());
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+/// Writes `contents` to `path` without ever leaving a half-written file there: into
+/// "<path>.part" first, flushed to disk, then renamed over `path`. On failure the part file
+/// is removed and `path` is left as it was.
+pub fn write_atomically(path: &Path, contents: &[u8]) -> io::Result<()> {
+    let part = part_path(path);
+    let written = (|| {
+        let mut file = std::fs::File::create(&part)?;
+        io::Write::write_all(&mut file, contents)?;
+        // On disk before the rename, so a crash cannot leave an empty file at `path`.
+        file.sync_all()?;
+        drop(file);
+        std::fs::rename(&part, path)
+    })();
+    if written.is_err() {
+        let _ = std::fs::remove_file(&part);
+    }
+    written
+}
+
+/// Where a file is written before it is renamed to `path`.
+pub fn part_path(path: &Path) -> PathBuf {
+    let mut part = path.as_os_str().to_owned();
+    part.push(".part");
+    PathBuf::from(part)
+}
 
 /// Where an export of the project made from `source` goes, until M4 brings the export dialog:
 /// beside the source as "<name> export.mp4", numbered so no existing file is replaced.
@@ -9,11 +85,7 @@ pub fn export_path(source: &Path) -> PathBuf {
     let stem = source
         .file_stem()
         .map_or_else(|| "Dusk".into(), |stem| stem.to_string_lossy());
-    let taken = |path: &Path| {
-        let mut part = path.as_os_str().to_owned();
-        part.push(".part");
-        path.exists() || Path::new(&part).exists()
-    };
+    let taken = |path: &Path| path.exists() || part_path(path).exists();
     (1..)
         .map(|n| match n {
             1 => folder.join(format!("{stem} export.mp4")),
@@ -39,6 +111,48 @@ mod tests {
         let dir = folder("beside");
         let source = dir.join("beach day.mov");
         assert_eq!(export_path(&source), dir.join("beach day export.mp4"));
+    }
+
+    #[test]
+    fn jobs_run_in_order_and_finish_before_the_worker_goes() {
+        let done = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let worker = Worker::start().unwrap();
+        for n in 0..20 {
+            let done = std::sync::Arc::clone(&done);
+            worker.run(move || {
+                std::thread::sleep(std::time::Duration::from_millis(1));
+                done.lock().unwrap().push(n);
+            });
+        }
+        drop(worker);
+        assert_eq!(*done.lock().unwrap(), (0..20).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn a_file_is_written_whole_with_nothing_left_beside_it() {
+        let dir = folder("whole");
+        let path = dir.join("edit.dusk");
+        write_atomically(&path, b"first").unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"first");
+        write_atomically(&path, b"second, longer").unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"second, longer");
+        assert!(!part_path(&path).exists());
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn a_failed_write_leaves_things_as_they_were() {
+        let dir = folder("failed");
+        // A folder where the file should go cannot be replaced by it.
+        let path = dir.join("edit.dusk");
+        std::fs::create_dir(&path).unwrap();
+        assert!(write_atomically(&path, b"text").is_err());
+        assert!(path.is_dir());
+        assert!(!part_path(&path).exists());
+        // Nor can a file be written into a folder that does not exist.
+        let nowhere = dir.join("missing").join("edit.dusk");
+        assert!(write_atomically(&nowhere, b"text").is_err());
+        assert!(!nowhere.exists() && !part_path(&nowhere).exists());
     }
 
     #[test]

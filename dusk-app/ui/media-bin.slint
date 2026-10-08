@@ -1,0 +1,190 @@
+// The media bin: every file in the project, listed once. Drag one onto the timeline to place
+// it there, or double-click it to place it at the playhead.
+
+import { Theme } from "theme.slint";
+import { PanelTitle, ToolButton } from "widgets.slint";
+
+// A media file as the bin lists it.
+export struct MediaView {
+    id: int,
+    name: string,
+    // What it is, such as "Video · 1920×1080 · 00:00:12:04".
+    detail: string,
+    // How long it lasts once placed, in timeline frames.
+    length: int,
+    video: bool,
+    audio: bool,
+    // A small picture of a video or photo, once the engine has made it; empty until then.
+    thumbnail: image,
+}
+
+export component MediaBin inherits Rectangle {
+    in property <[MediaView]> media;
+    in property <int> selected: -1;
+    callback select(media: int);
+    // Double-clicked: place it at the playhead.
+    callback activate(media: int);
+    callback import();
+    // An item is being dragged out, the pointer at `x`, `y` in window coordinates; then let go.
+    callback drag-moved(media: int, x: length, y: length);
+    callback drag-ended(media: int);
+
+    property <int> pressed-item: -1;
+    // How far the list is scrolled.
+    property <length> scrolled;
+    property <bool> dragging;
+    property <length> press-x;
+    property <length> press-y;
+
+    background: Theme.bg-1;
+
+    VerticalLayout {
+        Rectangle {
+            height: Theme.toolbar-height;
+
+            HorizontalLayout {
+                padding-left: Theme.panel-padding;
+                padding-right: Theme.space-2;
+                spacing: Theme.space-2;
+
+                PanelTitle {
+                    text: "Media";
+                    horizontal-stretch: 1;
+                }
+
+                ToolButton {
+                    y: (parent.height - self.height) / 2;
+                    text: "Import";
+                    clicked => {
+                        root.import();
+                    }
+                }
+            }
+
+            Rectangle {
+                y: parent.height - self.height;
+                height: Theme.border-width;
+                background: Theme.border;
+            }
+        }
+
+        Rectangle {
+            vertical-stretch: 1;
+
+            if root.media.length == 0: Text {
+                x: Theme.panel-padding;
+                width: parent.width - 2 * Theme.panel-padding;
+                text: "Drop video, audio or photos here, or use Import.";
+                color: Theme.text-3;
+                wrap: word-wrap;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+
+            // Scrolled with the wheel only: a Flickable would hold presses back while it
+            // decides whether a drag pans it, which breaks double-clicks and drags out.
+            TouchArea {
+                scroll-event(event) => {
+                    root.scrolled = Math.clamp(root.scrolled - event.delta-y, 0px, Math.max(0px, list.preferred-height - parent.height));
+                    return accept;
+                }
+            }
+
+            Rectangle {
+                clip: true;
+
+                list := VerticalLayout {
+                    y: -root.scrolled;
+                    width: parent.width;
+                    height: self.preferred-height;
+                    padding: Theme.space-1;
+                    spacing: 2px;
+                    alignment: start;
+
+                    for item in root.media: Rectangle {
+                        height: 44px;
+                        border-radius: Theme.radius-control;
+                        background: item.id == root.selected ? Theme.primary-dim
+                            : touch.has-hover ? Theme.bg-3 : transparent;
+
+                        HorizontalLayout {
+                            padding: Theme.space-1;
+                            spacing: Theme.space-2;
+
+                            // Video and photos are primary, sound alone secondary, as on the
+                            // timeline; a thumbnail covers the color once there is one.
+                            Rectangle {
+                                width: 56px;
+                                border-radius: Theme.radius-clip;
+                                background: item.video ? Theme.primary : Theme.secondary;
+                                clip: true;
+
+                                if item.thumbnail.width > 0: Image {
+                                    width: parent.width;
+                                    height: parent.height;
+                                    source: item.thumbnail;
+                                    image-fit: cover;
+                                }
+                            }
+
+                            VerticalLayout {
+                                alignment: center;
+                                spacing: 2px;
+
+                                Text {
+                                    text: item.name;
+                                    color: Theme.text-1;
+                                    overflow: elide;
+                                }
+
+                                Text {
+                                    text: item.detail;
+                                    color: Theme.text-2;
+                                    font-size: Theme.font-tiny;
+                                    overflow: elide;
+                                }
+                            }
+                        }
+
+                        touch := TouchArea {
+                            pointer-event(event) => {
+                                if event.button == PointerEventButton.left && event.kind == PointerEventKind.down {
+                                    root.select(item.id);
+                                    root.pressed-item = item.id;
+                                    root.press-x = self.absolute-position.x + self.mouse-x;
+                                    root.press-y = self.absolute-position.y + self.mouse-y;
+                                }
+                                if event.button == PointerEventButton.left && event.kind == PointerEventKind.up {
+                                    if root.dragging {
+                                        root.drag-ended(item.id);
+                                    }
+                                    root.dragging = false;
+                                    root.pressed-item = -1;
+                                }
+                            }
+                            moved => {
+                                let x = self.absolute-position.x + self.mouse-x;
+                                let y = self.absolute-position.y + self.mouse-y;
+                                if !root.dragging && root.pressed-item == item.id && (Math.abs(x - root.press-x) > Theme.drag-threshold || Math.abs(y - root.press-y) > Theme.drag-threshold) {
+                                    root.dragging = true;
+                                }
+                                if root.dragging {
+                                    root.drag-moved(item.id, x, y);
+                                }
+                            }
+                            double-clicked => {
+                                root.activate(item.id);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    Rectangle {
+        x: parent.width - self.width;
+        width: Theme.border-width;
+        background: Theme.border;
+    }
+}

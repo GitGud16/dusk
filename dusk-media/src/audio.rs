@@ -71,7 +71,12 @@ impl AudioDecoder {
             kind: ffmpeg::codec::threading::Type::Frame,
             count: 1,
         });
-        let decoder = context.decoder().audio().map_err(open_error)?;
+        let mut decoder = context.decoder();
+        // FFmpeg drops encoder priming (MP3, AAC, Opus) at the start and moves the first
+        // frame's timestamp past it, which it can do only knowing the packets' time base;
+        // without it that frame looks early, and its start would be dropped a second time.
+        decoder.set_packet_time_base(time_base);
+        let decoder = decoder.audio().map_err(open_error)?;
         let start = ffi::start_time(&input);
         Ok(AudioDecoder {
             path: path.to_path_buf(),
@@ -129,7 +134,7 @@ impl AudioDecoder {
         let mut decoded = frame::Audio::empty();
         loop {
             match self.decoder.receive_frame(&mut decoded) {
-                Ok(()) => return self.convert(&decoded),
+                Ok(()) => return self.convert(&mut decoded),
                 Err(ffmpeg::Error::Eof) => {
                     self.flush_resampler()?;
                     self.ended = true;
@@ -166,7 +171,14 @@ impl AudioDecoder {
     }
 
     /// Converts a decoded frame to the output format and keeps the samples.
-    fn convert(&mut self, decoded: &frame::Audio) -> Result<(), MediaError> {
+    fn convert(&mut self, decoded: &mut frame::Audio) -> Result<(), MediaError> {
+        // PCM in WAV, among others, leaves the channel order unspecified. The resampler takes
+        // that as the default layout for the channel count, then refuses every frame still
+        // marked unspecified as a changed input, so the frame is given that layout too. An
+        // unspecified layout owns no memory, so replacing it frees nothing.
+        if decoded.channel_layout().is_empty() {
+            decoded.set_channel_layout(ChannelLayout::default(i32::from(decoded.channels())));
+        }
         if self.position.is_none() {
             let start = decoded.timestamp().map_or(0, |ts| self.micros(ts));
             self.position = Some(self.frame_index(start));

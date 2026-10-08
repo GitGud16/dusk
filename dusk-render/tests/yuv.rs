@@ -22,6 +22,9 @@ fn picture(
         layout: PictureLayout::Nv12,
         matrix: ColorMatrix::Bt709,
         range: ColorRange::Limited,
+        primaries: dusk_core::color::Primaries::Bt709,
+        transfer: dusk_core::color::Transfer::Bt1886,
+        peak_nits: 0,
         luma: (0..height)
             .flat_map(|y| (0..width).map(move |x| (x, y)))
             .map(|(x, y)| luma(x, y))

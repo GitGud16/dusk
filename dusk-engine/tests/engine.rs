@@ -3,11 +3,10 @@
 #![cfg(feature = "gpu")]
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::sync::mpsc;
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError, mpsc};
 use std::time::{Duration, Instant};
 
-use dusk_core::{Frame, Project, import};
+use dusk_core::{Command, Frame, MediaId, Project, RemoveClips, import, split_at};
 use dusk_engine::{Engine, EngineEvent, EngineOptions, Gpu, media_info};
 use dusk_render::Compositor;
 
@@ -27,13 +26,38 @@ fn project_at(position: Frame) -> Arc<Project> {
     Arc::new(project)
 }
 
+/// The sample's first third, then its last third straight after it: one file shown from two
+/// places, so going from one to the other means a jump in the file.
+fn project_with_a_jump() -> Arc<Project> {
+    let mut project = (*project_at(Frame(0))).clone();
+    for at in [Frame(10), Frame(20)] {
+        split_at(&project, at, None)
+            .unwrap()
+            .apply(&mut project)
+            .unwrap();
+    }
+    let middle = project.sequence().visible_video_at(Frame(15)).unwrap().id;
+    Command::RemoveClips(RemoveClips::new(middle, true))
+        .apply(&mut project)
+        .unwrap();
+    Arc::new(project)
+}
+
+/// The engines of these tests run one at a time: the checks of playback in real time need
+/// the machine to themselves, and CI runners draw with WARP, on their few cores.
+static ONE_AT_A_TIME: Mutex<()> = Mutex::new(());
+
 struct Running {
     engine: Engine,
     events: mpsc::Receiver<EngineEvent>,
     gpu: Gpu,
+    /// Dropped last, once the engine has stopped.
+    _turn: MutexGuard<'static, ()>,
 }
 
 fn start_with(options: EngineOptions, project: Arc<Project>) -> Running {
+    // A test that failed holding the turn leaves nothing behind that matters here.
+    let turn = ONE_AT_A_TIME.lock().unwrap_or_else(PoisonError::into_inner);
     let gpu = Gpu::new().expect("a graphics adapter: hardware, or WARP on CI");
     let (sender, events) = mpsc::channel();
     let engine = Engine::new(&gpu, options, move |event| {
@@ -46,6 +70,7 @@ fn start_with(options: EngineOptions, project: Arc<Project>) -> Running {
         engine,
         events,
         gpu,
+        _turn: turn,
     }
 }
 
@@ -77,9 +102,55 @@ impl Running {
                 EngineEvent::Stopped { frame } => return (frames, frame),
                 EngineEvent::Error(error) => panic!("{error}"),
                 EngineEvent::Export(event) => panic!("no export was started: {event:?}"),
+                EngineEvent::Thumbnail { media, .. } => {
+                    panic!("no thumbnail was asked for: {media:?}")
+                }
             }
         }
     }
+}
+
+#[test]
+fn the_next_clip_gets_a_decoder_of_its_own_before_it_comes_into_view() {
+    let running = start(project_with_a_jump());
+    running.engine.play(Frame(0), 1.0);
+    let mut most_while_first = 0;
+    let stopped = loop {
+        match running.events.recv_timeout(PATIENCE).expect("an event") {
+            EngineEvent::Frame { frame, .. } => {
+                let open = running.engine.open_decoders();
+                assert!(open <= 2, "{open} video decoders open");
+                if frame < Frame(10) {
+                    most_while_first = most_while_first.max(open);
+                }
+            }
+            EngineEvent::Stopped { frame } => break frame,
+            EngineEvent::Error(error) => panic!("{error}"),
+            EngineEvent::Export(event) => panic!("no export was started: {event:?}"),
+            EngineEvent::Thumbnail { media, .. } => panic!("no thumbnail was asked for: {media:?}"),
+        }
+    };
+    assert_eq!(stopped, Frame(19));
+    // The first clip's decoder, and the second's, moved to its first frame meanwhile.
+    assert_eq!(most_while_first, 2);
+}
+
+#[test]
+fn thumbnails_come_from_the_thumbnail_thread() {
+    let running = start(project_at(Frame(0)));
+    let info = media_info(&sample()).unwrap();
+    running.engine.make_thumbnail(MediaId(7), sample(), info);
+    let thumbnail = loop {
+        match running.events.recv_timeout(PATIENCE).expect("an event") {
+            EngineEvent::Thumbnail { media, thumbnail } => {
+                assert_eq!(media, MediaId(7));
+                break thumbnail;
+            }
+            EngineEvent::Frame { .. } => {}
+            other => panic!("expected a thumbnail, got {other:?}"),
+        }
+    };
+    assert_eq!((thumbnail.width, thumbnail.height), (128, 96));
 }
 
 #[test]
@@ -96,12 +167,55 @@ fn shows_the_requested_frame_at_the_preview_size() {
 }
 
 #[test]
-fn a_gap_is_black() {
+fn a_gap_is_a_black_frame() {
     let running = start(project_at(Frame(15)));
     running.engine.show(Frame(5));
     let (frame, texture) = running.next_frame();
     assert_eq!(frame, Frame(5));
-    assert!(texture.is_none());
+    let texture = texture.expect("a frame");
+    assert_eq!((texture.width(), texture.height()), (64, 48));
+    let rgba = Compositor::new(&running.gpu).read_rgba(&texture).unwrap();
+    assert!(rgba.chunks(4).all(|pixel| pixel == [0, 0, 0, 255]));
+}
+
+#[test]
+fn the_preview_has_the_shape_of_the_sequence() {
+    // A portrait sequence in a landscape preview: the frame is portrait, the bars around it
+    // are the preview's own background.
+    let info = media_info(&sample()).unwrap();
+    let mut project = Project::new(info.frame_rate.unwrap(), (240, 320));
+    import(&project, sample(), info, Frame(0))
+        .apply(&mut project)
+        .unwrap();
+    let running = start(Arc::new(project));
+    running.engine.show(Frame(5));
+    let (_, texture) = running.next_frame();
+    let texture = texture.expect("a picture");
+    assert_eq!((texture.width(), texture.height()), (36, 48));
+}
+
+#[test]
+fn a_photo_shows_for_as_long_as_its_clip_lasts() {
+    // Stored landscape with EXIF orientation 6: shown upright, a portrait picture.
+    let photo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../testdata/photo-turned.jpg");
+    let info = media_info(&photo).unwrap();
+    assert_eq!((info.width, info.height), (240, 320));
+    let mut project = Project::new(dusk_core::Rational::new(30, 1).unwrap(), (240, 320));
+    import(&project, photo, info, Frame(0))
+        .apply(&mut project)
+        .unwrap();
+    let running = start(Arc::new(project));
+    for at in [0, 100, 149] {
+        running.engine.show(Frame(at));
+        let (frame, texture) = running.next_frame();
+        assert_eq!(frame, Frame(at));
+        let texture = texture.expect("a picture");
+        assert_eq!((texture.width(), texture.height()), (36, 48));
+        let rgba = Compositor::new(&running.gpu).read_rgba(&texture).unwrap();
+        // The test pattern fills the portrait frame: no black bars on either side.
+        let lit = |x: usize| (0..48).any(|y| rgba[(y * 36 + x) * 4..][..3] != [0, 0, 0]);
+        assert!(lit(1) && lit(34));
+    }
 }
 
 #[test]
@@ -151,6 +265,42 @@ fn double_speed_takes_half_the_time() {
         took >= Duration::from_millis(400) && took < Duration::from_millis(1500),
         "{took:?}"
     );
+}
+
+#[test]
+fn fast_playback_steps_through_keyframes_to_the_end() {
+    let running = start(project_at(Frame(0)));
+    running.engine.play(Frame(0), 32.0);
+    let (_, stopped) = running.play_through();
+    assert_eq!(stopped, Frame(29));
+}
+
+#[test]
+fn fast_playback_backwards_stops_at_the_start() {
+    let running = start(project_at(Frame(0)));
+    running.engine.play(Frame(29), -8.0);
+    let (_, stopped) = running.play_through();
+    assert_eq!(stopped, Frame(0));
+}
+
+#[test]
+fn playing_backwards_with_a_small_cache_still_reaches_the_start() {
+    // Room for five of the sample's 115 KB frames, so half of it holds two: its one group of
+    // pictures is decoded again from the keyframe every two frames.
+    let options = EngineOptions {
+        sound: false,
+        cache_cap: 600_000,
+        ..EngineOptions::default()
+    };
+    let running = start_with(options, project_at(Frame(0)));
+    running.engine.play(Frame(29), -1.0);
+    let (frames, stopped) = running.play_through();
+    assert_eq!(stopped, Frame(0));
+    assert!(
+        frames.windows(2).all(|pair| pair[0] > pair[1]),
+        "{frames:?}"
+    );
+    assert!(frames.len() > 10, "only {} frames shown", frames.len());
 }
 
 #[test]
@@ -219,6 +369,7 @@ fn playback_with_sound_runs_to_the_end_in_real_time() {
             // No usable device here; playback carries on without sound.
             EngineEvent::Error(error) => eprintln!("{error}"),
             EngineEvent::Export(event) => panic!("no export was started: {event:?}"),
+            EngineEvent::Thumbnail { media, .. } => panic!("no thumbnail was asked for: {media:?}"),
         }
     };
     let took = started.elapsed();
