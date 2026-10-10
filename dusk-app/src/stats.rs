@@ -1,15 +1,30 @@
-//! Preview statistics for measuring (docs/ROADMAP.md, M1): with the `DUSK_STATS` environment
-//! variable set, Dusk prints once a second how many frames the engine handed to the preview,
-//! how many times the window was drawn, and how long the UI thread spent turning frames into
-//! images. This is how the 60 fps preview check is run on other machines.
+//! Preview statistics for measuring (docs/ROADMAP.md, M1 and M7): with the `DUSK_STATS`
+//! environment variable set, Dusk first names the graphics adapter it draws with, then prints
+//! once a second how many frames the engine handed to the preview, how many times the window
+//! was drawn, and how long the UI thread spent turning frames into images. This is how the
+//! 60 fps preview check is run on other machines.
 
 use std::cell::Cell;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
+use dusk_engine::wgpu;
 use slint::{ComponentHandle, RenderingState, Timer, TimerMode};
 
 use crate::MainWindow;
+
+/// Names `adapter` if `DUSK_STATS` is set, so a run on a computer with two graphics adapters
+/// says which one it measured (`WGPU_POWER_PREF=low` picks the integrated one).
+pub fn name_adapter(adapter: &wgpu::Adapter) {
+    if std::env::var_os("DUSK_STATS").is_none() {
+        return;
+    }
+    let info = adapter.get_info();
+    eprintln!(
+        "adapter: {} ({:?}, {:?}; driver {} {})",
+        info.name, info.backend, info.device_type, info.driver, info.driver_info
+    );
+}
 
 /// Counters for the last second.
 #[derive(Default)]

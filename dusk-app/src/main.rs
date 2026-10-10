@@ -54,6 +54,7 @@ fn main() -> anyhow::Result<()> {
     // destroying the device there panics (exit code 2170 instead of 0). With this reference
     // never dropped, that teardown only lowers a reference count.
     let gpu: &'static Gpu = Box::leak(Box::new(select_renderer()?));
+    stats::name_adapter(&gpu.adapter);
     let window = MainWindow::new()?;
     window.set_about_version(env!("CARGO_PKG_VERSION").into());
     window.set_releases_url(about::RELEASES.into());

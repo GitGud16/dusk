@@ -15,14 +15,14 @@ The machines:
 
 | Budget | Target | Desktop | Laptop |
 |---|---|---|---|
-| Idle | under ~250 MB with a 1080p project open and nothing playing | 233 MB (M6); the empty window 200 MB (M1) | — |
-| During 1080p playback | idle + frame cache cap + 300 MB decoders + 64 MB thumbnails: about 800 MB for 8-bit footage and 950 MB for 10-bit at the default cache | 681 MB at most (M6); 703 MB around the cuts of three clips with music (M2) | — |
-| After playback stops | within 10 s: idle + frame cache cap + the preview's working set | 644 MB (M6) | — |
-| 4K sources | one video decoder, no lookahead; playback under ~1.2 GB | the decoder 150 MB (H.264) to 200 MB (10-bit HEVC) (M1) | — |
-| Clip editor | no frame memory of its own; its window about 60 MB once opened | 295 MB open, 730 MB playing, 693–695 MB after (M3) | — |
-| Frame cache | default 384 MB, 128 to 4096 MB in Settings; a smaller cap frees what lies above it at once | at 128 MB: 235, 421 and 376 MB idle, playing and after; 384 → 128 MB freed 269 MB within 3 s (M5) | — |
-| dusq | under the app's playback budget for the same size class | 158 MB at 1080p, 446 MB 4K H.264, 351 MB 4K 10-bit HEVC, 974 MB 8K HEVC (M4) | — |
-| During export | the playback budget plus the encoder's line | compressing a 2.1 GB 4K phone video to 25 MB: 531 MB at most (M4) | — |
+| Idle | under ~250 MB with a 1080p project open and nothing playing | 233 MB (M6); the empty window 200 MB (M1) | 124–126 MB; the empty window 119 MB (M7) |
+| During 1080p playback | idle + frame cache cap + 300 MB decoders + 64 MB thumbnails: about 800 MB for 8-bit footage and 950 MB for 10-bit at the default cache | 681 MB at most (M6); 703 MB around the cuts of three clips with music (M2) | 560 MB at most at 30 fps, 563 MB at 60 fps (M7) |
+| After playback stops | within 10 s: idle + frame cache cap + the preview's working set | 644 MB (M6) | 518–520 MB (M7) |
+| 4K sources | one video decoder, no lookahead; playback under ~1.2 GB | the decoder 150 MB (H.264) to 200 MB (10-bit HEVC) (M1) | the decoder 145 MB (H.264) to 276 MB (10-bit HEVC); playing 736 MB (H.264) and 888 MB (10-bit HEVC) at most (M7) |
+| Clip editor | no frame memory of its own; its window about 60 MB once opened | 295 MB open, 730 MB playing, 693–695 MB after (M3) | 200 MB open; opened after playback, its window 55 MB, 622 MB playing in it, 628 MB playing in the main window beside it, 587 MB after (M7) |
+| Frame cache | default 384 MB, 128 to 4096 MB in Settings; a smaller cap frees what lies above it at once | at 128 MB: 235, 421 and 376 MB idle, playing and after; 384 → 128 MB freed 269 MB within 3 s (M5) | not measured |
+| dusq | under the app's playback budget for the same size class | 158 MB at 1080p, 446 MB 4K H.264, 351 MB 4K 10-bit HEVC, 974 MB 8K HEVC (M4) | through `h264_qsv`: 246 MB at 1080p, 557 MB 4K H.264, 683 MB 4K 10-bit HEVC, 906 MB 8K HEVC (M7) |
+| During export | the playback budget plus the encoder's line | compressing a 2.1 GB 4K phone video to 25 MB: 531 MB at most (M4) | not measured in the app |
 
 The encoder lines, from the peak private bytes an encoder adds while an export feeds it (`dusk-media`'s `encoder_memory`, grainy pictures at High):
 
@@ -30,12 +30,15 @@ The encoder lines, from the peak private bytes an encoder adds while an export f
 |---|---|---|---|
 | `h264_amf` | 150 MB | 61 / 122 MB (M4) | no AMD graphics |
 | `hevc_amf` | 150 MB | 58 / 125 MB (M4) | no AMD graphics |
-| `h264_qsv`, `hevc_qsv` | 200 MB, provisional | no Intel graphics | — |
-| NVENC, the hardware AV1 encoders | 200 MB, provisional | not measured | — |
-| OpenH264 | 150 MB | 39 / 129 MB (M4) | — |
-| Kvazaar | 400 MB | 109 / 369 MB (M4) | — |
-| VP9 | 350 MB at 1080p, 1.1 GB at 4K | 332 / 1,082 MB (M4) | — |
-| SVT-AV1 | 550 MB at 1080p, 1.1 GB at 4K | 526 / 1,008 MB (M4) | — |
+| `h264_qsv` | 200 MB at 1080p, 500 MB at 4K | no Intel graphics | 170 / 454 MB (M7) |
+| `hevc_qsv` | 300 MB at 1080p, 750 MB at 4K | no Intel graphics | 272 / 699 MB (M7) |
+| NVENC, the hardware AV1 encoders | 200 MB, provisional | not measured | `av1_qsv` does not open on this graphics; AV1 falls through to SVT-AV1 |
+| OpenH264 | 150 MB | 39 / 129 MB (M4) | 37 / 127 MB (M7) |
+| Kvazaar | 400 MB | 109 / 369 MB (M4) | 123 / 375 MB (M7) |
+| VP9 | 350 MB at 1080p, 1.1 GB at 4K | 332 / 1,082 MB (M4) | 331 / 1,081 MB (M7) |
+| SVT-AV1 | 550 MB at 1080p, 1.1 GB at 4K | 526 / 1,008 MB (M4) | 526 / 1,048 MB (M7) |
+
+The hardware encoders keep some memory after their session closes, which the next session reuses, so it does not grow export after export but stays until Dusk quits: AMF about 25 MB at 1080p and 60 MB at 4K, `h264_qsv` about 70 and 235 MB, `hevc_qsv` about 145 and 375 MB.
 
 What these figures assume:
 
@@ -52,8 +55,8 @@ What these figures assume:
 |---|---|---|
 | Download | under ~60 MB, which needs LZMA: an Inno Setup installer with solid LZMA2 | 46.5 MB (M6) |
 | Installed | under ~160 MB for 0.1; under ~60 MB long-term, through a slim FFmpeg build of Dusk's own (ROADMAP.md, M7) | about 163.1 MB (M6): the five FFmpeg DLLs 130.3 MB, `dusk.exe` 25.6 MB, `dusq.exe` 0.7 MB, `licenses` about 2.2 MB, Inno Setup's uninstaller 4.4 MB. Over the approximate target, accepted for 0.1 (DECISIONS.md, "The installer's sizes") |
-| Cold start | under 2 s to Dusk's first window | Desktop 0.48–0.62 s (M6); CI's runner, drawing with WARP, 1.3 s (M6); Laptop — |
-| Idle CPU | near 0% when not playing or exporting | Dusk's own threads use none measurable (M1). AMD's driver spins a core under a customized Radeon Software profile, which resetting the profile fixes (DECISIONS.md, "Idle CPU") |
+| Cold start | under 2 s to Dusk's first window | Desktop 0.48–0.62 s (M6); CI's runner, drawing with WARP, 1.3 s (M6); Laptop 0.16–0.26 s (M7) |
+| Idle CPU | near 0% when not playing or exporting | Dusk's own threads use none measurable (M1). AMD's driver spins a core under a customized Radeon Software profile, which resetting the profile fixes (DECISIONS.md, "Idle CPU"). Laptop: 0 ms of CPU in 10 s, with or without a clip open (M7) |
 
 ## 2. Responsive
 
@@ -64,12 +67,12 @@ What these figures assume:
 
 | Measure | Target | Desktop | Laptop |
 |---|---|---|---|
-| Jump to an exact frame, 1080p H.264 with a 2 s GOP | smooth scrubbing | 72 ms median, 123 ms at worst (M1) | — |
-| Dragging the playhead | every frame drawn; the exact frame soon after release | every frame; 24–26 ms after release (M1) | — |
-| 1080p30 playback | every frame shown | none skipped in 5 minutes (M1) | — |
-| 1080p60 playback | every frame shown | all but 3 of 1196 (M1) | — |
-| 1080p60 in the preview (`DUSK_STATS`) | 60 frames a second drawn | 57–60, 0.05 ms of UI time a frame (M1) | — |
-| 4K playback | usable | not recorded | — |
+| Jump to an exact frame, 1080p H.264 with a 2 s GOP | smooth scrubbing | 72 ms median, 123 ms at worst (M1) | 95 ms median, 192 ms at worst (M7) |
+| Dragging the playhead | every frame drawn; the exact frame soon after release | every frame; 24–26 ms after release (M1) | every frame; 56–58 ms after release (M7) |
+| 1080p30 playback | every frame shown | none skipped in 5 minutes (M1) | 2 of 8,962 skipped in 5 minutes (M7) |
+| 1080p60 playback | every frame shown | all but 3 of 1196 (M1) | all but 7 of 3,529 (M7) |
+| 1080p60 in the preview (`DUSK_STATS`) | 60 frames a second drawn | 57–60, 0.05 ms of UI time a frame (M1) | 54–60 (57.8 on average), 0.02 ms of UI time a frame (M7) |
+| 4K playback | usable | not recorded | H.264: 17–30 frames a second in the app (26 on average). 10-bit HEVC: 1–2 in the app, 9 in `playback_probe`, though its decoder alone makes 42 (M7; DECISIONS.md, "The laptop at M7"). 1080p 10-bit HEVC plays whole |
 
 ## 3. Non-destructive
 - Source media is never modified or copied.

@@ -40,6 +40,8 @@ fn main() {
     }
 
     let gpu = Gpu::new().expect("a graphics adapter");
+    let adapter = gpu.adapter.get_info();
+    println!("adapter: {} ({:?})", adapter.name, adapter.backend);
     let (sender, events) = mpsc::channel();
     let engine = Engine::new(&gpu, options, move |event| {
         let _ = sender.send((Instant::now(), event));
