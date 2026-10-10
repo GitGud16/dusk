@@ -1,5 +1,5 @@
 //! Where a media file is: relinking one that moved or could not be found
-//! (docs/ARCHITECTURE.md, "Release (0.1)").
+//! (docs/ARCHITECTURE.md, "Missing media").
 
 use std::path::PathBuf;
 

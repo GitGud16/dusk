@@ -619,8 +619,8 @@ fn matrix_of(frame: &frame::Video, width: u32, height: u32) -> ColorMatrix {
         Space::BT709 => ColorMatrix::Bt709,
         Space::BT470BG | Space::SMPTE170M => ColorMatrix::Bt601,
         Space::BT2020NCL | Space::BT2020CL => ColorMatrix::Bt2020,
-        // Untagged, or a matrix Dusk does not handle yet (docs/ARCHITECTURE.md, "Decoder
-        // pool": BT.709 when width ≥ 1280 or height > 576, BT.601 otherwise).
+        // Untagged, or a matrix Dusk does not handle yet (docs/ARCHITECTURE.md, "Color and
+        // scaling": BT.709 when width ≥ 1280 or height > 576, BT.601 otherwise).
         _ if width >= 1280 || height > 576 => ColorMatrix::Bt709,
         _ => ColorMatrix::Bt601,
     }

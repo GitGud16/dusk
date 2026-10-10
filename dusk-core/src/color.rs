@@ -1,4 +1,4 @@
-//! Color step 3 (docs/ARCHITECTURE.md, "Decoder pool", color and scaling): sources whose
+//! Color step 3 (docs/ARCHITECTURE.md, "Color and scaling"): sources whose
 //! primaries are not BT.709 or whose transfer is HDR are linearized, tone-mapped when HDR,
 //! moved into BT.709 and encoded again for 8-bit SDR output. These are the reference
 //! functions: the compositor's shader does the same per pixel, and dusq's CPU path calls them.

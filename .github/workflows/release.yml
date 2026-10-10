@@ -1,7 +1,7 @@
 name: Release
 
 # Pushing a tag such as v0.1.0 builds the installer and drafts a release with it, for the
-# maintainer to write the notes for and publish (docs/ARCHITECTURE.md, "Release (0.1)").
+# maintainer to write the notes for and publish (docs/ARCHITECTURE.md, "Release").
 on:
   push:
     tags: ['v*']

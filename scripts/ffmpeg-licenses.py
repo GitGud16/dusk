@@ -1,5 +1,5 @@
-"""Writes installer/ffmpeg-libraries.txt for the installer (docs/ARCHITECTURE.md, "Release
-(0.1)"): the license texts of the libraries built into the pinned FFmpeg's DLLs, which ship
+"""Writes installer/ffmpeg-libraries.txt for the installer (docs/ARCHITECTURE.md, "Release"):
+the license texts of the libraries built into the pinned FFmpeg's DLLs, which ship
 beside FFmpeg's own LGPL. Run it again whenever scripts/ffmpeg-pin.psd1 moves:
 
     python scripts/ffmpeg-licenses.py
