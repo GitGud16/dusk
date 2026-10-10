@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use dusk_core::color::{Primaries, Transfer};
 use dusk_core::{ChromaSiting, ColorMatrix, ColorRange, MediaTime, PictureLayout};
-use dusk_media::{Acceleration, Following, MediaError, Step, VideoDecoder};
+use dusk_media::{Acceleration, Following, MediaError, Step, Toward, VideoDecoder};
 
 fn sample() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../testdata/sample-h264-aac.mp4")
@@ -86,6 +86,38 @@ fn the_last_frame_holds_after_the_stream_ends() {
 #[test]
 fn nothing_is_shown_before_the_first_frame() {
     assert!(decoder().frame_at(MediaTime(-1)).unwrap().is_none());
+}
+
+#[test]
+fn a_frame_beyond_the_budget_is_reached_a_few_frames_at_a_time() {
+    let mut decoder = decoder();
+    let mut reached = Vec::new();
+    let there = loop {
+        match decoder
+            .frame_toward(frame_time(20), 3)
+            .expect("decoding works")
+        {
+            Toward::Behind(frame) => reached.push(frame.time),
+            Toward::There(frame) => break frame.expect("a frame is shown").time,
+        }
+    };
+    // Three frames decoded each time, the last of them shown late.
+    assert_eq!(reached, [2, 5, 8, 11, 14, 17].map(frame_time));
+    assert_eq!(there, frame_time(20));
+}
+
+#[test]
+fn a_frame_within_the_budget_is_there_at_once() {
+    let mut decoder = decoder();
+    match decoder
+        .frame_toward(frame_time(20), 21)
+        .expect("decoding works")
+    {
+        Toward::There(frame) => assert_eq!(frame.expect("a frame").time, frame_time(20)),
+        Toward::Behind(frame) => panic!("stopped at {:?}", frame.time),
+    }
+    // As frame_at leaves it: the frame after it is known.
+    assert_eq!(decoder.following(), Following::Next(frame_time(21)));
 }
 
 #[test]

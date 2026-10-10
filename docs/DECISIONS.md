@@ -46,6 +46,18 @@ Every further decoding thread holds pictures of its own: one 8K HEVC stream peak
 
 9 Mpx is where a 10-bit hardware pool crosses the ceiling. 8-bit sources would fit up to about 18 Mpx, but 0.1 deliberately uses the single boundary; a later version can base the class on the computed pool size instead.
 
+### Falling behind while playing (M7)
+
+Playing forwards, the video thread used to decode all the way to the clock's frame before drawing again. When decoding is slower than playback, each such round takes longer than the one before, since the clock moves on further while it decodes and leaves the next round more to decode, so the picture fell to a few frames a second until the 2 s seek rule jumped ahead, and then fell again. Measured with timings in the thread on the laptop, drawing took 2.5 ms a frame and decoding the rest, so drawing on a thread of its own would not have helped.
+
+Whether a source decodes fast enough can change from one run to the next. On the laptop's Core i7-13620H, 4K 10-bit HEVC decoded at 27 to 47 frames a second depending on how Windows 10 placed the decoder's threads on its performance and efficient cores, so the same 30 fps clip played whole in one run and at 1–2 frames a second in the app in another.
+
+So each round now decodes at most as many frames as one frame of playback covers (the playback rate times the clip's speed times the source's frames to each frame of the sequence) and draws the frame it reached, late, and the next round goes on from there. On a 4K 60 fps 10-bit HEVC clip, faster than this CPU can decode, `playback_probe` showed 287–325 frames in 9 s instead of 28–40, one every 21 ms instead of every 190–240 ms, and the app's preview 28–43 frames a second; the 30 fps clip showed 28–34 in the app, and 1080p played as before (3 of 1,764 frames skipped at 30 fps, 11 of 3,532 at 60). These runs were on battery.
+
+The cost: a source too heavy for the CPU shows its picture behind the sound, up to the 2 s at which the decoder seeks to the keyframe before the clock. Seeking as soon as a keyframe lies between the decoder and the clock would keep that shorter, but needs the container's index of keyframes.
+
+More decoder threads were tried too. On the 4K 10-bit clip, 2, 4, 6 and 8 threads decoded 27, 38, 47 and 40 frames a second at 201, 275, 366 and 441 MB, the core placement mattering more than the count, so the thread rule stays.
+
 ### Stills keep their source's chroma siting (M4)
 
 A still entry used to be resampled to left-sited chroma before the compositor resampled it again, which blurred the colored edges of every JPEG. The equivalence test found it. Entries now keep their source's siting (JPEG's is centered), which `Picture` carries and the compositor reads, video frames included.
@@ -291,4 +303,4 @@ What it showed:
 - 1080p plays whole at 30 and 60 fps with flat memory, and the preview keeps up at 60 fps ("The preview stays a wgpu texture").
 - The QSV encoders take more than the provisional 200 MB line: `h264_qsv` 170 MB at 1080p and 454 MB at 4K, `hevc_qsv` 272 and 699 MB, peaks that settle after the second or third session. Each keeps memory after it closes (`h264_qsv` about 70 and 235 MB, `hevc_qsv` about 145 and 375 MB), which the next session reuses, so it does not grow with exports but stays until Dusk quits. The lines in REQUIREMENTS.md are those peaks rounded up as the other encoders' were. `av1_qsv` does not open on this graphics ("Function not implemented"), and an AV1 export falls through to SVT-AV1 as the encoder order says.
 - dusq through `h264_qsv` peaks higher than through `h264_amf` on the desktop (246 against 158 MB at 1080p, 683 against 351 MB for 4K 10-bit HEVC), which is the QSV encoder's line; every figure stays under the app's playback budget for its class.
-- **4K 10-bit HEVC does not play.** Its software decoder alone makes 42 frames a second here (FFmpeg's own `-threads 4` 28), yet playback showed 9 frames a second in `playback_probe` (79 shown, 180 skipped in 9 s; 16 on DX12) and 1–2 in the app, while 4K H.264 (56 frames a second decoded) showed 28 and 26, and 1080p 10-bit HEVC every frame. The video thread decodes, copies each 25 MB P010 picture into the cache, uploads it and draws it, one after another, and a frame it skips to catch up must still be decoded. With only 9 ms a frame to spare between 42 decoded and 30 played, whatever else a shown frame costs is paid several times over in frames skipped. On the desktop the same decoder made 43 frames a second at M1, so it is likely no better there; 4K playback was not recorded at M1.
+- **4K 10-bit HEVC playback could collapse.** In one run it showed 9 frames a second in `playback_probe` (79 shown, 180 skipped in 9 s; 16 on DX12) and 1–2 in the app, while 4K H.264 showed 28 and 26 and 1080p 10-bit HEVC every frame; in later runs the same clip played nearly whole. The cause, and what the video thread does about it now, are in "Falling behind while playing".

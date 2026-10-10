@@ -48,6 +48,17 @@ pub enum Step {
     Done(Option<DecodedFrame>),
 }
 
+/// How far [`VideoDecoder::frame_toward`] got.
+#[derive(Debug)]
+pub enum Toward {
+    /// There: the frame shown at the time asked for, or `None` before the stream's first
+    /// frame, as [`VideoDecoder::frame_at`] returns it.
+    There(Option<DecodedFrame>),
+    /// Short of it: the latest frame decoded, which starts before the time asked for, with
+    /// frames between them still to decode.
+    Behind(DecodedFrame),
+}
+
 /// A decoded frame: when it starts in the source and its picture.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DecodedFrame {
@@ -164,17 +175,51 @@ impl VideoDecoder {
     /// The frame shown at `time`: the last one whose timestamp is at or before `time`, held
     /// after the stream ends. `None` before the first frame.
     pub fn frame_at(&mut self, time: MediaTime) -> Result<Option<DecodedFrame>, MediaError> {
+        self.seek_unless_near(time)?;
+        loop {
+            if let Step::Done(frame) = self.step_to(time)? {
+                return Ok(frame);
+            }
+        }
+    }
+
+    /// The frame shown at `time`, as [`frame_at`](Self::frame_at) gives it, if decoding at
+    /// most `budget` frames gets there; otherwise the last of those frames, for playback that
+    /// decoding cannot keep up with to show every frame it decodes, late, rather than decode
+    /// all the way to the clock between two pictures (docs/ARCHITECTURE.md, "Playback").
+    pub fn frame_toward(&mut self, time: MediaTime, budget: usize) -> Result<Toward, MediaError> {
+        self.seek_unless_near(time)?;
+        for _ in 0..budget.max(1) {
+            if let Step::Done(frame) = self.step_to(time)? {
+                return Ok(Toward::There(frame));
+            }
+        }
+        // The frame decoded last starts before `time`, so frames may be left between them: that
+        // one is the latest so far.
+        if self.ahead.as_ref().is_some_and(|(next, _)| *next < time) {
+            self.shown = self.ahead.take();
+            if let Some(frame) = self.copy_shown()? {
+                return Ok(Toward::Behind(frame));
+            }
+        }
+        // Otherwise nothing is left to decode before `time`.
+        loop {
+            if let Step::Done(frame) = self.step_to(time)? {
+                return Ok(Toward::There(frame));
+            }
+        }
+    }
+
+    /// Seeks when `time` is before the frame shown last or more than [`SEEK_AHEAD`] after it,
+    /// where seeking costs less than decoding every frame in between.
+    fn seek_unless_near(&mut self, time: MediaTime) -> Result<(), MediaError> {
         let position = self.shown.as_ref().map(|(at, _)| *at);
         let behind = position.is_some_and(|at| time < at);
         let far_ahead = time.0 - position.map_or(0, |at| at.0) > SEEK_AHEAD;
         if behind || far_ahead {
             self.seek(time)?;
         }
-        loop {
-            if let Step::Done(frame) = self.step_to(time)? {
-                return Ok(frame);
-            }
-        }
+        Ok(())
     }
 
     /// Goes on toward the frame shown at `time`, decoding at most one frame, so that getting
