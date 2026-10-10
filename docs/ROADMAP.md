@@ -93,7 +93,8 @@ Rules that hold for every milestone below, as for M0 to M6:
 
 - A change to an invariant or to the design is written into ARCHITECTURE.md before it is built, and its reasons into DECISIONS.md.
 - Memory is measured against REQUIREMENTS.md (idle, during and after playback, and export where it changed), and any new budget line is measured before it is written down.
-- The project file format changes at most once per release. Its version goes up then, and every older version still opens (a 0.1 project opens in every later Dusk); the tests pin each version's format byte for byte.
+- The project file format changes at most once per release: the first change in a release raises the version, and later changes in the same release join it, since no released Dusk wrote the format in between. Every older version still opens (a 0.1 project opens in every later Dusk), and the tests pin each version's format byte for byte.
+- Some milestones change rules that CLAUDE.md marks as decided or as hard rules: M7 the BtbN pin, M9 the number of video decoders, M11 and M13 "video tracks hold only video clips", M16 "all exports are 8-bit SDR", and M17 the encoder order. Each such change is the maintainer's to approve, and is made to CLAUDE.md in its milestone.
 - Each milestone keeps its hands-on checks in its pull request.
 
 ## 0.2 — Lighter and signed
@@ -102,19 +103,22 @@ Rules that hold for every milestone below, as for M0 to M6:
 
 1. **Integrated graphics.** REQUIREMENTS.md names Intel Iris Xe as the class Dusk must be smooth on, and nothing has been measured on one yet (ARCHITECTURE.md, Open questions 1). On an Iris Xe laptop (a 12th-gen Core i7 is that class), run M1's measurements: `DUSK_STATS` while 1080p30 and 1080p60 clips play, `playback_probe` for memory and scrub latency, a 4K clip, and both windows open at once. Also export through `h264_qsv` and `hevc_qsv` with `encoder_memory`, whose 200 MB line in REQUIREMENTS.md is still provisional. 12th-gen graphics decode AV1 but cannot encode it, so `av1_qsv` should fail its probe and fall through to SVT-AV1, which the run also checks. `DUSK_STATS` gains a first line naming the graphics adapter, so a run on a laptop with two GPUs says which one it measured (`WGPU_POWER_PREF=low` picks the integrated one). The figures answer Open question 1: keep the texture path, or switch to the pre-approved readback.
 2. **An FFmpeg of Dusk's own.** Build FFmpeg 8.1 starting from BtbN's build scripts, which already produce the current pin, with a configuration of Dusk's own. A workflow of its own runs the build when the pin changes, not on every push, and publishes the DLLs as a release asset of Dusk's repository, together with the exact sources of FFmpeg and of the LGPL libraries built into it, and the configuration. The LGPL asks for those sources, and `licenses/FFmpeg.txt` points to them. `scripts/ffmpeg-pin.psd1` then names that asset, which removes the dependency on BtbN keeping a build downloadable (SETUP.md's pin moves continue until then).
-   - **Kept:** all of FFmpeg's own demuxers and decoders, since Dusk imports "any format FFmpeg can demux and decode" (REQUIREMENTS.md §8), plus dav1d for AV1 and `lcms2` for photo color.
-   - **Kept:** the encoders and muxers Dusk writes with today. These are OpenH264, Kvazaar, SVT-AV1, libvpx-vp9, FFmpeg's own AAC, libopus, libmp3lame and PCM, the hardware wrappers, and the MP4, MOV, Matroska, WebM, Ogg, M4A, MP3 and WAV muxers.
-   - **Kept:** the ones later milestones need, chosen now so the pin moves once. For M13 these are `mov_text`, SubRip, WebVTT and ASS, with their muxers. For M15 they are PNG, MJPEG and GIF, with the image sequence muxer.
-   - **Dropped:** network protocols, encoders and muxers Dusk does not write, and external libraries nothing in Dusk uses.
+   - **Kept:** every decoder and demuxer the 0.1 build has, both FFmpeg's own and those in external libraries (dav1d for AV1, JPEG XL, SVG and the others `installer/ffmpeg-libraries.txt` lists), since Dusk imports "any format FFmpeg can demux and decode" (REQUIREMENTS.md §8). Also `lcms2`, for photo color.
+   - **Kept:** the encoders and muxers Dusk writes with today. The encoders are OpenH264, Kvazaar, SVT-AV1, libvpx-vp9, FFmpeg's own AAC, libopus, libmp3lame, PCM and the hardware wrappers. The muxers are `mp4`, `mov`, `matroska`, `webm`, `ipod` (M4A), `opus` (Ogg with Opus), `mp3` and `wav`.
+   - **Kept:** the ones later milestones need, chosen now so the pin moves once. For M13 these are the `mov_text`, SubRip, WebVTT and ASS encoders and muxers. For M15 they are the PNG, MJPEG and GIF encoders, with the `gif` and `image2` muxers.
+   - **Dropped:** network protocols, the encoders and muxers Dusk does not write, and the external libraries that serve only those.
    - The NVENC headers stay at the version that needs driver 570, so GTX 900/1000 cards keep working when the FFmpeg version moves on.
-3. **Code signing.** Sign `dusk.exe`, `dusq.exe`, the FFmpeg DLLs and the installer in the release workflow, so Windows names a publisher.
+   - **How small it gets.** Everything but the DLLs already takes about 33 MB installed (`dusk.exe` 25.6 MB, `dusq.exe` 0.7 MB, the licenses about 2.2 MB, Inno Setup's uninstaller 4.4 MB). That leaves the DLLs about 27 MB under the ~60 MB target, which keeping every decoder likely does not allow. The milestone records what it reaches and what stands in the way.
+3. **Code signing.** Sign `dusk.exe`, `dusq.exe` and the installer in the release workflow, so Windows names a publisher. Only releases are signed. SignPath approves each release's signing by hand, so the installers CI builds on every push stay unsigned.
    - **First choice: SignPath Foundation.** It signs for open-source projects at no cost, from builds that CI makes from the public repository, which Dusk's release workflow already does. It asks for a code signing policy on the project's page, and the publisher Windows shows is SignPath Foundation.
-   - **If SignPath declines:** Certum's open-source certificate (a cloud key, roughly €50 a year in 2026; check that it covers Authenticode first) or a commercial OV certificate (about $150–300 a year).
+   - SignPath signs only a project's own binaries. Its terms let the FFmpeg DLLs ship unsigned inside the signed installer, which is what Dusk does with it. It also asks that the project already be released in the form it signs, so 0.1 is published first.
+   - Inno Setup's uninstaller is signed while the installer is compiled (Inno's `SignTool` setting), if the signer can be called that way. Otherwise it stays unsigned, and the milestone says so.
+   - **If SignPath declines:** Certum's open-source certificate (a cloud key, roughly €50 a year in 2026; check that it covers Authenticode first) or a commercial OV certificate (about $150–300 a year). Either could sign the FFmpeg DLLs too.
    - Microsoft's Artifact Signing (formerly Trusted Signing) serves individual developers only in the US and Canada.
    - A signature does not silence SmartScreen at once, because reputation still builds with downloads, so the README's note stays until the warning stops.
-   - `scripts/check-installer.ps1` checks that every signature is valid.
+   - `scripts/check-installer.ps1` checks the signatures on a release's installer.
 
-**Done when**: the installer CI builds is signed and installs a Dusk whose files all carry valid signatures; Dusk runs on its own FFmpeg with every test passing, including `testdata`'s messenger audio, HEIC grid, HLG and Display P3 files; the installed size is measured against the ~60 MB target, with what stands in the way recorded in DECISIONS.md if it lands above; and the integrated-graphics figures are in REQUIREMENTS.md.
+**Done when**: the release workflow's installer, and the `dusk.exe` and `dusq.exe` it installs, carry valid signatures; Dusk runs on its own FFmpeg with every test passing, and every decoder and demuxer the 0.1 build had is still there (checked by comparing the two builds' lists); the installed size is below 0.1's 163 MB, with what stands between it and ~60 MB recorded in DECISIONS.md; and the integrated-graphics figures are in REQUIREMENTS.md.
 
 ### M8 — Timeline comforts
 
@@ -128,7 +132,11 @@ Rules that hold for every milestone below, as for M0 to M6:
 
 ### M9 — Layers and crossfades
 
-- **The design change, written first.** The compositor draws the visible clips of every unmuted video track from the bottom up, starting at the topmost clip that covers the whole frame opaquely, so a frame that shows one clip still costs one clip. "At most one video clip is visible" becomes "a clip is visible where nothing opaque covers it". The decoder budget follows: in the 1080p class, one decoder for each visible clip (two at most with two video tracks) plus the lookahead's. Above it, two software decoders are allowed while two clips show at once, which stays under the single-source ceiling in software (DECISIONS.md, "Decoder sizes"). These are measured before REQUIREMENTS.md changes.
+- **The design change, written first.** The compositor draws the visible clips of every unmuted video track from the bottom up, starting at the topmost clip that covers the whole frame opaquely, so a frame that shows one clip still costs one clip. "At most one video clip is visible" becomes "a clip is visible where nothing opaque covers it". The decoder budget follows how many clips show at once: two during a crossfade, and more where a smaller picture sits over another (M10).
+  - In the 1080p class, one decoder serves each visible clip, plus the lookahead's, within the 300 MB budget. A software 1080p decoder takes 32–51 MB (DECISIONS.md, "Decoder sizes"), so up to five fit.
+  - In the 4K class, two software decoders are allowed while two clips show at once: 2 × 150–200 MB, under the ~550 MB line.
+  - Above 9 Mpx one decoder stays the rule, so an edit that would show two such sources at once is refused, with a message suggesting a smaller copy (`dusq compress`, or a proxy once M14 has them).
+  - All of this is measured before REQUIREMENTS.md and CLAUDE.md's decoder rule change.
 - **Crossfades at a cut.** A crossfade belongs to the cut between two adjacent clips on one track, so clips on a track still never overlap. While it plays, the outgoing clip runs past its out point and the incoming one starts before its in point, so both need source to spare there. A crossfade longer than that source allows is refused with the length that would fit.
   - A trim that eats into that spare source shortens the crossfade, and the UI says so, as a cut at the gap does.
   - A cut between two linked clips also crossfades their sound, as linked clips are edited as a group.
@@ -138,13 +146,14 @@ Rules that hold for every milestone below, as for M0 to M6:
 - **The clip editor** shows its group without the crossfades at its ends, which belong to the cuts and are edited on the timeline.
 - The crossfade's length and where the cut lies are saved in the project file (format version 3, release 0.3).
 
-**Done when**: two 1080p clips joined by a one-second crossfade play without a skipped frame and export as previewed, with memory within the re-measured playback budget; the same with two 4K clips is usable.
+**Done when**: two 1080p clips joined by a one-second crossfade play without a skipped frame and export as previewed, with memory within the re-measured playback budget; two 4K clips joined the same way play (frames may be skipped, as 4K's may in 0.1) and export as previewed, within the 4K memory line.
 
 ### M10 — Picture-in-picture and basic color
 
 - **Scale and position.** A video clip gets a size and a place in the frame (`ClipEdits::Video` gains a transform). It is drawn there over the tracks below, with fit or fill deciding the picture inside its rectangle. The clip editor edits it with a box in its preview and with number fields, and so does the properties panel. A clip that covers the whole frame keeps being the opaque case of M9.
 - **Brightness, contrast and saturation**, three sliders per video clip in the clip editor and the properties panel, applied by the compositor to the SDR picture after color step 3 and before quantizing. Like step 3 they have a reference function in `dusk-core`'s `color` module that a GPU test holds the shader to. Three sliders and no more (VISION.md: no color grading suite). dusq applies no edits and does not change.
 - Opacity as a control the user sets is not in FEATURES.md. The compositor gains it for crossfades, and whether to show it is the maintainer's decision.
+- The transform and the three values are saved in the project file, in format version 3 with M9's crossfades.
 
 **Done when**: a phone clip shrunk into a corner over a screen recording, with its brightness raised, exports as previewed, and memory is measured with two 1080p clips visible for a whole minute.
 
@@ -153,6 +162,7 @@ Rules that hold for every milestone below, as for M0 to M6:
 - **Drawing text.** Titles need shaping, so that Arabic letters join and right-to-left lines run the right way (the maintainer writes Arabic), so a plain glyph rasterizer will not do. Candidates are `cosmic-text` (shaping through rustybuzz, bidirectional text, font fallback) and rustybuzz with `unicode-bidi` and a rasterizer, each MIT/Apache; the choice is measured for size and speed and recorded in DECISIONS.md. Inter has no Arabic, so Dusk bundles an OFL font that does (Noto Sans Arabic or IBM Plex Sans Arabic) for portable projects, and offers the system's fonts as well. Text is laid out and rasterized on the CPU into a glyph atlas the compositor draws from, with a byte cap of its own, at the output's size, so exported text is sharp at any size.
 - **Title clips.** A title is a clip on a video track with no media behind it: its text, font, size, color, place and background, which is either none (text over the clip below) or a solid color (a title card). Its length is free, like a still's. The invariant becomes "video tracks hold video clips and titles".
 - **Editing titles** happens in the clip editor: a double-click on a title opens it there, as a clip opens, with its text and style beside the preview.
+- Title clips are saved in the project file, in format version 3 with M9's and M10's changes.
 
 **Done when**: an opening title card and a lower third, one in English and one in Arabic, over a clip, export as previewed, with the Arabic joined and right to left; and the atlas's memory is measured.
 
@@ -172,6 +182,7 @@ Rules that hold for every milestone below, as for M0 to M6:
 - **SRT import** onto a subtitle track, a third kind of track that holds only subtitle clips. Each cue is a clip that moves, trims and splits like any other, and whose text is edited in the clip editor.
 - **Burned in**, drawn by M11's text drawing, Arabic included.
 - **Soft subtitles** written as a subtitle stream of the file: `mov_text` in MP4 and MOV, SubRip or ASS in MKV, WebVTT in WebM, from the encoders M7's FFmpeg keeps. The export dialog offers none, burned in or soft.
+- Subtitle tracks are saved in the project file, in format version 4 with M12's keyframes.
 
 **Done when**: an SRT file is imported, a line is retimed and corrected, and the edit is exported once with the subtitles burned in and once with them soft; the soft track shows in VLC.
 
@@ -211,11 +222,14 @@ Rules that hold for every milestone below, as for M0 to M6:
 - **The platform layer** grows Linux's own pieces: file dialogs through the desktop portal (which GNOME, KDE and the others provide), the console's Ctrl+C for dusq, and the key codes shortcuts match by. Settings and autosave folders already follow XDG.
 - **FFmpeg** comes from M7's build workflow, extended to Linux (BtbN builds Linux too, so the same scripts serve). VAAPI (Intel and AMD) joins NVENC in the encoder order and the limits table.
 - **wgpu** runs on Vulkan, and cpal plays through ALSA, which PipeWire and PulseAudio also serve.
-- **The package** is an AppImage: one file that runs on most distributions without installing. Linux asks for no signature, so nothing stands between a download and a first run.
-- **Trying it on Windows.** WSL2 with WSLg builds Dusk, runs its tests and `dusq`, and opens its window, which is enough for most of the work. It is not a real Linux desktop: its graphics are Windows' own passed through (or drawn in software), it has no VAAPI, and its file dialogs and drag and drop are not a desktop's, so its figures do not count. The done-when runs on a real install, such as Ubuntu started from a USB stick.
+- **The package.** Linux asks for no signature, but a downloaded program still needs one step before it runs, and the package is chosen at the milestone's start by which step suits a stranger best:
+  - An AppImage (one file, most distributions) must first be marked as a program (`chmod +x`, or the file manager's Properties). It also needs the newer static runtime, since Ubuntu 22.04 and later lack the `libfuse2` the classic one needs.
+  - A `.deb` opens in Ubuntu's App Center with a double-click.
+  - Flathub installs from the distribution's software store.
+- **Trying it on Windows.** WSL2 with WSLg builds Dusk, runs its tests and `dusq`, and opens its window, which is enough for most of the work. It is not a real Linux desktop, so its figures do not count: its graphics, and its VAAPI, are Windows' own GPU reached through Mesa's D3D12 layer (or drawn in software), and its file dialogs and drag and drop are not a desktop's. The done-when runs on a real install, such as Ubuntu started from a USB stick.
 - CI builds and tests Linux beside Windows.
 
-**Done when**: M6's done-when holds on the current Ubuntu LTS on real hardware (a stranger downloads Dusk, opens a clip, cuts it and exports it without asking a question), with memory measured there.
+**Done when**: M6's done-when holds on the current Ubuntu LTS on real hardware, as far as tests and a first run with nothing set up can show it, as M6's did (a stranger downloads Dusk, opens a clip, cuts it and exports it without asking a question); memory is measured there.
 
 ## macOS, for someone with a Mac
 
@@ -224,12 +238,13 @@ Rules that hold for every milestone below, as for M0 to M6:
 Left for a contributor (or a later maintainer) who has a Mac, since Dusk cannot be tried there without one. CI's macOS runners can build it and run its tests, but someone has to use it on a real Mac.
 
 - **The platform layer:** `NSOpenPanel` and `NSSavePanel` for file dialogs, the console's Ctrl+C, and the key codes shortcuts match by.
-- **FFmpeg** comes from M7's build workflow on a macOS runner (BtbN builds no macOS FFmpeg). VideoToolbox joins the encoder order and the limits table.
+- **FFmpeg** is built on a macOS runner by a script of its own, since BtbN's scripts build only for Windows and Linux, with the same choice of decoders, encoders and muxers as M7's. VideoToolbox joins the encoder order and the limits table.
 - **wgpu** runs on Metal and cpal on Core Audio.
 - **Why a download is blocked.** Browsers mark every downloaded file as coming from the internet, GitHub releases included. For a marked app, macOS checks that it is signed with an Apple Developer ID certificate and notarized (scanned by Apple). Only Apple issues those certificates, through its Developer Program, $99 a year, with no waiver for open-source projects. An unsigned app still runs, but macOS refuses it the first time and the user has to allow it in System Settings → Privacy & Security → Open Anyway. A build compiled on the Mac itself carries no mark, so developers never see this.
-- **The plan:** ship a `.dmg` without a Developer ID first. Apple silicon still needs every program to carry a basic signature of its own, which the Rust toolchain adds by itself. The README shows the Open Anyway steps with a screenshot. If macOS users come, the Developer Program is the next step, and the release workflow then signs and notarizes on a macOS runner (`codesign`, `notarytool`).
+- **The plan:** ship a `.dmg` without a Developer ID first. The README shows the Open Anyway steps with a screenshot. If macOS users come, the Developer Program is the next step, and the release workflow then signs and notarizes on a macOS runner (`codesign`, `notarytool`).
+- **The free signature it still needs.** Apple silicon runs only programs that carry at least a free, ad-hoc signature. The Rust linker gives `dusk` one, but the `.app` bundle with FFmpeg's libraries needs one over the whole bundle (`codesign --force --deep -s -`), made after the libraries' paths are set (`install_name_tool`). Without it macOS calls the app damaged, which Open Anyway cannot get past.
 
-**Done when**: M6's done-when holds on macOS on Apple silicon, tried by someone with a Mac, with memory measured there.
+**Done when**: M6's done-when holds on macOS on Apple silicon, tried by someone with a Mac, as far as tests and a first run with nothing set up can show it; memory is measured there.
 
 ## Choices for the maintainer
 
@@ -241,3 +256,4 @@ Decisions these milestones need from the maintainer; each is asked when its mile
 4. **M15:** whether batch export includes several files in one `dusq` command.
 5. **M16:** allowing 10-bit HDR exports, which changes CLAUDE.md's "all exports are 8-bit SDR".
 6. **M18:** joining Apple's Developer Program ($99 a year) to sign and notarize the macOS build, once macOS users ask for it; the build ships without it first.
+7. **M7, M9, M11, M13, M17:** the CLAUDE.md rules each one changes (the BtbN pin, the number of video decoders, what a video track holds, the encoder order), as listed under "After 0.1".

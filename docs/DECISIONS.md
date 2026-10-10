@@ -2,7 +2,7 @@
 
 Why the design in [ARCHITECTURE.md](ARCHITECTURE.md) is the way it is: what was measured, what went wrong first, and what was turned down. ARCHITECTURE.md says what Dusk does now; this file keeps the reasons, so the design can be read without the history and the history is not lost.
 
-Entries sit under the ARCHITECTURE.md heading they explain, and each names the milestone it was decided or found at (ROADMAP.md). Figures were measured on the development machine unless an entry says otherwise: a Ryzen 5 2600X with a Radeon RX 6750 XT on Windows 11, release builds. Budgets, and the figures measured against them at each milestone, are in [REQUIREMENTS.md](REQUIREMENTS.md).
+Entries sit under the ARCHITECTURE.md heading they explain, and each names the milestone it was decided or found at (ROADMAP.md). Figures come from the development machine, a Ryzen 5 2600X with a Radeon RX 6750 XT, unless an entry says otherwise. Budgets, and the figures measured against them at each milestone, are in [REQUIREMENTS.md](REQUIREMENTS.md).
 
 When a decision is made or a finding changes the design, ARCHITECTURE.md gets the rule and this file gets the reason, under the same heading.
 
@@ -30,7 +30,7 @@ Half the cache was chosen. Decoding the next stretch on a worker while the curre
 
 ### Decoder sizes (M1)
 
-A software decoder peaks at about 32 MB for 1080p H.264, 51 MB for 1080p 10-bit HEVC, 150 MB for 4K H.264 and 200 MB for 4K 10-bit HEVC, and gives it all back when closed. A hardware (D3D11VA) decoder allocates its frame pool on open: about 65 MB for 1080p 8-bit, about 133 MB for 1080p 10-bit HEVC, about 500 MB for 3840-wide 10-bit HEVC and about 535 MB at 4096 wide; on integrated graphics that pool is system RAM. The size classes and the ~550 MB single-source ceiling were drawn for those hardware pools, so they hold whichever kind of decoder is open.
+A software decoder peaks at about 32 MB for 1080p H.264, 51 MB for 1080p 10-bit HEVC, 150 MB for 4K H.264 and 200 MB for 4K 10-bit HEVC, and gives it all back when closed. A hardware (D3D11VA) decoder allocates its frame pool on open: about 65 MB for 1080p 8-bit, about 133 MB for 1080p 10-bit HEVC, about 500 MB for 3840-wide 10-bit HEVC and about 535 MB at 4096 wide; on integrated graphics that pool is system RAM. The size classes and the ~550 MB single-source ceiling were drawn for those hardware pools.
 
 ### Video is decoded in software in 0.1 (M1)
 
@@ -38,7 +38,7 @@ With every frame copied back to system memory (`av_hwframe_transfer_data`), D3D1
 
 ### The next clip is made ready on a worker (M2)
 
-Getting the next clip ready on the video thread itself, a frame per tick, stalled playback, since a single frame of 1080p HEVC can take tens of milliseconds. A short-lived worker now opens the next clip's decoder and decodes up to its first frame. On noisy 20 Mbps 1080p HEVC with groups of pictures of about 2 s, cutting 1 to 1.5 s into a group, 40 of 180 frames were skipped over two cuts without the lookahead, and none with it.
+Getting the next clip ready on the video thread itself, a frame per tick, stalled playback, since a single frame of 1080p HEVC can take tens of milliseconds. A short-lived worker now opens the next clip's decoder and decodes up to the frame the clip comes into view with. On noisy 20 Mbps 1080p HEVC with groups of pictures of about 2 s, cutting 1 to 1.5 s into a group, 40 of 180 frames were skipped over two cuts without the lookahead, and none with it.
 
 ### One thread above 9 Mpx, and the 9 Mpx boundary (M2)
 
@@ -88,7 +88,7 @@ Decided at M4: the compress tool is one dialog. File → *Compress a video…* (
 
 ### Color step 2 moved out of swscale (M4)
 
-swscale's own 16-bit RGB output came out 255/256 too dark for 8- and 10-bit sources alike (white at 65,280 of 65,535), while its YUV output is exact. So swscale stops at planar 16-bit YUV 4:4:4 and Rust does step 2 (`yuv_to_rgb`) and everything after it.
+swscale's own 16-bit RGB output came out 255/256 too dark for 8- and 10-bit sources alike (white at 65,280 of 65,535), while its YUV output is exact. So swscale's first pass stops at planar 16-bit YUV 4:4:4, Rust does steps 2 to 4 (`yuv_to_rgb` first) and the orientation, and swscale only converts the result to the encoder's format.
 
 ### Step 3 through tables (M4)
 
@@ -126,11 +126,11 @@ An untitled project has no folder, a project's folder may be read-only or synced
 
 ### Number fields report as they are typed (M5)
 
-A bitrate or a width typed in the export dialog and not entered was lost when Export or Apply was clicked, since a click on a button leaves the keyboard in the field. The number fields of the export, compress and sequence dialogs now report each number as it is typed. The clip editor's and the properties panel's fields still wait for Enter: a speed taken as it is typed would cut the clip at the gap on the way to the number meant.
+A bitrate or a width typed and not entered was lost when Export or Apply was clicked, since a click on a button leaves the keyboard in the field. The number fields of the export, compress and sequence dialogs now report each number as it is typed. The clip editor's and the properties panel's fields still wait for Enter: a speed taken as it is typed would cut the clip at the gap on the way to the number meant.
 
 ### The playhead past the last frame (M5)
 
-Placing media puts it at the playhead. For placing to append, and for the last cut to be reachable with the cut keys, the playhead can stand one frame past the end, where the preview is black. End still goes to the last frame.
+Placing media puts it at the playhead. For placing to append, and for the last cut to be reachable with the cut keys, the playhead can stand just past the last frame, where the preview is black. End still goes to the last frame.
 
 ### Shift with a punctuation key (M6)
 
@@ -142,13 +142,13 @@ The question closing asks showed under the missing media list, where Enter found
 
 ### F1 opens the shortcut list (M6)
 
-F1 is where people look for help, so it opens the shortcut list beside `?`, and the About dialog moved to Shift+F1.
+F1 is where people look for help, so it opens the shortcut list beside `?`, and the About dialog, which came with M6, has Shift+F1.
 
 ## Missing media
 
 ### Relinking (M6)
 
-An id given to new media after an import was undone used to show the old file's frames, since the engine knew frames by media id alone. The engine now remembers which file each media's frames, decoder and thumbnail came from, and either preview names the file each time it asks for a frame, so the clip editor, still drafting from the project as it was before such an undo, cannot put another file's frames in the cache under that id.
+An id given to new media after an import was undone used to show the old file's frames, since the engine knew frames by media id alone. The engine now remembers which file each media's frames and decoder came from, the bin's thumbnails likewise belong to the file they were made from, and either preview names the file each time it asks for a frame, so the clip editor, still drafting from the project as it was before such an undo, cannot put another file's frames in the cache under that id.
 
 ## Error messages
 
@@ -183,13 +183,13 @@ Measured on the installer CI builds and tries: the download is 46.5 MB, and Dusk
 
 ### The ship set and the installer format (M0)
 
-With the pinned 8.1 build the five DLLs take 130.3 MB installed (avcodec 90.9, avformat 22.7, swscale 12.9, avutil 3.0, swresample 0.7), 54.3 MB zipped (deflate), and 44.5 MB as one solid LZMA2 stream together with both executables. `dusk.exe` was 19.4 MB at M0 (1.5 MB of it bundled fonts) and `dusq.exe` 0.2 MB, before it had commands. The download target therefore needs LZMA, which MSI cannot use, so Inno Setup with solid LZMA2 was picked over MSI and NSIS. Most of the installed size is avcodec, which a slim custom FFmpeg build would shrink (ROADMAP.md).
+With the pinned 8.1 build the five DLLs take 130.3 MB installed (avcodec 90.9, avformat 22.7, swscale 12.9, avutil 3.0, swresample 0.7), 54.3 MB zipped (deflate), and 44.5 MB as one solid LZMA2 stream together with both executables. `dusk.exe` was 19.4 MB at M0 (1.5 MB of it bundled fonts) and `dusq.exe` 0.2 MB, before it had commands. The download target therefore needs LZMA, which MSI cannot use, so MSI was ruled out, and of NSIS and Inno Setup, Inno Setup with solid LZMA2 was picked. Most of the installed size is avcodec, which a slim custom FFmpeg build would shrink (ROADMAP.md).
 
 ## Slint specifics
 
 ### dusk-render creates the device (M0, M1)
 
-Slint's own default instance loads Vulkan and DX12 together and showed the first window after about 3.0 s. DX12 alone took 2.5 s, with about 30 MB more private bytes; Vulkan alone 0.83 s. With `dusk-render` creating one Vulkan instance and device (DX12 only when Vulkan finds no adapter) and handing them to Slint, the first window appears after 0.71–0.85 s and the idle process holds about 185 MB (M1, fonts bundled).
+Slint's own default instance loads Vulkan and DX12 together and showed the first window after about 3.0 s. DX12 alone took 2.5 s, with about 30 MB more private bytes; Vulkan alone 0.83 s. With `dusk-render` creating one Vulkan instance and device without a separate probe (DX12 only when Vulkan finds no adapter) and handing them to Slint, the first window appears after 0.71–0.85 s and the idle process holds about 185 MB (M1, fonts bundled).
 
 ### The preview stays a wgpu texture (M1)
 

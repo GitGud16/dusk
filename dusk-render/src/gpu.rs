@@ -54,7 +54,7 @@ fn backend_order(env_override: Option<wgpu::Backends>) -> Vec<wgpu::Backends> {
     match env_override {
         Some(backends) => vec![backends],
         // Vulkan alone reaches the first window far sooner than DX12, or than both together
-        // (measured at M0; see docs/ARCHITECTURE.md, "Slint specifics").
+        // (measured at M0; see docs/DECISIONS.md, "Slint specifics").
         None if cfg!(windows) => vec![wgpu::Backends::VULKAN, wgpu::Backends::DX12],
         None => vec![wgpu::Backends::VULKAN],
     }
