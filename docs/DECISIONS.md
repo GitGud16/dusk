@@ -54,7 +54,7 @@ Whether a source decodes fast enough can change from one run to the next. On the
 
 So each round now decodes at most as many frames as one frame of playback covers (the playback rate times the clip's speed times the source's frames to each frame of the sequence) and draws the frame it reached, late, and the next round goes on from there. On a 4K 60 fps 10-bit HEVC clip, faster than this CPU can decode, `playback_probe` showed 287–325 frames in 9 s instead of 28–40, one every 21 ms instead of every 190–240 ms, and the app's preview 28–43 frames a second; the 30 fps clip showed 28–34 in the app, and 1080p played as before (3 of 1,764 frames skipped at 30 fps, 11 of 3,532 at 60). These runs were on battery.
 
-The cost: a source too heavy for the CPU shows its picture behind the sound, up to the 2 s at which the decoder seeks to the keyframe before the clock. Seeking as soon as a keyframe lies between the decoder and the clock would keep that shorter, but needs the container's index of keyframes.
+The cost: a source too heavy for the CPU shows its picture behind the sound, up to the 2 s at which the decoder seeks to the keyframe before the clock. Seeking as soon as a keyframe lies between the decoder and the clock would keep that shorter, but needs the container's index of keyframes; it and skipping the frames nothing refers to wait for M14, where proxies remove most of the case (ROADMAP.md).
 
 More decoder threads were tried too. On the 4K 10-bit clip, 2, 4, 6 and 8 threads decoded 27, 38, 47 and 40 frames a second at 201, 275, 366 and 441 MB, the core placement mattering more than the count, so the thread rule stays.
 

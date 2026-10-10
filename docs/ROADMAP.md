@@ -201,6 +201,9 @@ Rules that hold for every milestone below, as for M0 to M6:
   - A proxy is made from the source and never replaces it; the source is still never modified or copied (REQUIREMENTS.md §3).
   - Playback and scrubbing use the proxy, and with it the 1080p class's two decoders and lookahead; export always reads the original.
 - **Zero-copy hardware decoding** (Open questions 2) is decided here from M7's laptop figures. If proxies make 4K smooth on the laptop, it stays later; if not, a spike shares D3D11 surfaces with wgpu's Vulkan device.
+- **The lag of a source too heavy to decode.** Without a proxy, a source the CPU cannot decode as fast as it plays shows its picture up to 2 s behind the sound before the decoder seeks ahead (ARCHITECTURE.md, "Playback"). Proxies remove the case for the sources they cover; for the rest, two ways shorten it, decided here after the proxy figures:
+  - seek as soon as a keyframe lies between the decoder and the clock, from the container's index of keyframes (read through `dusk-media`'s `ffi` module), and only where the jump saves more decoding than the decoder's restart costs; files without an index keep the 2 s rule, and the decoder never seeks backwards;
+  - while behind, skip decoding the frames no other frame refers to (FFmpeg's `skip_frame`), which drops frames evenly and keeps the picture with the sound, for streams that have such frames.
 
 **Done when**: a 4K phone video plays without a skipped frame on the Iris Xe laptop through its proxy and exports from the original; the proxy's disk use and the time to make it are recorded.
 
