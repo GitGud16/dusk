@@ -1,5 +1,5 @@
-//! Turning decoded pictures into RGBA frames on the GPU (docs/ARCHITECTURE.md, "Decoder pool",
-//! color and scaling steps 1, 2 and 4): each plane is resampled to the output size with a
+//! Turning decoded pictures into RGBA frames on the GPU (docs/ARCHITECTURE.md, "Color and
+//! scaling", steps 1, 2 and 4): each plane is resampled to the output size with a
 //! Catmull-Rom kernel, chroma at its sited position, then YUV becomes RGB with the picture's
 //! matrix and range, fitted into the frame between black bars.
 

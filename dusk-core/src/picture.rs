@@ -46,8 +46,8 @@ pub enum ColorRange {
 
 /// Where a 4:2:0 picture's chroma samples sit, in 256ths of a luma pixel from the top-left
 /// one of the two by two luma pixels each covers: across, then down, as FFmpeg counts chroma
-/// positions. Step 1 of color and scaling reads chroma there (docs/ARCHITECTURE.md, "Decoder
-/// pool").
+/// positions. Step 1 of color and scaling reads chroma there (docs/ARCHITECTURE.md, "Color
+/// and scaling").
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ChromaSiting {
     /// From 0, on the left luma column, to 256, on the right one.

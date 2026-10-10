@@ -1,4 +1,4 @@
-"""Writes THIRD-PARTY-NOTICES.txt for the installer (docs/ARCHITECTURE.md, "Release (0.1)"):
+"""Writes THIRD-PARTY-NOTICES.txt for the installer (docs/ARCHITECTURE.md, "Release"):
 the license of every Rust crate built into dusk.exe and dusq.exe for Windows, with the texts
 each crate ships. Crates sharing one text are listed together above it.
 

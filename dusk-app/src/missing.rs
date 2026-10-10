@@ -1,4 +1,4 @@
-//! Media files a project cannot find (docs/ARCHITECTURE.md, "Release (0.1)"): a dialog lists
+//! Media files a project cannot find (docs/ARCHITECTURE.md, "Missing media"): a dialog lists
 //! them, and finding one relinks it, with the other missing files that lie beside it, as one
 //! undoable edit. What is found and how it is said is worked out here, apart from the window.
 

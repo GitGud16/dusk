@@ -1,4 +1,4 @@
-//! The export pass (docs/ARCHITECTURE.md, "Decoder pool"): composited RGB frames become
+//! The export pass (docs/ARCHITECTURE.md, "Color and scaling"): composited RGB frames become
 //! limited-range BT.709 YUV 4:2:0 on the GPU, chroma downsampled with the same Catmull-Rom
 //! and sited left, and are read back, so encoders never see RGB.
 

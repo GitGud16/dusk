@@ -1,4 +1,4 @@
-; The Dusk installer (docs/ARCHITECTURE.md, "Release (0.1)"), for Inno Setup 6.
+; The Dusk installer (docs/ARCHITECTURE.md, "Release"), for Inno Setup 6.
 ; scripts\build-release.ps1 compiles it, with /DAppVersion, /DFileVersion (the version's numbers
 ; alone, which Windows' file versions are) and /DStage, the folder it installs: dusk.exe,
 ; dusq.exe, the five FFmpeg DLLs beside them, and licenses\.

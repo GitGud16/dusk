@@ -58,7 +58,7 @@ jobs:
           deps=$(cargo tree -p dusk-cli -e normal,build --prefix none -f '{p}') || exit 1
           if grep -q '^wgpu ' <<<"$deps"; then echo "dusq links wgpu"; exit 1; fi
 
-  # The installer (docs/ARCHITECTURE.md, "Release (0.1)"), kept as an artifact to try. Built
+  # The installer (docs/ARCHITECTURE.md, "Release"), kept as an artifact to try. Built
   # once a commit, for its push: a pull request's own run of the same commit leaves it out.
   installer:
     if: github.event_name == 'push'

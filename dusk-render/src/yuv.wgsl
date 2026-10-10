@@ -1,4 +1,4 @@
-// The export pass (docs/ARCHITECTURE.md, "Decoder pool"): R'G'B' to limited-range BT.709
+// The export pass (docs/ARCHITECTURE.md, "Color and scaling"): R'G'B' to limited-range BT.709
 // Y'CbCr 4:2:0. Luma is computed per pixel; chroma is resampled from the R'G'B' frame down to
 // half size each way with Catmull-Rom widened for the 2:1 step, at MPEG-2 (left) siting: on
 // the even luma columns, halfway between two luma rows. Resampling R'G'B' and then converting
