@@ -117,8 +117,15 @@ Rules that hold for every milestone below, as for M0 to M6:
    - Microsoft's Artifact Signing (formerly Trusted Signing) serves individual developers only in the US and Canada.
    - A signature does not silence SmartScreen at once, because reputation still builds with downloads, so the README's note stays until the warning stops.
    - `scripts/check-installer.ps1` checks the signatures on a release's installer.
+4. **Exports in a helper process.** A hardware encoder keeps memory after its session closes, until Dusk quits: about 375 MB after a 4K export through `hevc_qsv` on the laptop, 25–60 MB through AMF (DECISIONS.md, "The laptop at M7"). Dusk cannot make a driver give it back, but Windows frees everything a process held when the process exits. So the encoder moves out of `dusk.exe` into a helper that lives for one export.
+   - Dusk still draws every frame and converts it on the GPU, as now, and pipes the raw frames into the helper's standard input, as it already feeds a user's own `ffmpeg.exe` (ARCHITECTURE.md, "Optional GPL encoders"). The helper encodes, writes the part file and exits.
+   - The helper is `dusq`, with a command of its own for this: it already links FFmpeg's encoders and no wgpu, so the installer ships nothing new.
+   - Cancelling stops the helper and removes the part file. The fall-through to the next encoder in the order happens in the helper, and its errors reach the export's message.
+   - The encoder probe opens real sessions too, so it moves into the helper if it leaves memory behind in Dusk.
+   - The encoder's line leaves Dusk's export budget, as the user's own `ffmpeg.exe`'s already has, and becomes the helper's own peak, measured per encoder.
+   - The design, including how the sound reaches the helper, goes into ARCHITECTURE.md ("Export") before it is built.
 
-**Done when**: the release workflow's installer, and the `dusk.exe` and `dusq.exe` it installs, carry valid signatures; Dusk runs on its own FFmpeg with every test passing, and every decoder and demuxer the 0.1 build had is still there (checked by comparing the two builds' lists); the installed size is below 0.1's 163 MB, with what stands between it and ~60 MB recorded in DECISIONS.md; and the integrated-graphics figures are in REQUIREMENTS.md.
+**Done when**: the release workflow's installer, and the `dusk.exe` and `dusq.exe` it installs, carry valid signatures; Dusk runs on its own FFmpeg with every test passing, and every decoder and demuxer the 0.1 build had is still there (checked by comparing the two builds' lists); the installed size is below 0.1's 163 MB, with what stands between it and ~60 MB recorded in DECISIONS.md; the integrated-graphics figures are in REQUIREMENTS.md; and after a 4K export through a hardware encoder, Dusk's private bytes come back to within a few MB of where they were before it.
 
 ### M8 — Timeline comforts
 
