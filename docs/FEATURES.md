@@ -1,6 +1,6 @@
 # Features
 
-Written as user stories. **MVP** is what the first usable version must do. **Later** is agreed direction, not yet scheduled.
+Written as user stories. **MVP** is what the first usable version must do (0.1). **Later** is agreed direction, placed into milestones in ROADMAP.md (named beside each item).
 
 ## MVP
 
@@ -62,16 +62,16 @@ Written as user stories. **MVP** is what the first usable version must do. **Lat
 
 ## Later
 
-- Transitions (cut, crossfade)
-- Text and titles
-- Basic color adjustments (brightness, contrast, saturation)
-- Picture-in-picture: scale and position clips
-- Keyframes for volume, scale, position
-- Audio waveform display on the timeline
-- Snapping and markers
-- Proxies for smooth 4K editing
-- HDR passthrough export (0.1 tone-maps HDR to SDR)
-- Subtitles: SRT import, burn-in, soft subtitles
-- Export queue / batch export
-- GIF and image-sequence export
-- Linux and macOS builds
+- Audio waveform display on the timeline (M8)
+- Snapping and markers (M8)
+- Transitions (cut, crossfade) (M9)
+- Picture-in-picture: scale and position clips (M10)
+- Basic color adjustments (brightness, contrast, saturation) (M10)
+- Text and titles (M11)
+- Keyframes for volume, scale, position (M12)
+- Subtitles: SRT import, burn-in, soft subtitles (M13)
+- Proxies for smooth 4K editing (M14)
+- Export queue / batch export (M15)
+- GIF and image-sequence export (M15)
+- HDR passthrough export (0.1 tone-maps HDR to SDR) (M16)
+- Linux and macOS builds (M17 Linux, M18 macOS)

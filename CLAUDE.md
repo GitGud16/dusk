@@ -12,7 +12,7 @@ Also available (read when relevant, not every session):
 - `docs/VISION.md` — why Dusk exists, scope guardrails, decisions so far
 - `docs/FEATURES.md` — user stories, MVP vs later
 - `docs/THEME.md` — colors (HSL), typography, spacing, timeline color rules
-- `docs/ROADMAP.md` — milestones M0 to 0.1 with "done when" criteria
+- `docs/ROADMAP.md` — milestones with "done when" criteria: M0 to M6 (0.1, done), then M7 onward
 
 ARCHITECTURE.md describes the design as it is now, in the present tense. When a decision is made or a measurement or bug changes the design, the rule goes in ARCHITECTURE.md and the reason (the milestone, the figures, what was tried) goes in DECISIONS.md under the same heading; don't write "decided at Mx" or "found at Mx" history into ARCHITECTURE.md. Figures measured against a budget go in REQUIREMENTS.md.
 
