@@ -11,7 +11,7 @@ fn main() {
 }
 
 /// Puts the icon and the version information into `dusk.exe`, as a resource file the
-/// linker takes like an object file (docs/ARCHITECTURE.md, "Release"). The icon is
+/// linker takes like an object file (docs/RELEASE.md, "Logo and icon"). The icon is
 /// `assets/dusk.ico`, which `scripts/make-logo.py` draws.
 fn windows_resources() {
     println!("cargo:rerun-if-changed=assets/dusk.ico");

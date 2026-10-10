@@ -1,4 +1,4 @@
-//! The export dialog on the UI thread (docs/ARCHITECTURE.md, "Export details"): it opens
+//! The export dialog on the UI thread (docs/BEHAVIOR.md, "The export dialog"): it opens
 //! over the main window for the timeline or over the clip editor for its clip, probes the
 //! encoders on a worker the first time, asks where to save with the system's dialog and
 //! starts the export. What it offers is worked out in `export_choices`, starting from the

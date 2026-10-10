@@ -1,4 +1,4 @@
-//! The clip editor's changes to its draft (docs/ARCHITECTURE.md, "Pop-out clip editor") and
+//! The clip editor's changes to its draft (docs/BEHAVIOR.md, "The window") and
 //! what its window shows of it. The crop is shown as the pixels cut from each side of the
 //! picture as it looks after the turn and the flips; the model keeps it as a rectangle of the
 //! upright source.

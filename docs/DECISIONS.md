@@ -1,10 +1,10 @@
 # Dusk — Decisions
 
-Why the design in [ARCHITECTURE.md](ARCHITECTURE.md) is the way it is: what was measured, what went wrong first, and what was turned down. ARCHITECTURE.md says what Dusk does now; this file keeps the reasons, so the design can be read without the history and the history is not lost.
+Why the design in [ARCHITECTURE.md](ARCHITECTURE.md), [BEHAVIOR.md](BEHAVIOR.md) and [RELEASE.md](RELEASE.md) is the way it is: what was measured, what went wrong first, and what was turned down. Those files say what Dusk does now; this file keeps the reasons, so the design can be read without the history and the history is not lost.
 
-Entries sit under the ARCHITECTURE.md heading they explain, and each names the milestone it was decided or found at (ROADMAP.md). Figures come from the development machine, a Ryzen 5 2600X with a Radeon RX 6750 XT, unless an entry says otherwise. Budgets, and the figures measured against them at each milestone, are in [REQUIREMENTS.md](REQUIREMENTS.md).
+Entries sit under the heading they explain (BEHAVIOR.md continues ARCHITECTURE.md's sections under the same names, and RELEASE.md's entries are under "Release"), and each names the milestone it was decided or found at (ROADMAP.md). Figures come from the development machine, a Ryzen 5 2600X with a Radeon RX 6750 XT, unless an entry says otherwise. Budgets, and the latest figures measured against them on each machine, are in [REQUIREMENTS.md](REQUIREMENTS.md); the figures before those, and how each was taken, are under "Measurements" at the end.
 
-When a decision is made or a finding changes the design, ARCHITECTURE.md gets the rule and this file gets the reason, under the same heading.
+When a decision is made or a finding changes the design, the design file gets the rule and this file gets the reason, under the same heading.
 
 ## Core data model
 
@@ -210,3 +210,65 @@ At M3, memory grew when both windows redrew together on Vulkan. It is AMD's Vulk
 - The Rust heap stays flat throughout, the present mode makes no difference, a longer frame latency loses more, and DX12 does not lose any.
 
 Dusk cannot present both windows in one call (Slint presents each window by itself), and DX12 costs about 250 MB more at idle, so Dusk stays on Vulkan. In use the loss is about 0.4–1.5 MB each time both windows redraw together (REQUIREMENTS.md, "Clip editor"). To report to AMD with the plain Vulkan program.
+
+## Measurements
+
+The history of the figures in REQUIREMENTS.md, by budget: how each was taken, and what it was at earlier milestones. The tables there keep the latest figure on each machine. Unless an entry says otherwise, the app was a release build on the desktop, on Vulkan, playing 1080p30 H.264 with sound through `playback_probe` (`dusk-engine`'s example, which plays through the same engine as the app into a 1280×720 preview) at the default 384 MB cache.
+
+### Idle
+
+- M1: 229 MB with the M1 window (timeline, transport) and a 1080p clip open once its decoder had closed, 254 MB while it decoded, and 200 MB for the empty window. Of the empty window's 200 MB the GPU driver's device takes about 80 MB and the UI toolkit and window about 100 MB, so it is the floor of this stack; Dusk's own idle share with a clip open is about 20 MB.
+- M2: 224 MB with a 1080p project open (three clips and music, their thumbnails in the bin) once its decoders had closed.
+- M3: 232 MB with a 60 s clip open; M5: 232 MB; M6: 233 MB.
+
+### During 1080p playback
+
+- M1: a software 1080p decoder peaks at about 32 MB (H.264) to 51 MB (10-bit HEVC); a hardware pool would be about 65 MB for 1080p 8-bit and 133 MB for 10-bit HEVC ("Decoder sizes").
+- M1: over 5 minutes of 1080p30, 681 to 684 MB, flat from the first minute on (the frame cache fills to its cap within seconds); 682 MB for 1080p60.
+- M2: over 2 minutes of three 1080p30 H.264 clips cut one after another, with music on the second audio track: 669 to 677 MB while playing through a clip, and 703 MB at most around the cuts, where the next clip's decoder is open beside the current one.
+- M5: 687 MB at most over 40 s of a 60 s clip. M6, after the missing media work changed when the engine forgets a media's frames and decoders: 681 MB, as at M5.
+
+### After playback stops
+
+- M1: 639 MB 10 s after 5 minutes of 1080p playback, which is idle (229 MB), the full 384 MB frame cache and 26 MB of working set; the same after 45 s and after 5 minutes of playing. Why the working set is kept is in "The compositor keeps its GPU memory".
+- M2: 644 MB 10 s after the 2 minutes of three clips and music: idle (224 MB), the cache and 36 MB.
+- M5 and M6: 644 MB.
+
+### 4K sources
+
+- M1: in software a 4K decoder peaks at about 150 MB (H.264) to 200 MB (10-bit HEVC). A hardware pool would reach about 500 MB for 3840-wide 10-bit HEVC and about 535 MB at 4096 wide, so the line for one such source keeps a ceiling of about 550 MB, and playback stays under about 1.2 GB.
+
+### Clip editor
+
+- M3 (60 s of 1080p30 H.264 with sound): 232 MB idle with the clip open, 295 MB with the clip editor open, 730 MB playing in either window, 693–695 MB 10 s after playback. Playback stays inside its budget; after playback the figure is about 50 MB above the line once the clip editor has been opened in the session, which is that window. Each moment both windows redraw together leaves about 0.4–1.5 MB behind for good on AMD's Vulkan driver (26.8.1; "Two windows on AMD's Vulkan driver").
+
+### Frame cache
+
+- M5 (60 s of 1080p30 H.264 with sound, playing 40 s): with the default cache, 232 MB idle, 687 MB at most while playing and 644 MB 10 s after; with 128 MB, 235, 421 and 376 MB, about the 256 MB the caps differ by. Lowering the cache from 384 to 128 MB in Settings once playback had filled it took Dusk from 643 to 374 MB within 3 s. The cache owns its frames (copied out of decoder pools), so eviction always frees memory.
+
+### dusq
+
+- M4 (Ryzen 5 2600X, Radeon RX 6750 XT; `dusq compress` at its defaults, Medium through `h264_amf`; the system's record of the peak private bytes; grainy test clips): 1080p H.264, 60 s: 158 MB, done in 33 s; 4K H.264 at 40 Mbit/s, 10 s: 446 MB in 20 s; 4K 10-bit HEVC at 40 Mbit/s, 10 s: 351 MB in 45 s; 8K HEVC, 3 s: 974 MB in 15 s. The encoder's line is included. Above 1080p most of the rest is the frames waiting in the queue, normalized as 16-bit 4:4:4 at the output size (about 50 MB each at 4K), and at 8K the single-threaded decoder's pictures.
+
+### During export
+
+- M4, the encoder lines (`dusk-media`'s `encoder_memory` example: the peak private bytes an encoder adds while it is fed frames as an export feeds them, grainy test pictures at High), at 1080p and at 4K: `h264_amf` 61 and 122 MB, `hevc_amf` 58 and 125 MB, OpenH264 39 and 129 MB, Kvazaar 109 and 369 MB, VP9 332 and 1,082 MB, SVT-AV1 526 and 1,008 MB with the parallelism and lookahead Dusk gives it (left to itself it took 1,343 and 4,660 MB; "SVT-AV1's memory"). AMF keeps about 25 MB (1080p) to 60 MB (4K) after its first session, which the next one reuses (12 sessions in a row added 5 MB more).
+- M4: compressing a 2.1 GB, 5.5-minute 4K phone video to 25 MB in the compress tool went from 208 MB idle to at most 531 MB and back to 278 MB; three compressions in a row left 265, 273 and 275 MB.
+
+### Download and installed
+
+- M0 (1 MB = 10^6 bytes): installed 149.9 MB, with `dusk.exe` at 19.4 MB (1.5 MB of it bundled fonts) and `dusq.exe` at 0.2 MB (no commands yet); download estimate 44.5 MB (all seven files as one solid LZMA2 stream, before installer overhead). M1: installed 151.0 MB with `dusk.exe` at 20.4 MB; download estimate 44.8 MB.
+- M6, on the installer CI builds and tries: see "The installer's sizes". The licenses of the libraries built into FFmpeg's DLLs, and of the Rust crates inside two of them, then joined the `licenses` folder: 1.5 MB of text, which brought the installed size to about 163.1 MB (CI measured 162.7 MB with the first 1.1 MB of it) and left the download at 46.5 MB.
+
+### Cold start
+
+- M0: about 3.0 s with Slint's own default instance. M1: 0.76–0.88 s ("dusk-render creates the device").
+- M6, started from the release folder with no FFmpeg on PATH: 0.48–0.62 s until the window titled "Untitled — Dusk". winit shows an untitled helper window of its own about 0.3 s earlier, which a measurement must not take for Dusk's. On CI's runner, which has no graphics card and draws with WARP, the installed Dusk showed its window after 1.3 s.
+
+### Idle CPU
+
+- M1: Dusk's own threads use no measurable CPU when idle. On the desktop a thread of AMD's Vulkan and Direct3D drivers spins one core whenever a window with a GPU swapchain sits idle, a bare Slint window included: the driver bug where a customized Radeon Software profile makes a worker thread poll instead of wait ([GPUOpen-Drivers/AMD-Gfx-Drivers#106](https://github.com/GPUOpen-Drivers/AMD-Gfx-Drivers/issues/106)). Resetting the profile to its defaults is the reported workaround, and it works: switching Radeon Software's global gaming experience from Quality to Default brought an idle Dusk with a clip open to 0 ms of CPU in 5 s. Dusk cannot avoid the bug from the application side.
+
+### Scrubbing and playback
+
+- M1 (1080p H.264 with a 2 s GOP): jumping to an exact frame took 72 ms at the median and 123 ms at worst; while the playhead was dragged every frame was drawn, and the exact frame arrived 24–26 ms after release. Playback showed every frame at 30 fps (none skipped in 5 minutes) and all but 3 of 1196 at 60 fps. With `DUSK_STATS` the UI thread spent about 0.05 ms per preview frame and a 1080p60 clip reached the preview at 57–60 frames a second ("The preview stays a wgpu texture").

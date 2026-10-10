@@ -1,4 +1,4 @@
-//! The export dialog's choices (docs/ARCHITECTURE.md, "Export details"): only what the
+//! The export dialog's choices (docs/BEHAVIOR.md, "The export dialog"): only what the
 //! loaded FFmpeg can produce on this machine is offered, the encoder each codec will use is
 //! shown, size presets never enlarge the picture, and the choices become the engine's
 //! export settings. A user's own `ffmpeg` can write the codecs it has a GPL encoder for

@@ -58,7 +58,7 @@ fn main() -> anyhow::Result<()> {
     window.set_about_version(env!("CARGO_PKG_VERSION").into());
     window.set_releases_url(about::RELEASES.into());
     // The user's settings and keys, before the engine and the windows use them
-    // (docs/ARCHITECTURE.md, "Keyboard and settings"); the files are small, so reading them
+    // (docs/BEHAVIOR.md, "Keyboard and settings"); the files are small, so reading them
     // here keeps no window waiting.
     let settings_dir = platform::settings_dir();
     let (user_settings, settings_problems) = settings::read_settings(settings_dir.as_deref());
