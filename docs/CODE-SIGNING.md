@@ -12,7 +12,7 @@ Once accepted: free code signing provided by [SignPath.io](https://about.signpat
 
 ## Team roles
 
-- **Committers and reviewers:** the repository's [collaborators](https://github.com/GitGud16/dusk/graphs/contributors) with write access, who review every change from anyone else before it is merged.
+- **Committers and reviewers:** those with write access to the repository, now its owner, [GitGud16](https://github.com/GitGud16), alone; they review every change from anyone else before it is merged. Anyone given write access later is named here first.
 - **Approvers:** the repository's owner, [GitGud16](https://github.com/GitGud16), who approves each release's signing request in SignPath by hand.
 
 Every member uses multi-factor authentication for GitHub and for SignPath.

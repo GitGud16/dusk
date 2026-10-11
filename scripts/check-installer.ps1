@@ -47,6 +47,13 @@ New-Item -ItemType Directory -Force -Path $work | Out-Null
 $log = Join-Path $work 'install.log'
 
 'Download {0}: {1:N1} MB' -f (Split-Path -Leaf $Setup), ((Get-Item -LiteralPath $Setup).Length / 1e6)
+function Test-Signature([string]$File) {
+    $signature = Get-AuthenticodeSignature -LiteralPath $File
+    if ($signature.Status -ne 'Valid') { throw "$File is not validly signed: $($signature.Status), $($signature.StatusMessage)" }
+    'Signed {0}: {1}' -f (Split-Path -Leaf $File), $signature.SignerCertificate.Subject
+}
+# The installer's own signature, before it runs.
+if ($Signed) { Test-Signature $Setup }
 $p = Start-Process -FilePath $Setup -Wait -PassThru -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/DIR=`"$dir`"", "/LOG=`"$log`""
 if ($p.ExitCode -ne 0) {
     Get-Content -LiteralPath $log -Tail 30 -ErrorAction SilentlyContinue
@@ -55,16 +62,14 @@ if ($p.ExitCode -ne 0) {
 $files = @(Get-ChildItem -LiteralPath $dir -Recurse -File)
 'Installed {0}: {1:N1} MB in {2} files' -f $dir, (($files | Measure-Object -Property Length -Sum).Sum / 1e6), $files.Count
 $uninstaller = Join-Path $dir 'unins000.exe'
-if ($Signed) {
-    foreach ($file in $Setup, (Join-Path $dir 'dusk.exe'), (Join-Path $dir 'dusq.exe')) {
-        $signature = Get-AuthenticodeSignature -LiteralPath $file
-        if ($signature.Status -ne 'Valid') { throw "$file is not validly signed: $($signature.Status), $($signature.StatusMessage)" }
-        'Signed {0}: {1}' -f (Split-Path -Leaf $file), $signature.SignerCertificate.Subject
-    }
-}
 $dusk = $null
 $uninstalled = $false
 try {
+    # The programs it installed, inside the try so that a failure still uninstalls them.
+    if ($Signed) {
+        foreach ($file in (Join-Path $dir 'dusk.exe'), (Join-Path $dir 'dusq.exe')) { Test-Signature $file }
+    }
+
     # Every staged file, as staged.
     $wrong = @()
     foreach ($file in Get-ChildItem -LiteralPath $stage -Recurse -File) {
