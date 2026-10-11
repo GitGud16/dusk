@@ -1,4 +1,4 @@
-"""Writes installer/ffmpeg-libraries.txt for the installer (docs/ARCHITECTURE.md, "Release"):
+"""Writes installer/ffmpeg-libraries.txt for the installer (docs/RELEASE.md, "Licenses"):
 the license texts of the libraries built into the pinned FFmpeg's DLLs, which ship
 beside FFmpeg's own LGPL. Run it again whenever scripts/ffmpeg-pin.psd1 moves:
 

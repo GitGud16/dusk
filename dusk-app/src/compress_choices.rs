@@ -1,4 +1,4 @@
-//! The compress tool's choices (docs/ARCHITECTURE.md, "Compress tool paths"): a video aimed
+//! The compress tool's choices (docs/BEHAVIOR.md, "The compress dialog"): a video aimed
 //! at a size in whole megabytes or at a quality, and what it will come out as.
 
 use dusk_core::MediaInfo;

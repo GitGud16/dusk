@@ -1,10 +1,10 @@
 # Dusk — Decisions
 
-Why the design in [ARCHITECTURE.md](ARCHITECTURE.md) is the way it is: what was measured, what went wrong first, and what was turned down. ARCHITECTURE.md says what Dusk does now; this file keeps the reasons, so the design can be read without the history and the history is not lost.
+Why the design in [ARCHITECTURE.md](ARCHITECTURE.md), [BEHAVIOR.md](BEHAVIOR.md) and [RELEASE.md](RELEASE.md) is the way it is: what was measured, what went wrong first, and what was turned down. Those files say what Dusk does now; this file keeps the reasons, so the design can be read without the history and the history is not lost.
 
-Entries sit under the ARCHITECTURE.md heading they explain, and each names the milestone it was decided or found at (ROADMAP.md). Figures come from the development machine, a Ryzen 5 2600X with a Radeon RX 6750 XT, unless an entry says otherwise. Budgets, and the figures measured against them at each milestone, are in [REQUIREMENTS.md](REQUIREMENTS.md).
+Entries sit under the heading they explain (BEHAVIOR.md continues ARCHITECTURE.md's sections under the same names, and RELEASE.md's entries are under "Release"), and each names the milestone it was decided or found at (ROADMAP.md). Figures come from the development machine, a Ryzen 5 2600X with a Radeon RX 6750 XT, unless an entry says otherwise. Budgets, and the latest figures measured against them on each machine, are in [REQUIREMENTS.md](REQUIREMENTS.md); the figures before those, and how each was taken, are under "Measurements" at the end.
 
-When a decision is made or a finding changes the design, ARCHITECTURE.md gets the rule and this file gets the reason, under the same heading.
+When a decision is made or a finding changes the design, the design file gets the rule and this file gets the reason, under the same heading.
 
 ## Core data model
 
@@ -45,6 +45,22 @@ Getting the next clip ready on the video thread itself, a frame per tick, stalle
 Every further decoding thread holds pictures of its own: one 8K HEVC stream peaked at 1,141 MB on 4 threads and 845 MB on one. So a source above 9 Mpx gets one software decoder on one thread, and is accepted when 9 of its 4:2:0 pictures fit under the ceiling (the decoder's 6 for a conforming stream, Dusk's 3). 8-bit 8K comes to 448 MB and fits; a low-delay 8K HEVC stream peaked at 320 MB. 10-bit 8K and 10-bit 6K do not fit. A stream that keeps more pictures than its level allows (an encoder's 16-picture pyramid, the 845 MB above) is not caught by the estimate.
 
 9 Mpx is where a 10-bit hardware pool crosses the ceiling. 8-bit sources would fit up to about 18 Mpx, but 0.1 deliberately uses the single boundary; a later version can base the class on the computed pool size instead.
+
+### Falling behind while playing (M7)
+
+Playing forwards, the video thread used to decode all the way to the clock's frame before drawing again. When decoding is slower than playback, each such round takes longer than the one before, since the clock moves on further while it decodes and leaves the next round more to decode, so the picture fell to a few frames a second until the 2 s seek rule jumped ahead, and then fell again. Measured with timings in the thread on the laptop, drawing took 2.5 ms a frame and decoding the rest, so drawing on a thread of its own would not have helped.
+
+Whether a source decodes fast enough can change from one run to the next. On the laptop's Core i7-13620H, 4K 10-bit HEVC decoded at 27 to 47 frames a second depending on how Windows 10 placed the decoder's threads on its performance and efficient cores, so the same 30 fps clip played whole in one run and at 1–2 frames a second in the app in another.
+
+So each round now decodes on to the clock's frame only while the frames on the way are within two frames of playback of it (two times the playback factor, in the clip's source). The first frame it decodes that is further behind, it draws for the clock's frame as not exact, once at most for each frame of the clock, and the next round goes on from there.
+
+The first version of this counted frames instead: each round decoded at most as many frames as one frame of playback covers. On CI's runner, which draws with WARP, the clock moved two frames on while one was drawn, so that version drew a late picture and then the exact one of the same frame, doubling the drawing where drawing was what was slow; `playback_runs_to_the_end_in_real_time` saw frames 3 and 6 twice. A budget of time (decode for at most one frame's time before drawing) was tried next and failed the other way: FFmpeg's frame-threaded decoders hand frames out in bursts, so a round that waited for a frame drew it and the next round decoded the rest of the burst unseen; on the 4K 60 fps clip it showed 120 frames in 9 s where counting showed 358–391. The distance behind the clock does neither: a decoder only a frame or two behind catches up before drawing, and one further behind draws every frame it decodes. A frame is so drawn twice at most, late and then exact, which the engine test now holds it to.
+
+Measured on the laptop on mains power, `playback_probe` alternating with the frame-counting version on a 4K 60 fps 10-bit HEVC clip, faster than this CPU decodes: 357–358 frames shown in 9 s (counting 358–386, the old way 28–40), one every 21 ms; on the 30 fps clip, 241–248 (counting 256). In the app, the 60 fps clip's preview got 29–43 frames a second (39 on average) and the 30 fps clip's 18–31 (23 to 29 on average over three runs), and 1080p played as before (3 of 900 frames skipped at 30 fps, 7 of 1,801 at 60).
+
+The cost: a source too heavy for the CPU shows its picture behind the sound, up to the 2 s at which the decoder seeks to the keyframe before the clock. Seeking as soon as a keyframe lies between the decoder and the clock would keep that shorter, but needs the container's index of keyframes; it and skipping the frames nothing refers to wait for M14, where proxies remove most of the case (ROADMAP.md).
+
+More decoder threads were tried too. On the 4K 10-bit clip, 2, 4, 6 and 8 threads decoded 27, 38, 47 and 40 frames a second at 201, 275, 366 and 441 MB, the core placement mattering more than the count, so the thread rule stays.
 
 ### Stills keep their source's chroma siting (M4)
 
@@ -191,9 +207,11 @@ With the pinned 8.1 build the five DLLs take 130.3 MB installed (avcodec 90.9, a
 
 Slint's own default instance loads Vulkan and DX12 together and showed the first window after about 3.0 s. DX12 alone took 2.5 s, with about 30 MB more private bytes; Vulkan alone 0.83 s. With `dusk-render` creating one Vulkan instance and device without a separate probe (DX12 only when Vulkan finds no adapter) and handing them to Slint, the first window appears after 0.71–0.85 s and the idle process holds about 185 MB (M1, fonts bundled).
 
-### The preview stays a wgpu texture (M1)
+### The preview stays a wgpu texture (M1, M7)
 
-On the Radeon RX 6750 XT the UI thread spends about 0.05 ms per preview frame turning the texture into an image, and a 1080p60 clip reaches the preview at 57–60 frames a second. No integrated GPU was at hand at M1, so the readback fallback stays pre-approved for one (ARCHITECTURE.md, Open questions 1).
+On the Radeon RX 6750 XT the UI thread spends about 0.05 ms per preview frame turning the texture into an image, and a 1080p60 clip reaches the preview at 57–60 frames a second. No integrated GPU was at hand at M1, so the readback fallback stayed pre-approved for one.
+
+At M7, on the laptop's Intel UHD Graphics (Xe-LP, the Iris Xe class REQUIREMENTS.md names), a 1080p60 clip reached the preview at 54–60 frames a second, 57.8 on average over 38 s, with 55–61 draws and 0.02 ms of UI time a frame; 1080p30 reached it at every frame. That is the discrete card's figure, so the texture path stays on integrated graphics too and the readback fallback is not needed (ARCHITECTURE.md, Open questions 1).
 
 ### The surface reconfigure race (M2)
 
@@ -210,3 +228,83 @@ At M3, memory grew when both windows redrew together on Vulkan. It is AMD's Vulk
 - The Rust heap stays flat throughout, the present mode makes no difference, a longer frame latency loses more, and DX12 does not lose any.
 
 Dusk cannot present both windows in one call (Slint presents each window by itself), and DX12 costs about 250 MB more at idle, so Dusk stays on Vulkan. In use the loss is about 0.4–1.5 MB each time both windows redraw together (REQUIREMENTS.md, "Clip editor"). To report to AMD with the plain Vulkan program.
+
+At M7, Intel's Vulkan driver (UHD Graphics, driver 31.0.101.5333, Windows 10) did not lose it: with the clip editor open, switching the clip off and on 200 times from the main window, which redraws both windows, left 0.6 MB, about 0.003 MB each time, and the same with the clip editor closed left nothing.
+
+## Measurements
+
+The history of the figures in REQUIREMENTS.md, by budget: how each was taken, and what it was at earlier milestones. The tables there keep the latest figure on each machine. Unless an entry says otherwise, the app was a release build on the desktop, on Vulkan, playing 1080p30 H.264 with sound through `playback_probe` (`dusk-engine`'s example, which plays through the same engine as the app into a 1280×720 preview) at the default 384 MB cache.
+
+### Idle
+
+- M1: 229 MB with the M1 window (timeline, transport) and a 1080p clip open once its decoder had closed, 254 MB while it decoded, and 200 MB for the empty window. Of the empty window's 200 MB the GPU driver's device takes about 80 MB and the UI toolkit and window about 100 MB, so it is the floor of this stack; Dusk's own idle share with a clip open is about 20 MB.
+- M2: 224 MB with a 1080p project open (three clips and music, their thumbnails in the bin) once its decoders had closed.
+- M3: 232 MB with a 60 s clip open; M5: 232 MB; M6: 233 MB.
+
+### During 1080p playback
+
+- M1: a software 1080p decoder peaks at about 32 MB (H.264) to 51 MB (10-bit HEVC); a hardware pool would be about 65 MB for 1080p 8-bit and 133 MB for 10-bit HEVC ("Decoder sizes").
+- M1: over 5 minutes of 1080p30, 681 to 684 MB, flat from the first minute on (the frame cache fills to its cap within seconds); 682 MB for 1080p60.
+- M2: over 2 minutes of three 1080p30 H.264 clips cut one after another, with music on the second audio track: 669 to 677 MB while playing through a clip, and 703 MB at most around the cuts, where the next clip's decoder is open beside the current one.
+- M5: 687 MB at most over 40 s of a 60 s clip. M6, after the missing media work changed when the engine forgets a media's frames and decoders: 681 MB, as at M5.
+
+### After playback stops
+
+- M1: 639 MB 10 s after 5 minutes of 1080p playback, which is idle (229 MB), the full 384 MB frame cache and 26 MB of working set; the same after 45 s and after 5 minutes of playing. Why the working set is kept is in "The compositor keeps its GPU memory".
+- M2: 644 MB 10 s after the 2 minutes of three clips and music: idle (224 MB), the cache and 36 MB.
+- M5 and M6: 644 MB.
+
+### 4K sources
+
+- M1: in software a 4K decoder peaks at about 150 MB (H.264) to 200 MB (10-bit HEVC). A hardware pool would reach about 500 MB for 3840-wide 10-bit HEVC and about 535 MB at 4096 wide, so the line for one such source keeps a ceiling of about 550 MB, and playback stays under about 1.2 GB.
+
+### Clip editor
+
+- M3 (60 s of 1080p30 H.264 with sound): 232 MB idle with the clip open, 295 MB with the clip editor open, 730 MB playing in either window, 693–695 MB 10 s after playback. Playback stays inside its budget; after playback the figure is about 50 MB above the line once the clip editor has been opened in the session, which is that window. Each moment both windows redraw together leaves about 0.4–1.5 MB behind for good on AMD's Vulkan driver (26.8.1; "Two windows on AMD's Vulkan driver").
+
+### Frame cache
+
+- M5 (60 s of 1080p30 H.264 with sound, playing 40 s): with the default cache, 232 MB idle, 687 MB at most while playing and 644 MB 10 s after; with 128 MB, 235, 421 and 376 MB, about the 256 MB the caps differ by. Lowering the cache from 384 to 128 MB in Settings once playback had filled it took Dusk from 643 to 374 MB within 3 s. The cache owns its frames (copied out of decoder pools), so eviction always frees memory.
+
+### dusq
+
+- M4 (Ryzen 5 2600X, Radeon RX 6750 XT; `dusq compress` at its defaults, Medium through `h264_amf`; the system's record of the peak private bytes; grainy test clips): 1080p H.264, 60 s: 158 MB, done in 33 s; 4K H.264 at 40 Mbit/s, 10 s: 446 MB in 20 s; 4K 10-bit HEVC at 40 Mbit/s, 10 s: 351 MB in 45 s; 8K HEVC, 3 s: 974 MB in 15 s. The encoder's line is included. Above 1080p most of the rest is the frames waiting in the queue, normalized as 16-bit 4:4:4 at the output size (about 50 MB each at 4K), and at 8K the single-threaded decoder's pictures.
+
+### During export
+
+- M4, the encoder lines (`dusk-media`'s `encoder_memory` example: the peak private bytes an encoder adds while it is fed frames as an export feeds them, grainy test pictures at High), at 1080p and at 4K: `h264_amf` 61 and 122 MB, `hevc_amf` 58 and 125 MB, OpenH264 39 and 129 MB, Kvazaar 109 and 369 MB, VP9 332 and 1,082 MB, SVT-AV1 526 and 1,008 MB with the parallelism and lookahead Dusk gives it (left to itself it took 1,343 and 4,660 MB; "SVT-AV1's memory"). AMF keeps about 25 MB (1080p) to 60 MB (4K) after its first session, which the next one reuses (12 sessions in a row added 5 MB more).
+- M4: compressing a 2.1 GB, 5.5-minute 4K phone video to 25 MB in the compress tool went from 208 MB idle to at most 531 MB and back to 278 MB; three compressions in a row left 265, 273 and 275 MB.
+
+### Download and installed
+
+- M0 (1 MB = 10^6 bytes): installed 149.9 MB, with `dusk.exe` at 19.4 MB (1.5 MB of it bundled fonts) and `dusq.exe` at 0.2 MB (no commands yet); download estimate 44.5 MB (all seven files as one solid LZMA2 stream, before installer overhead). M1: installed 151.0 MB with `dusk.exe` at 20.4 MB; download estimate 44.8 MB.
+- M6, on the installer CI builds and tries: see "The installer's sizes". The licenses of the libraries built into FFmpeg's DLLs, and of the Rust crates inside two of them, then joined the `licenses` folder: 1.5 MB of text, which brought the installed size to about 163.1 MB (CI measured 162.7 MB with the first 1.1 MB of it) and left the download at 46.5 MB.
+
+### Cold start
+
+- M0: about 3.0 s with Slint's own default instance. M1: 0.76–0.88 s ("dusk-render creates the device").
+- M6, started from the release folder with no FFmpeg on PATH: 0.48–0.62 s until the window titled "Untitled — Dusk". winit shows an untitled helper window of its own about 0.3 s earlier, which a measurement must not take for Dusk's. On CI's runner, which has no graphics card and draws with WARP, the installed Dusk showed its window after 1.3 s.
+
+### Idle CPU
+
+- M1: Dusk's own threads use no measurable CPU when idle. On the desktop a thread of AMD's Vulkan and Direct3D drivers spins one core whenever a window with a GPU swapchain sits idle, a bare Slint window included: the driver bug where a customized Radeon Software profile makes a worker thread poll instead of wait ([GPUOpen-Drivers/AMD-Gfx-Drivers#106](https://github.com/GPUOpen-Drivers/AMD-Gfx-Drivers/issues/106)). Resetting the profile to its defaults is the reported workaround, and it works: switching Radeon Software's global gaming experience from Quality to Default brought an idle Dusk with a clip open to 0 ms of CPU in 5 s. Dusk cannot avoid the bug from the application side.
+
+### Scrubbing and playback
+
+- M1 (1080p H.264 with a 2 s GOP): jumping to an exact frame took 72 ms at the median and 123 ms at worst; while the playhead was dragged every frame was drawn, and the exact frame arrived 24–26 ms after release. Playback showed every frame at 30 fps (none skipped in 5 minutes) and all but 3 of 1196 at 60 fps. With `DUSK_STATS` the UI thread spent about 0.05 ms per preview frame and a 1080p60 clip reached the preview at 57–60 frames a second ("The preview stays a wgpu texture").
+
+### The laptop at M7
+
+ROADMAP.md's M7 asks for M1's measurements on integrated graphics. The laptop (REQUIREMENTS.md, "The machines") ran them from a release build, on mains power in Windows' Balanced plan, on grainy clips made from FFmpeg's `testsrc2` with noise and a tone (H.264 and HEVC through QSV, 2 s groups of pictures): 1080p30 for 5 minutes and 60 s, 1080p60 for 60 s, 4K H.264 at 40 Mbit/s for 20 s, 4K 10-bit HEVC at 40 Mbit/s for 10 s, 1080p 10-bit HEVC for 20 s and 8K HEVC for 3 s.
+
+- **The app.** `dusk.exe` was started on a clip with folders of its own (the defaults, so a 384 MB cache), keys were posted to its windows as `dusk-app/tests/keyboard.rs` posts them, and its private bytes were read every half second. Idle is 12 s after the window showed (import, thumbnail, the decoder closing after 5 s), playing is 40 s of the 60 s clip, after is 10 s after pausing. The clip editor was opened with D and Enter after that playback, so its figures sit on a full cache.
+- **The engine alone.** `playback_probe` (1280×720 preview, with sound) for the frames shown and skipped, the jumps and the drag; `decode_speed` for the decoders.
+- **dusq and the encoders.** `dusq compress` at its defaults, and `encoder_memory` per encoder; the peak is the system's record of the process's peak private bytes, read through its handle after it exited. The QSV encoders were also run six times in a row in one process to see what they keep.
+
+What it showed:
+
+- Intel's driver costs about 110 MB less than AMD's: the empty window takes 119 MB against 200 MB, and every figure that follows from idle is lower by about as much. The first window appears after 0.16–0.26 s, and an idle Dusk uses no CPU.
+- 1080p plays whole at 30 and 60 fps with flat memory, and the preview keeps up at 60 fps ("The preview stays a wgpu texture").
+- The QSV encoders take more than the provisional 200 MB line: `h264_qsv` 170 MB at 1080p and 454 MB at 4K, `hevc_qsv` 272 and 699 MB, peaks that settle after the second or third session. Each keeps memory after it closes (`h264_qsv` about 70 and 235 MB, `hevc_qsv` about 145 and 375 MB), which the next session reuses, so it does not grow with exports but stays until Dusk quits. The lines in REQUIREMENTS.md are those peaks rounded up as the other encoders' were. `av1_qsv` does not open on this graphics ("Function not implemented"), and an AV1 export falls through to SVT-AV1 as the encoder order says.
+- dusq through `h264_qsv` peaks higher than through `h264_amf` on the desktop (246 against 158 MB at 1080p, 683 against 351 MB for 4K 10-bit HEVC), which is the QSV encoder's line; every figure stays under the app's playback budget for its class.
+- **4K 10-bit HEVC playback could collapse.** In one run it showed 9 frames a second in `playback_probe` (79 shown, 180 skipped in 9 s; 16 on DX12) and 1–2 in the app, while 4K H.264 showed 28 and 26 and 1080p 10-bit HEVC every frame; in later runs the same clip played nearly whole. The cause, and what the video thread does about it now, are in "Falling behind while playing".

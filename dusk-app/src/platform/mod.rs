@@ -16,7 +16,7 @@ mod windows;
 
 /// The folder where Dusk keeps the user's settings and shortcuts: `DUSK_SETTINGS_DIR` when set
 /// (tests use it), otherwise the user's roaming application data, which follows them from one
-/// computer to another (docs/ARCHITECTURE.md, "Keyboard and settings").
+/// computer to another (docs/BEHAVIOR.md, "Where").
 pub fn settings_dir() -> Option<PathBuf> {
     if let Some(dir) = std::env::var_os("DUSK_SETTINGS_DIR") {
         return Some(PathBuf::from(dir));

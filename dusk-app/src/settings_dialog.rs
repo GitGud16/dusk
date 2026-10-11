@@ -1,4 +1,4 @@
-//! The Settings dialog (docs/ARCHITECTURE.md, "Keyboard and settings"): the frame cache's
+//! The Settings dialog (docs/BEHAVIOR.md, "Keyboard and settings"): the frame cache's
 //! size, the export dialog's default and the user's own `ffmpeg.exe`. A change applies at once
 //! and is kept in `settings.txt`; how each control changes the settings is worked out here.
 

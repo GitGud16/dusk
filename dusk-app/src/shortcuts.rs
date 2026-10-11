@@ -1,7 +1,7 @@
 //! The central shortcut table (CLAUDE.md, "UI conventions"): every action, its name, what it
 //! does and its default keys, so the shortcut list stays complete. Menu items and buttons
 //! name the same actions. The keys in use, the defaults with the user's changes over them,
-//! are the keymap's (`keymap`; docs/ARCHITECTURE.md, "Keyboard and settings").
+//! are the keymap's (`keymap`; docs/BEHAVIOR.md, "Keyboard and settings").
 
 use slint::platform::Key;
 

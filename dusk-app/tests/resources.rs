@@ -1,6 +1,6 @@
 //! What Windows reads from `dusk.exe` itself: its icon, which Explorer, the taskbar and the
 //! installer's shortcuts show, and its version information, which Explorer's file details and
-//! Task Manager show (docs/ARCHITECTURE.md, "Release").
+//! Task Manager show (docs/RELEASE.md, "Logo and icon").
 #![cfg(windows)]
 
 use std::ffi::OsStr;

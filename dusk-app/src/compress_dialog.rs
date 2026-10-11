@@ -1,4 +1,4 @@
-//! The compress tool on the UI thread (docs/ARCHITECTURE.md, "Compress tool paths"): pick a
+//! The compress tool on the UI thread (docs/BEHAVIOR.md, "The compress dialog"): pick a
 //! video, read it on a worker, aim it at a size or a quality in one dialog, ask where to save
 //! it, and compress it through the engine's one-clip export. The project is never touched.
 

@@ -54,11 +54,12 @@ fn main() -> anyhow::Result<()> {
     // destroying the device there panics (exit code 2170 instead of 0). With this reference
     // never dropped, that teardown only lowers a reference count.
     let gpu: &'static Gpu = Box::leak(Box::new(select_renderer()?));
+    stats::name_adapter(&gpu.adapter);
     let window = MainWindow::new()?;
     window.set_about_version(env!("CARGO_PKG_VERSION").into());
     window.set_releases_url(about::RELEASES.into());
     // The user's settings and keys, before the engine and the windows use them
-    // (docs/ARCHITECTURE.md, "Keyboard and settings"); the files are small, so reading them
+    // (docs/BEHAVIOR.md, "Keyboard and settings"); the files are small, so reading them
     // here keeps no window waiting.
     let settings_dir = platform::settings_dir();
     let (user_settings, settings_problems) = settings::read_settings(settings_dir.as_deref());

@@ -34,7 +34,7 @@ cargo build -p dusk-cli --release
 
 ## How the code is laid out
 
-Seven crates, with dependencies pointing down only: `dusk-app` (the editor) and `dusk-cli` (`dusq`) use `dusk-engine`, which uses `dusk-media` (FFmpeg), `dusk-render` (the GPU) and `dusk-audio`, which use `dusk-core` (the project model, with no I/O). [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) explains each, and is the place to propose a change of design before making it; [docs/DECISIONS.md](docs/DECISIONS.md) says why the design is the way it is, and is where a change's reasons and measurements go.
+Seven crates, with dependencies pointing down only: `dusk-app` (the editor) and `dusk-cli` (`dusq`) use `dusk-engine`, which uses `dusk-media` (FFmpeg), `dusk-render` (the GPU) and `dusk-audio`, which use `dusk-core` (the project model, with no I/O). [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) explains each, and is the place to propose a change of design before making it; [docs/BEHAVIOR.md](docs/BEHAVIOR.md) says what the user meets on top of it (the dialogs, the keys, the settings), and [docs/RELEASE.md](docs/RELEASE.md) what ships. [docs/DECISIONS.md](docs/DECISIONS.md) says why they are the way they are, and is where a change's reasons go; new figures go in the tables of [docs/REQUIREMENTS.md](docs/REQUIREMENTS.md), and the ones they replace into DECISIONS.md, "Measurements".
 
 ## Rules the code keeps
 

@@ -1,4 +1,4 @@
-//! The shortcut list's dialog (docs/ARCHITECTURE.md, "Keyboard and settings"): narrowed to
+//! The shortcut list's dialog (docs/BEHAVIOR.md, "Keyboard and settings"): narrowed to
 //! what is typed, an action picked with Up and Down or a click, and its keys changed by
 //! pressing new ones: keys another action has are taken from it only when pressed a second
 //! time. What it says under the list is worked out here; the window shows it.

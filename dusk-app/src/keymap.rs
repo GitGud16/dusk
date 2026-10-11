@@ -1,4 +1,4 @@
-//! The keys in use (docs/ARCHITECTURE.md, "Keyboard and settings"): every action's default
+//! The keys in use (docs/BEHAVIOR.md, "Keyboard and settings"): every action's default
 //! keys from the shortcut table, with the user's changes from `shortcuts.txt` over them; how
 //! keys are written in that file and shown in the shortcut list; and which action a key press
 //! stands for.

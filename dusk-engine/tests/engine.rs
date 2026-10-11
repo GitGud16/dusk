@@ -445,11 +445,18 @@ fn playback_runs_to_the_end_in_real_time() {
     let (frames, stopped) = running.play_through();
     let took = started.elapsed();
     assert_eq!(stopped, Frame(29));
+    // In order, and each frame drawn twice at most: late while decoding is behind, then
+    // exact (docs/ARCHITECTURE.md, "Playback").
     assert!(
-        frames.windows(2).all(|pair| pair[0] < pair[1]),
+        frames.windows(2).all(|pair| pair[0] <= pair[1]),
         "{frames:?}"
     );
-    assert!(frames.len() > 15, "only {} frames shown", frames.len());
+    assert!(
+        frames.windows(3).all(|three| three[0] != three[2]),
+        "{frames:?}"
+    );
+    let distinct = frames.windows(2).filter(|pair| pair[0] != pair[1]).count() + 1;
+    assert!(distinct > 15, "only {distinct} frames shown: {frames:?}");
     assert!(
         took >= Duration::from_millis(900) && took < Duration::from_secs(3),
         "{took:?}"

@@ -8,13 +8,15 @@ Design docs live in `docs/`. Read the relevant one before changing the area it c
 @docs/REQUIREMENTS.md
 
 Also available (read when relevant, not every session):
-- `docs/DECISIONS.md` — why the design is what it is: the measurements, findings and rejected options behind ARCHITECTURE.md, under the same headings
+- `docs/BEHAVIOR.md` — what the user meets on top of the design: the clip editor's window, the export and compress dialogs, keyboard, shortcuts and settings, the missing media dialog, error messages. Read it before changing anything in `dusk-app`'s dialogs, keys or settings
+- `docs/RELEASE.md` — what ships: logo and icon, theme pass, About dialog, installer, licenses, release checks
+- `docs/DECISIONS.md` — why the design is what it is: the findings and rejected options behind ARCHITECTURE.md, BEHAVIOR.md and RELEASE.md, under the same headings, and the history of every measured figure ("Measurements")
 - `docs/VISION.md` — why Dusk exists, scope guardrails, decisions so far
 - `docs/FEATURES.md` — user stories, MVP vs later
 - `docs/THEME.md` — colors (HSL), typography, spacing, timeline color rules
 - `docs/ROADMAP.md` — milestones with "done when" criteria: M0 to M6 (0.1, done), then M7 onward
 
-ARCHITECTURE.md describes the design as it is now, in the present tense. When a decision is made or a measurement or bug changes the design, the rule goes in ARCHITECTURE.md and the reason (the milestone, the figures, what was tried) goes in DECISIONS.md under the same heading; don't write "decided at Mx" or "found at Mx" history into ARCHITECTURE.md. Figures measured against a budget go in REQUIREMENTS.md.
+ARCHITECTURE.md, BEHAVIOR.md and RELEASE.md describe Dusk as it is now, in the present tense: ARCHITECTURE.md the design (crates, threads, model, data flow, export pipeline, memory, FFmpeg, Slint), BEHAVIOR.md what the user sees and does, under the ARCHITECTURE.md section names it continues, and RELEASE.md what ships. When a decision is made or a measurement or bug changes the design, the rule goes in the file it belongs to and the reason (the milestone, the figures, what was tried) goes in DECISIONS.md under the same heading; don't write "decided at Mx" or "found at Mx" history into those three. Figures measured against a budget go in REQUIREMENTS.md's tables, one cell per machine holding the latest figure and its milestone; the figure it replaces moves to DECISIONS.md, "Measurements".
 
 ## Stack (decided, do not relitigate)
 

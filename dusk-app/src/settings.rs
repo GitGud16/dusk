@@ -1,4 +1,4 @@
-//! What Dusk keeps in its settings folder (docs/ARCHITECTURE.md, "Keyboard and settings"):
+//! What Dusk keeps in its settings folder (docs/BEHAVIOR.md, "Keyboard and settings"):
 //! the user's shortcuts and settings, each read once when Dusk starts and written on the file
 //! worker.
 

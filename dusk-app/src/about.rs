@@ -1,4 +1,4 @@
-//! The About dialog (docs/ARCHITECTURE.md, "Release"): Dusk's version and license,
+//! The About dialog (docs/RELEASE.md, "About"): Dusk's version and license,
 //! what it is built with, the third-party licenses installed beside it and the releases
 //! page. The system opens both, so Dusk itself makes no request.
 

@@ -13,9 +13,11 @@ use std::time::{Duration, Instant};
 
 use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, TryRecvError};
 use dusk_audio::PlaybackClock;
-use dusk_core::time::{frame_at, frame_to_media};
-use dusk_core::{ClipId, Frame, MediaId, MediaInfo, MediaKind, MediaTime, Picture, Project};
-use dusk_media::{Acceleration, DecodedFrame, Following, LARGE_FRAME, Step, VideoDecoder};
+use dusk_core::time::{frame_at, frame_to_media, source_span};
+use dusk_core::{
+    ClipId, Frame, MediaId, MediaInfo, MediaKind, MediaTime, Picture, Project, Rational,
+};
+use dusk_media::{Acceleration, DecodedFrame, Following, LARGE_FRAME, Step, Toward, VideoDecoder};
 use dusk_render::{Compositor, Gpu, fit_size};
 
 use crate::EngineError;
@@ -98,6 +100,8 @@ pub(crate) fn spawn(
 /// What the preview shows at a frame.
 enum Shown {
     Picture(Arc<Picture>),
+    /// An earlier picture of its clip: decoding is behind the playback clock.
+    Late(Arc<Picture>),
     Black,
     /// Not known without decoding.
     Unknown,
@@ -112,6 +116,9 @@ enum Fetch {
     Nearest,
     /// Decode it.
     Decode,
+    /// Decode toward it, and take the first frame decoded that is further behind it than this
+    /// in its source, for playing forwards (docs/ARCHITECTURE.md, "Playback").
+    Toward(MediaTime),
     /// Decode its group of pictures from the keyframe and cache every frame of it, for
     /// playing backwards.
     Gop,
@@ -129,16 +136,29 @@ fn reverse_window(time: MediaTime, frame_bytes: usize, cap: usize, frame: MediaT
 }
 
 /// How frames are fetched while playing at `rate`, the playback factor times the clip's
-/// speed (docs/ARCHITECTURE.md, "Playback"): every frame forwards up to 8x, every frame
-/// backwards from a group-of-pictures buffer up to 2x, and only keyframes beyond either.
-fn playback_fetch(rate: f64) -> Fetch {
+/// speed, decoding on without drawing while within `near` of the clock (docs/ARCHITECTURE.md,
+/// "Playback"): every frame forwards up to 8x, every frame backwards from a group-of-pictures
+/// buffer up to 2x, and only keyframes beyond either.
+fn playback_fetch(rate: f64, near: MediaTime) -> Fetch {
     if rate > 8.0 || rate < -2.0 {
         Fetch::Keyframe
     } else if rate > 0.0 {
-        Fetch::Decode
+        Fetch::Toward(near)
     } else {
         Fetch::Gop
     }
+}
+
+/// How many frames of playback behind the clock the decoder may be and still catch up before
+/// drawing, at 1x; the playback factor multiplies it, as the clock moves that much faster.
+const CATCH_UP: i64 = 2;
+
+/// How far behind the clock, in the source of a clip at `speed` on a sequence at `rate`
+/// played at `factor`, the decoder catches up before drawing.
+fn catch_up(rate: Rational, speed: f64, factor: f64) -> MediaTime {
+    // Small: the factor is at most 8 here.
+    let frames = (CATCH_UP as f64 * factor.abs().max(1.0)).ceil() as i64;
+    source_span(Frame(frames), speed, rate)
 }
 
 struct OpenDecoder {
@@ -467,19 +487,32 @@ impl VideoThread {
         if self.view(preview).shown_exactly == Some(frame) {
             return self.tend_upcoming(preview, &project);
         }
-        let speed = project
-            .sequence()
+        let sequence = project.sequence();
+        let speed = sequence
             .visible_video_at(frame)
             .map_or(1.0, |clip| clip.speed);
-        let fetch = playback_fetch(factor * speed);
-        match self.shown_at(preview, frame, fetch) {
-            Ok(shown) => self.present(preview, frame, shown, true),
+        let near = catch_up(sequence.frame_rate(), speed, factor);
+        let fetch = playback_fetch(factor * speed, near);
+        // A picture from before the clock is drawn for the clock's frame, as not exact, so the
+        // next round goes on toward the clock and pausing shows the exact frame; a frame is
+        // drawn late once at most, so it is drawn twice at most, late and then exact.
+        let late = match self.shown_at(preview, frame, fetch) {
+            Ok(Shown::Late(picture)) => {
+                if self.view(preview).target != Some(frame) {
+                    self.present(preview, frame, Shown::Picture(picture), false);
+                }
+                true
+            }
+            Ok(shown) => {
+                self.present(preview, frame, shown, true);
+                false
+            }
             Err(error) => {
                 let error = self.gone_or(error);
                 self.fail(error);
                 return self.stop_at(preview, generation, frame);
             }
-        }
+        };
         // Get the next frame ready while this one is on screen; keyframes come as they come.
         if matches!(fetch, Fetch::Keyframe) {
             self.upcoming = None;
@@ -491,11 +524,12 @@ impl VideoThread {
         } else {
             frame - Frame(step)
         };
-        if (Frame(0)..=last).contains(&next) {
+        // Behind the clock, every frame decoded is shown instead.
+        if !late && (Frame(0)..=last).contains(&next) {
             let _ = self.shown_at(preview, next, fetch);
         }
         // Playing forwards, the clip to come into view after that one, too.
-        if forward && matches!(fetch, Fetch::Decode) {
+        if forward && matches!(fetch, Fetch::Toward(_)) {
             self.plan_upcoming(&project, next.min(last), factor);
             self.tend_upcoming(preview, &project);
         } else {
@@ -752,6 +786,7 @@ impl VideoThread {
                 .nearest(media, time)
                 .map_or(Shown::Unknown, Shown::Picture)),
             Fetch::Decode => self.decode(&project, media, time),
+            Fetch::Toward(near) => self.decode_toward(&project, media, time, near),
             Fetch::Gop => self.decode_gop(&project, media, time),
             Fetch::Keyframe => self.decode_keyframe(&project, media, time),
         }
@@ -824,6 +859,35 @@ impl VideoThread {
             .cache
             .insert(media, decoded.time, following, decoded.picture);
         Ok(Shown::Picture(picture))
+    }
+
+    /// Decodes `media` toward `time` into the cache: the frame shown at `time`, or the first
+    /// frame decoded that is further than `near` behind it, late.
+    fn decode_toward(
+        &mut self,
+        project: &Project,
+        media: MediaId,
+        time: MediaTime,
+        near: MediaTime,
+    ) -> Result<Shown, EngineError> {
+        let index = self.decoder(project, media)?;
+        let decoder = &mut self.decoders[index].decoder;
+        let (decoded, late) = match decoder.frame_toward(time, near)? {
+            Toward::There(Some(decoded)) => (decoded, false),
+            // Before the first frame of the stream.
+            Toward::There(None) => return Ok(Shown::Black),
+            Toward::Behind(decoded) => (decoded, true),
+        };
+        // A late frame's successor is not decoded yet, so its entry covers only its start.
+        let following = decoder.following();
+        let picture = self
+            .cache
+            .insert(media, decoded.time, following, decoded.picture);
+        Ok(if late {
+            Shown::Late(picture)
+        } else {
+            Shown::Picture(picture)
+        })
     }
 
     /// Decodes the frames of `media` from the keyframe before `time` up to the frame shown at
@@ -965,7 +1029,7 @@ impl VideoThread {
             });
             let compositor = view.compositor.get_or_insert_with(|| Compositor::new(gpu));
             match shown {
-                Shown::Picture(picture) => {
+                Shown::Picture(picture) | Shown::Late(picture) => {
                     let placement = project
                         .map(|project| placement_at(project, frame))
                         .unwrap_or_default();
@@ -1022,7 +1086,7 @@ mod tests {
         match fetch {
             Fetch::Cached => "cached",
             Fetch::Nearest => "nearest",
-            Fetch::Decode => "every frame",
+            Fetch::Decode | Fetch::Toward(_) => "every frame",
             Fetch::Gop => "groups of pictures",
             Fetch::Keyframe => "keyframes",
         }
@@ -1051,7 +1115,25 @@ mod tests {
             (-4.0, "keyframes"),
         ];
         for (rate, expected) in cases {
-            assert_eq!(kind(playback_fetch(rate)), expected, "at {rate}x");
+            assert_eq!(
+                kind(playback_fetch(rate, MediaTime(66_667))),
+                expected,
+                "at {rate}x"
+            );
         }
+    }
+
+    #[test]
+    fn the_decoder_catches_up_before_drawing_while_two_frames_of_playback_behind() {
+        let thirty = Rational::new(30, 1).unwrap();
+        // Two frames of the sequence, in the clip's source.
+        assert_eq!(catch_up(thirty, 1.0, 1.0), MediaTime(66_667));
+        assert_eq!(catch_up(thirty, 2.0, 1.0), MediaTime(133_334));
+        // Faster playback moves the clock further between two rounds; slower does not shrink
+        // it below two frames.
+        assert_eq!(catch_up(thirty, 1.0, 4.0), MediaTime(266_667));
+        assert_eq!(catch_up(thirty, 1.0, 0.25), MediaTime(66_667));
+        let near = MediaTime(50_000);
+        assert!(matches!(playback_fetch(1.0, near), Fetch::Toward(n) if n == near));
     }
 }
