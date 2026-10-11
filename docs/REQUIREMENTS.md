@@ -53,8 +53,8 @@ What these figures assume:
 
 | Budget | Target | Measured |
 |---|---|---|
-| Download | under ~60 MB, which needs LZMA: an Inno Setup installer with solid LZMA2 | about 30.4 MB with Dusk's own FFmpeg (M7: the staged files as one solid LZMA2 stream, before the installer's own overhead); 46.5 MB (M6) |
-| Installed | under ~160 MB for 0.1; under ~60 MB long-term | about 110.1 MB with Dusk's own FFmpeg (M7): staged 105.7 MB (the five FFmpeg DLLs 77.4 MB, `dusk.exe` 25.8 MB, `dusq.exe` 0.7 MB, `licenses` 1.8 MB) and Inno Setup's uninstaller 4.4 MB (DECISIONS.md, "An FFmpeg of Dusk's own"); about 163.1 MB at 0.1 (M6), over its approximate target and accepted (DECISIONS.md, "The installer's sizes") |
+| Download | under ~60 MB, which needs LZMA: an Inno Setup installer with solid LZMA2 | about 31.1 MB with Dusk's own FFmpeg (M7: the staged files as one LZMA2 stream at preset 9, before the installer's own overhead; 0.1's FFmpeg DLLs in their place, 31.3 MB); 46.5 MB (M6) |
+| Installed | under ~160 MB for 0.1; under ~60 MB long-term | about 108.9 MB with Dusk's own FFmpeg (M7): staged 104.5 MB (the five FFmpeg DLLs 76.4 MB, `dusk.exe` 25.8 MB, `dusq.exe` 0.7 MB, `licenses` 1.6 MB) and Inno Setup's uninstaller 4.4 MB (DECISIONS.md, "An FFmpeg of Dusk's own"); about 163.1 MB at 0.1 (M6), over its approximate target and accepted (DECISIONS.md, "The installer's sizes") |
 | Cold start | under 2 s to Dusk's first window | Desktop 0.48–0.62 s (M6); CI's runner, drawing with WARP, 1.3 s (M6); Laptop 0.16–0.26 s (M7) |
 | Idle CPU | near 0% when not playing or exporting | Dusk's own threads use none measurable (M1). AMD's driver spins a core under a customized Radeon Software profile, which resetting the profile fixes (DECISIONS.md, "Idle CPU"). Laptop: 0 ms of CPU in 10 s, with or without a clip open (M7) |
 
