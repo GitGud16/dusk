@@ -23,8 +23,8 @@ Dusk links one exact FFmpeg build, its own. The pin lives in `scripts/ffmpeg-pin
 | Source | Dusk's own build ("Building Dusk's FFmpeg" below), a release of this repository |
 | Release tag | `ffmpeg-8.1-dusk-1` |
 | File | `ffmpeg-n8.1.3-14-g330caae0c1-win64-lgpl-shared-8.1-dusk.zip` |
-| Size | 40,504,001 bytes |
-| SHA-256 | `f3d6e4abd0381f8bfa380ea6feb5412db16e21b125891ae9ea7798dcff636e27` |
+| Size | 40,504,004 bytes |
+| SHA-256 | `249d1f8c63cd2c4d8320080cde5ab7b6581df186ca7d4dfed0ad9b2a0b81fd5a` |
 | License | LGPL-3.0-or-later (configured with `--enable-version3`) |
 | NVENC driver floor | 570 (GTX 900/1000 cards still qualify; their last driver branch is 580) |
 
