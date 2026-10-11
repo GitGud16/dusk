@@ -60,6 +60,8 @@ In every shell you build or run Dusk from:
 
 If the execution policy blocks it, run `Set-ExecutionPolicy -Scope Process Bypass` in that shell first. Then `cargo build`, `cargo run -p dusk-app`, `cargo test --workspace` work as listed in `CLAUDE.md`.
 
+Dusk encodes its video exports in `dusq` beside `dusk.exe` (ARCHITECTURE.md, "The encoder in a helper process"). `cargo build` builds both into the same folder; `cargo run -p dusk-app` alone builds only `dusk.exe`, and without a `dusq.exe` beside it Dusk encodes in its own process, which works the same but keeps what a hardware encoder holds.
+
 ## How Windows finds the FFmpeg DLLs
 
 Dusk links FFmpeg dynamically, so `avcodec`, `avformat`, `avutil`, `swscale` and `swresample` must be found when a Dusk binary starts. Windows looks in the executable's own folder first, then in the Windows system folders and the current directory, then in the folders on PATH.

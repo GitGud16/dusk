@@ -48,6 +48,16 @@ fn main() -> ExitCode {
             println!("dusq {}", env!("CARGO_PKG_VERSION"));
             return ExitCode::SUCCESS;
         }
+        // Dusk talks to its helper through the standard input and output alone.
+        Command::Helper => {
+            let served =
+                dusk_engine::serve_helper(std::io::stdin().lock(), std::io::stdout().lock());
+            return if served {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::from(FAILED)
+            };
+        }
         Command::Compress(compress) => run_compress(&compress),
         Command::ExtractAudio(extract) => run_extract(&extract),
     };

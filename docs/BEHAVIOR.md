@@ -92,5 +92,6 @@ Every message a user can see says what happened and what they can do (CLAUDE.md,
 
 - A media file that goes away while Dusk runs (an unplugged drive) is named with how to find it, and the bin marks it; `EngineError::missing_file` tells the app which file.
 - The engine's errors reach the status line as sentences, capitalized like the app's own.
+- An export's encoder runs in Dusk's helper, `dusq`: what the helper says went wrong is the export's error, word for word, and a helper that cannot start, or that stops without saying why, is named with what to do (export again, or reinstall Dusk).
 - Where a message is passed on in a place its advice cannot be followed, the advice is left out: a project file that breaks a timeline rule names the rule (`Rejection::what`) without saying to trim a clip in a project that does not open, a failed recovery says what is wrong with the autosave (`FileError::what`), and a file picked in Find that cannot be read asks only for the file the project used.
 - `dusk-app/tests/messages.rs` reads every crate's sources for gaps of spaces in strings (a line's lost `\`), following strings across lines as Rust reads them.
