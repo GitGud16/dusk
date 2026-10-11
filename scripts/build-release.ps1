@@ -106,6 +106,17 @@ $config = $text.Substring($start, $text.IndexOf([char]0, $anchor) - $start)
 if ($pin.FileName -notmatch '^ffmpeg-(n[0-9.]+-[0-9]+-g([0-9a-f]+))-') { throw "Cannot read FFmpeg's version from $($pin.FileName)." }
 $ffmpegVersion, $commit = $Matches[1], $Matches[2]
 $dlls = (@(Get-ChildItem -LiteralPath $stage -Filter '*.dll') | ForEach-Object Name) -join ', '
+# What the build was made from (scripts/ffmpeg-source.txt).
+$source = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'ffmpeg-source.txt')
+function Get-Source([string]$Name) {
+    $line = $source | Where-Object { $_ -match "^$Name " } | Select-Object -First 1
+    if (-not $line) { throw "scripts\ffmpeg-source.txt has no '$Name' line." }
+    $line.Split(' ')[1]
+}
+$fullCommit, $btbn = (Get-Source 'ffmpeg'), (Get-Source 'btbn')
+$image = "ghcr.io/btbn/ffmpeg-builds/win64-lgpl-shared-8.1@$(Get-Source 'image')"
+$sourceArchive = "ffmpeg-source-$fullCommit.tar.gz"
+if (-not $fullCommit.StartsWith($commit)) { throw "scripts\ffmpeg-source.txt names FFmpeg $fullCommit, not the pinned build's $commit." }
 @"
 FFmpeg
 
@@ -117,18 +128,24 @@ FFmpeg is free software under the GNU Lesser General Public License, version 3 o
 (FFmpeg-LGPL-3.0.txt), which builds on the GNU General Public License, version 3
 (GPL-3.0.txt). It comes with no warranty.
 
-These DLLs come from $($pin.FileName), release $($pin.Tag) of BtbN's FFmpeg-Builds
-(SHA-256 $($pin.Sha256)): FFmpeg $ffmpegVersion. Its source is
-https://github.com/FFmpeg/FFmpeg/tree/$commit
-and the scripts that built it, which name the source of every library below, are
-https://github.com/BtbN/FFmpeg-Builds/tree/$($pin.Tag)
+These DLLs are Dusk's own build of FFmpeg $ffmpegVersion, $($pin.FileName)
+(SHA-256 $($pin.Sha256)), release $($pin.Tag) of Dusk's repository:
+$($pin.Url)
+Its source is https://github.com/FFmpeg/FFmpeg/tree/$commit, also published beside it as
+$sourceArchive. scripts/ffmpeg-build.sh in Dusk's repository compiled it, with the options
+in scripts/ffmpeg-options.txt, in BtbN's FFmpeg-Builds image
+$image
+whose libraries the scripts at https://github.com/BtbN/FFmpeg-Builds/tree/$btbn build, each
+named there with its source.
 
 It was configured with:
 
 $config
 
 The libraries those options name are built into the DLLs where FFmpeg uses them, each
-under its own license; FFmpeg-libraries.txt has their license texts.
+under its own license; FFmpeg-libraries.txt has their license texts. Their sources, as the
+build downloaded them, with BtbN's scripts that say how each was built, are published beside
+the build as ffmpeg-libraries-source.tar.xz.
 "@ | Set-Content -LiteralPath (Join-Path $licenses 'FFmpeg.txt') -Encoding UTF8
 
 $installed = (Get-ChildItem -LiteralPath $stage -Recurse -File | Measure-Object -Property Length -Sum).Sum

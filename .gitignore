@@ -3,3 +3,6 @@
 
 # Pinned third-party binaries fetched by scripts/setup-ffmpeg.ps1 (never commit)
 /.deps
+
+# Python's bytecode cache, left by the scripts that load each other
+__pycache__/

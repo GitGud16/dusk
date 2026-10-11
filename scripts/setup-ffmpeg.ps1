@@ -11,13 +11,12 @@
     and kept. Works in Windows PowerShell 5.1 and PowerShell 7.
 
 .PARAMETER ZipPath
-    Use this local copy of the pinned zip instead of downloading it (for example a copy kept
-    after BtbN deleted the build). It must end in .zip and match the pinned SHA-256; it is
-    copied into the cache so later runs find it.
+    Use this local copy of the pinned zip instead of downloading it (for example the zip
+    in the FFmpeg workflow's dusk-ffmpeg artifact, before its release is published). It must end
+    in .zip and match the pinned SHA-256; it is copied into the cache so later runs find it.
 
 .PARAMETER CacheDir
     Where the downloaded zip is kept. Default: %LOCALAPPDATA%\dusk\ffmpeg-cache.
-    Keep this file: BtbN keeps only its 14 newest builds (plus month-end builds for two years).
 
 .PARAMETER Force
     Re-extract even if .deps\ffmpeg\<asset name>\ is already verified.
@@ -96,7 +95,7 @@ if (-not $Force -and (Test-Marker)) {
             Invoke-WebRequest -Uri $pin.Url -OutFile $part -UseBasicParsing
         } catch {
             if (Test-Path -LiteralPath $part) { Remove-Item -LiteralPath $part -Force }
-            throw "Download failed: $($_.Exception.Message). If BtbN has deleted this build, pass a kept copy with -ZipPath, or move the pin to a newer build (a documented decision; see docs/SETUP.md)."
+            throw "Could not download $($pin.Url): $($_.Exception.Message.TrimEnd('.')). A 404 means release $($pin.Tag) is not published yet: pass the zip from the FFmpeg workflow's dusk-ffmpeg artifact with -ZipPath (see docs/SETUP.md). Otherwise check the connection and try again."
         }
         if (-not (Test-ZipFile $part)) {
             Remove-Item -LiteralPath $part -Force

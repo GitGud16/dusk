@@ -1,0 +1,66 @@
+name: FFmpeg
+
+# Builds Dusk's own FFmpeg (scripts/ffmpeg-build.sh; docs/SETUP.md, "Building Dusk's FFmpeg")
+# from what scripts/ffmpeg-source.txt names, whenever the build's files change or when started
+# by hand, and keeps the zip, FFmpeg's source, the sources of the libraries built into it
+# (scripts/ffmpeg-sources.sh) and the lists of what it holds as an artifact.
+# Publishing it as a release of Dusk's repository, which the pin then names, is the
+# maintainer's step.
+on:
+  push:
+    # Tags too would start a build on every release, path filters or not.
+    branches: ['**']
+    paths:
+      - scripts/ffmpeg-build.sh
+      - scripts/ffmpeg-sources.sh
+      - scripts/ffmpeg-built-in.py
+      - scripts/btbn-components.sh
+      - scripts/ffmpeg-options.txt
+      - scripts/ffmpeg-source.txt
+      - .github/workflows/ffmpeg.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: What to build
+        id: source
+        run: |
+          set -euo pipefail
+          value() { grep "^$1 " scripts/ffmpeg-source.txt | cut -d' ' -f2; }
+          echo "ffmpeg=$(value ffmpeg)" >>"$GITHUB_OUTPUT"
+          echo "image=$(value image)" >>"$GITHUB_OUTPUT"
+          echo "scripts=$(value btbn)" >>"$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v4
+        with:
+          repository: BtbN/FFmpeg-Builds
+          ref: ${{ steps.source.outputs.scripts }}
+          path: btbn
+
+      - name: Build
+        env:
+          FFMPEG_COMMIT: ${{ steps.source.outputs.ffmpeg }}
+          IMAGE_DIGEST: ${{ steps.source.outputs.image }}
+        run: bash scripts/ffmpeg-build.sh "$FFMPEG_COMMIT" "$IMAGE_DIGEST" btbn out
+
+      - name: The libraries' sources
+        env:
+          IMAGE_DIGEST: ${{ steps.source.outputs.image }}
+        run: bash scripts/ffmpeg-sources.sh "$IMAGE_DIGEST" btbn out
+
+      # The build is kept even when gathering the sources fails, so a network failure there
+      # does not cost the build.
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: dusk-ffmpeg
+          path: out/
+          retention-days: 30

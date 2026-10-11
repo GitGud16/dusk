@@ -16,29 +16,19 @@ Check with `rustc --version` and `Test-Path "$env:ProgramFiles\LLVM\bin\libclang
 
 ## FFmpeg (pinned)
 
-Dusk links one exact FFmpeg build. The pin lives in `scripts/ffmpeg-pin.psd1`, which the scripts read; this table mirrors it.
+Dusk links one exact FFmpeg build, its own. The pin lives in `scripts/ffmpeg-pin.psd1`, which the scripts read; this table mirrors it.
 
 | | |
 |---|---|
-| Source | [BtbN/FFmpeg-Builds](https://github.com/BtbN/FFmpeg-Builds), win64, LGPL, shared |
-| Release tag | `autobuild-2026-10-07-13-07` |
-| File | `ffmpeg-n8.1.3-14-g330caae0c1-win64-lgpl-shared-8.1.zip` |
-| Size | 80,993,041 bytes |
-| SHA-256 | `30fdaaeb116730fdd6432c2663af0e9ecdf1d6cc387ac085cc1faf8494942510` |
-| License | LGPL-3.0-or-later (BtbN configures with `--enable-version3`) |
+| Source | Dusk's own build ("Building Dusk's FFmpeg" below), a release of this repository |
+| Release tag | `ffmpeg-8.1-dusk-1` |
+| File | `ffmpeg-n8.1.3-14-g330caae0c1-win64-lgpl-shared-8.1-dusk.zip` |
+| Size | 40,504,004 bytes |
+| SHA-256 | `249d1f8c63cd2c4d8320080cde5ab7b6581df186ca7d4dfed0ad9b2a0b81fd5a` |
+| License | LGPL-3.0-or-later (configured with `--enable-version3`) |
 | NVENC driver floor | 570 (GTX 900/1000 cards still qualify; their last driver branch is 580) |
 
-Why this file: 8.1 builds have `lcms2`, which photo color needs, since BtbN enabled it on 2026-10-02 (the first was `autobuild-2026-10-03-18-14`). BtbN keeps only its 14 newest builds, plus the last build of each month for two years, so a daily build disappears about two weeks after it is published, and October's last build is published on its last day. Until then the pin moves along, each time to the newest 8.1 build before the pinned one disappears, and then rests on October's last:
-
-| Move | When | Pin to | Downloadable until about |
-|---|---|---|---|
-| 1 (done) | 2026-10-08 | `autobuild-2026-10-07-13-07` | 2026-10-21 |
-| 2 | 2026-10-19 or 20 | the newest 8.1 build that day | 2026-11-02 |
-| 3, last | 2026-11-01 or 02, once November's first build shows which October build was the last | the last October build (normally `autobuild-2026-10-31-*`) | 2028-10-31 |
-
-The dates assume one build a day, as BtbN usually makes: a day without a build makes a file last longer, a second build in a day shorter, so look at the releases page before each move. Each move follows "Changing the FFmpeg pin" below. Builds of one FFmpeg commit share a file name: the October builds up to move 1 are the same FFmpeg (`n8.1.3-14-g330caae0c1`) built from the same BtbN scripts (commit `9acad4a9ef`) with the same options, and differ only in the build date FFmpeg records (`--extra-version`). Keep the downloaded copy of the pinned build (the setup script leaves it in `%LOCALAPPDATA%\dusk\ffmpeg-cache\`, and replaces it with the next pin's file of the same name): with it, `-ZipPath` installs the build after BtbN has deleted it.
-
-The setup script refuses any file whose size or SHA-256 differs, and refuses a build that lacks `--enable-lcms2`, `--enable-libopenh264`, `--enable-libkvazaar`, `--enable-libsvtav1`, `--enable-libvpx` or `--enable-version3`, or that contains `--enable-gpl`, `--enable-libx264` or `--enable-libx265`. It reads these from the configuration string compiled into `avutil`; it never runs an FFmpeg executable.
+The setup script refuses any file whose size or SHA-256 differs, and refuses a build that lacks `--enable-lcms2`, `--enable-libopenh264`, `--enable-libkvazaar`, `--enable-libsvtav1`, `--enable-libvpx`, `--enable-version3` or `--disable-network`, or that contains `--enable-gpl`, `--enable-libx264` or `--enable-libx265`. It reads these from the configuration string compiled into `avutil`; it never runs an FFmpeg executable.
 
 Do not point `FFMPEG_DIR` at any other FFmpeg on your machine (for example a Chocolatey `ffmpeg`): those are usually GPL builds without import libraries.
 
@@ -50,7 +40,7 @@ One time, from the repository root:
 powershell -ExecutionPolicy Bypass -File scripts\setup-ffmpeg.ps1
 ```
 
-This downloads the pinned zip (about 81 MB) into the cache, verifies it, and unpacks it to `.deps\ffmpeg\ffmpeg-n8.1.3-14-g330caae0c1-win64-lgpl-shared-8.1\` (`bin\`, `include\`, `lib\`). `.deps\` is git-ignored. If BtbN has already deleted the file, pass a kept copy: `-ZipPath C:\path\to\the.zip` (it must keep the `.zip` extension; the script copies it into the cache).
+This downloads the pinned zip (about 41 MB) into the cache, verifies it, and unpacks it to `.deps\ffmpeg\ffmpeg-n8.1.3-14-g330caae0c1-win64-lgpl-shared-8.1-dusk\` (`bin\`, `include\`, `lib\`). `.deps\` is git-ignored. Offline, pass a copy of the zip: `-ZipPath C:\path\to\the.zip` (it must keep the `.zip` extension; the script copies it into the cache).
 
 In every shell you build or run Dusk from:
 
@@ -70,7 +60,7 @@ Dusk links FFmpeg dynamically, so `avcodec`, `avformat`, `avutil`, `swscale` and
 - **IDEs and other launchers**: start them from a shell that ran `dev-env.ps1` (for example `code .`). To make it permanent for your user instead, run this once from the repository root (Dusk's scripts never change persistent settings). It keeps your user PATH as an expandable value and does not add the folder twice. Run it again after a pin change that renames the folder (a newer FFmpeg; a rebuild of the same one keeps the name):
 
   ```powershell
-  $dir = (Resolve-Path '.deps\ffmpeg\ffmpeg-n8.1.3-14-g330caae0c1-win64-lgpl-shared-8.1').Path
+  $dir = (Resolve-Path '.deps\ffmpeg\ffmpeg-n8.1.3-14-g330caae0c1-win64-lgpl-shared-8.1-dusk').Path
   $userPath = (Get-Item 'HKCU:\Environment').GetValue('Path', '', 'DoNotExpandEnvironmentNames')
   if (($userPath -split ';') -notcontains "$dir\bin") {
       Set-ItemProperty 'HKCU:\Environment' -Name Path -Value "$dir\bin;$userPath" -Type ExpandString
@@ -80,15 +70,28 @@ Dusk links FFmpeg dynamically, so `avcodec`, `avformat`, `avutil`, `swscale` and
 
 - **Release (M6)**: the installer puts the five DLLs next to `dusk.exe` and `dusq.exe`, so nothing depends on PATH.
 
+## Building Dusk's FFmpeg
+
+Dusk's FFmpeg is BtbN's win64 LGPL shared 8.1 build made smaller (DECISIONS.md, "An FFmpeg of Dusk's own"). The `FFmpeg` workflow (`.github/workflows/ffmpeg.yml`) builds it on Linux with Docker whenever its files change, or when started by hand:
+
+- `scripts/ffmpeg-source.txt` names what it is built from: FFmpeg's commit, BtbN's FFmpeg-Builds scripts at a commit (for their packaging), and BtbN's `win64-lgpl-shared-8.1` image by digest, which holds every library already built.
+- `scripts/ffmpeg-options.txt` says how its configure line differs from BtbN's: the options it drops (libraries that serve only what Dusk does not use) and those it adds (no network, only the encoders and muxers Dusk writes with).
+- `scripts/ffmpeg-build.sh` clones FFmpeg at that commit, configures and compiles it in the image, and packages it as BtbN packages theirs. FFmpeg's configure passes over an encoder or muxer name it does not know without a word, so the build stops when one it asked for is missing from what configure enabled.
+- `scripts/ffmpeg-sources.sh` then gathers the source of every library built into the DLLs, as BtbN's scripts download it for the build, together with those scripts. Which libraries are built in is `scripts/ffmpeg-built-in.py`'s answer, the one the license file is written from: those BtbN's configure line gives an option Dusk keeps, and every library they depend on.
+- The artifact `dusk-ffmpeg` holds the zip and its SHA-256, FFmpeg's source at that commit as a tarball, the libraries' sources (`ffmpeg-libraries-source.tar.xz`), and the lists of codecs, demuxers, muxers and protocols it enabled.
+
+Before it is pinned, compare what it decodes with the build before it: unpack both and diff `ffmpeg -decoders` and `ffmpeg -demuxers`. Only what `ffmpeg-options.txt` means to drop may be missing.
+
 ## Changing the FFmpeg pin
 
 Changing the pin is a documented decision, not a bump.
 
-1. Pick the new asset on the BtbN releases page; prefer the last build of a month (normally `autobuild-YYYY-MM-<last day>-*`), which BtbN keeps for two years, over a daily build, which it deletes after about two weeks (a daily build is pinned only on the way to a month's last, as in the moves above).
-2. Update `Tag`, `FileName`, `Url`, `Size` and `Sha256` in `scripts/ffmpeg-pin.psd1`. GitHub shows each asset's `sha256` digest on the release page and in the releases API.
-3. Run `scripts\setup-ffmpeg.ps1`, in every checkout; it rejects the build if a required library is missing. Until it has run, `dev-env.ps1` warns and the release script refuses, even when the folder keeps its name.
-4. Run `python scripts\ffmpeg-licenses.py` and commit `installer\ffmpeg-libraries.txt` with the pin (see "Release").
-5. Update the table above, the NVENC driver floor (BtbN builds after 8.1 use newer NVENC headers that need driver 610 or newer), and the "FFmpeg (Windows)" section of `docs/ARCHITECTURE.md`.
+1. Change `scripts/ffmpeg-source.txt` or `scripts/ffmpeg-options.txt` and push: the `FFmpeg` workflow builds it. A newer BtbN image or scripts commit can change the libraries; BtbN images after 8.1, and its scripts for 9.0 and later, use newer NVENC headers that need driver 610.
+2. Check the build as above, then publish its zip, FFmpeg's source tarball and the libraries' sources as a release of this repository, which the LGPL asks for, tagged `ffmpeg-<version>-dusk-<n>` and marked as a pre-release, so it is never mistaken for a release of Dusk.
+3. Update `Tag`, `FileName`, `Url`, `Size` and `Sha256` in `scripts/ffmpeg-pin.psd1`.
+4. Run `scripts\setup-ffmpeg.ps1`, in every checkout; it rejects the build if a required option is missing. Until it has run, `dev-env.ps1` warns and the release script refuses, even when the folder keeps its name.
+5. Run `python scripts\ffmpeg-licenses.py` and commit `installer\ffmpeg-libraries.txt` with the pin (see "Release").
+6. Update the table above and the "FFmpeg (Windows)" section of `docs/ARCHITECTURE.md`.
 
 ## CI
 
@@ -106,7 +109,7 @@ This builds `dusk.exe` and `dusq.exe` in release (dusq on its own), stages `targ
 
 Pushing a tag such as `v0.1.0` runs `.github/workflows/release.yml`, which refuses a tag that does not name the version in `Cargo.toml`, builds the installer and drafts a GitHub release with it. Before publishing one:
 
-- Check that `installer\ffmpeg-libraries.txt` belongs to the pinned FFmpeg. The BtbN download carries none of the licenses of the libraries built into its DLLs, so `python scripts\ffmpeg-licenses.py` fetches them: it takes BtbN's build scripts at the pinned release tag, asks them which libraries the win64 LGPL shared build of that FFmpeg version contains (`scripts\btbn-components.sh`, with the scripts' own logic), and reads each library's license files at the commit built, from its own repository. Two of those libraries, rav1e and librsvg, are written in Rust and carry Rust crates of their own: the script checks out their Cargo files and sources at the commit, lets cargo resolve their builds for Windows in a cargo folder of its own (fetching some tens of MB of crates, removed afterwards), and lists the crates' licenses as `scripts\third-party-notices.py` does Dusk's. It needs the network, Git's bash, cargo and an authenticated `gh`; it asks again when a connection fails, and stops with what failed rather than write a shorter list. Run it, and commit the result, whenever the pin moves.
-- Make FFmpeg's exact source available beside the release, as its LGPL asks: `FFmpeg.txt` points at the commit and BtbN's build scripts, and attaching FFmpeg's source archive for that commit to the release is the surest way.
+- Check that `installer\ffmpeg-libraries.txt` belongs to the pinned FFmpeg. The FFmpeg build carries none of the licenses of the libraries built into its DLLs, so `python scripts\ffmpeg-licenses.py` fetches them: it takes BtbN's build scripts at the commit `scripts\ffmpeg-source.txt` names, asks `scripts\ffmpeg-built-in.py` which libraries the build contains (with the scripts' own logic, through `scripts\btbn-components.sh`: those Dusk's build gives an option and those they depend on), adds the submodules compiled into them that their own licenses do not cover (libjxl's Highway), and reads each library's license files at the commit built, from its own repository. One of those libraries, librsvg, is written in Rust and carries Rust crates of its own: the script checks out its Cargo files and sources at the commit, lets cargo resolve their builds for Windows in a cargo folder of its own (fetching some tens of MB of crates, removed afterwards), and lists the crates' licenses as `scripts\third-party-notices.py` does Dusk's. It needs the network, Git's bash, cargo and an authenticated `gh`; it asks again when a connection fails, reads libiconv through git when Savannah's web pages are down (its git host is BtbN's source anyway), and stops with what failed rather than write a shorter list. Run it, and commit the result, whenever the pin moves.
+- FFmpeg's exact source and its libraries' are published beside the pinned build, as the LGPL asks, and `FFmpeg.txt` names them; a pin whose release lacks them is not ready (see "Changing the FFmpeg pin").
 - Put the Slint badge on the download page, as Slint's Royalty-free License asks.
 - Neither the installer nor the programs are code-signed, so Windows' SmartScreen warns on the first run; the README says how to get past it.

@@ -4,16 +4,17 @@ beside FFmpeg's own LGPL. Run it again whenever scripts/ffmpeg-pin.psd1 moves:
 
     python scripts/ffmpeg-licenses.py
 
-It downloads BtbN's FFmpeg-Builds scripts at the pinned release tag, asks them which libraries
-the win64 LGPL shared build of the pinned FFmpeg version contains (scripts/btbn-components.sh,
-which uses the scripts' own logic), and fetches each library's license files at the commit
+Dusk builds its own FFmpeg in BtbN's FFmpeg-Builds image (scripts/ffmpeg-build.sh). This
+downloads BtbN's scripts at the commit scripts/ffmpeg-source.txt names, asks
+scripts/ffmpeg-built-in.py which libraries the build contains (with the scripts' own logic,
+through scripts/btbn-components.sh), and fetches each library's license files at the commit
 BtbN built from that library's own repository. Libraries sharing one text are listed together
-above it. Two of them, rav1e and librsvg, are written in Rust: for those it checks out their
-Cargo files and Rust sources at that commit, lets cargo resolve their builds for Windows into a
-CARGO_HOME of its own (fetching their crates, some tens of MB, removed afterwards), and lists
-the crates' licenses as scripts/third-party-notices.py does Dusk's. Needs the network, Git's
-bash, cargo and an authenticated `gh` (for GitHub's API); Python's standard library otherwise.
-It fails, naming them, when it finds no license text for a library or a crate.
+above it. For a library written in Rust (librsvg) it checks out the Cargo files and Rust
+sources at that commit, lets cargo resolve its build for Windows into a CARGO_HOME of its own
+(fetching its crates, some tens of MB, removed afterwards), and lists the crates' licenses as
+scripts/third-party-notices.py does Dusk's. Needs the network, Git's bash, cargo and an
+authenticated `gh` (for GitHub's API); Python's standard library otherwise. It fails, naming
+them, when it finds no license text for a library or a crate.
 """
 
 import base64
@@ -49,6 +50,19 @@ EXTRA_FILES = {
     # The threads library every DLL links.
     "https://git.code.sf.net/p/mingw-w64/mingw-w64.git": ["mingw-w64-libraries/winpthreads/COPYING"],
 }
+# Submodules compiled into a library, which the library's own license files do not cover: their
+# paths in the library's repository on GitHub, whose contents API names each one's repository
+# and commit.
+SUBMODULES = {
+    # libjxl's SIMD library, the one submodule BtbN's script checks out for it.
+    "https://github.com/libjxl/libjxl.git": ["third_party/highway"],
+}
+# Where git itself reads a repository whose web pages are down: Savannah's web front is out at
+# times while its git protocol host answers, the host BtbN's script clones libiconv from. A
+# commit is the same content wherever it is read.
+GIT_MIRRORS = {
+    "https://git.savannah.gnu.org/git/libiconv.git": "git://git.git.savannah.gnu.org/libiconv.git",
+}
 # Libraries whose license is the notice at the top of a source file, which is quoted alone.
 NOTICE_IN = {
     "https://github.com/FFmpeg/nv-codec-headers.git": "include/ffnvcodec/nvEncodeAPI.h",
@@ -75,6 +89,17 @@ def load_notices():
 
 
 NOTICES = load_notices()
+
+
+def load_built_in():
+    """scripts/ffmpeg-built-in.py, which says which libraries the build contains."""
+    spec = importlib.util.spec_from_file_location("built_in", ROOT / "scripts" / "ffmpeg-built-in.py")
+    built_in = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(built_in)
+    return built_in
+
+
+BUILT_IN = load_built_in()
 
 
 def get(url, tries=3):
@@ -218,10 +243,47 @@ def repository(url, commit, revision):
     return GitLab(url, commit)
 
 
+class GitClone:
+    """A repository read through git: a clone without file contents in `folder`, whose files
+    git fetches as they are read."""
+
+    def __init__(self, url, commit, folder):
+        self.folder, self.commit = folder, commit
+        subprocess.run(
+            ["git", "clone", "--quiet", "--filter=blob:none", "--no-checkout", url, str(folder)],
+            check=True, capture_output=True,
+        )
+
+    def git(self, *args):
+        return subprocess.run(["git", "-C", str(self.folder), *args], check=True, capture_output=True).stdout
+
+    def entries(self, folder=""):
+        listing = text(self.git("ls-tree", f"{self.commit}:{folder}" if folder else self.commit))
+        # Each line is "<mode> <type> <object>\t<name>".
+        return [(line.split("\t", 1)[1], line.split()[1] == "tree") for line in listing.splitlines()]
+
+    def read(self, path):
+        return text(self.git("show", f"{self.commit}:{path}"))
+
+
 def license_files(url, commit, revision):
     """The license files of the repository at `url`, at `commit` (or Subversion `revision`):
-    (path, text) pairs."""
-    repo = repository(url, commit, revision)
+    (path, text) pairs, read through git from GIT_MIRRORS when the repository's web pages fail."""
+    try:
+        return repository_licenses(repository(url, commit, revision), url)
+    except NETWORK_ERRORS as error:
+        if url not in GIT_MIRRORS:
+            raise
+        print(f"{url} failed ({error}); reading {GIT_MIRRORS[url]} through git")
+        folder = Path(tempfile.mkdtemp(prefix="dusk-ffmpeg-licenses-git-"))
+        try:
+            return repository_licenses(GitClone(GIT_MIRRORS[url], commit, folder / "repository"), url)
+        finally:
+            remove(folder)
+
+
+def repository_licenses(repo, url):
+    """The license files of `repo`, the repository at `url`: (path, text) pairs."""
     files, folders = license_names(repo.entries())
     paths = list(files)
     for folder in folders:
@@ -286,43 +348,25 @@ def rust_crates(libraries, temp):
     return groups
 
 
-def bash():
-    """Git's bash on Windows, where the bash.exe found first is WSL's; bash elsewhere."""
-    git = shutil.which("git")
-    if sys.platform == "win32" and git:
-        # git.exe sits in Git's cmd, bin or mingw64\bin folder.
-        for folder in list(Path(git).parents)[:3]:
-            for candidate in ("bin/bash.exe", "usr/bin/bash.exe"):
-                if (folder / candidate).exists():
-                    return str(folder / candidate)
-    return "bash"
+def submodule(url, commit, path):
+    """The repository and commit of the submodule at `path` of the GitHub repository `url`, at
+    `commit`."""
+    owner, repo = re.match(r"https://github\.com/([^/]+)/([^/]+?)(?:\.git)?/?$", url).groups()
+    item = json.loads(gh(f"repos/{owner}/{repo}/contents/{urllib.parse.quote(path)}?ref={urllib.parse.quote(commit)}"))
+    return item["submodule_git_url"], item["sha"]
 
 
-def components(builds, version):
-    """(name, url, commit, revision) of every library the build contains, from BtbN's scripts."""
-    lister = ROOT / "scripts" / "btbn-components.sh"
-    run = subprocess.run(
-        [bash(), lister.as_posix(), builds.as_posix(), "win64", "lgpl-shared", version],
-        capture_output=True, text=True, encoding="utf-8",
-    )
-    if run.returncode != 0:
-        sys.exit(f"Listing BtbN's components failed: {run.stderr.strip()}")
-    listing = run.stdout
-    rows = [line.split("\t") for line in listing.splitlines() if line.strip()]
-    enabled = {row[0] for row in rows}
+def components(builds, version, dropped):
+    """(name, url, commit, revision) of every library the build contains, from BtbN's scripts,
+    and of the submodules compiled into them (SUBMODULES)."""
     found, seen = [], set()
-    for script, skip, *sources in rows:
-        # A folder of scripts builds one library and what only it uses; when its last script is
-        # off (libcurl in FFmpeg 8.1), nothing of it reaches FFmpeg.
-        folder = builds / Path(script).parent
-        if folder.name != "scripts.d" and sorted(folder.glob("??-*.sh"))[-1].relative_to(builds).as_posix() not in enabled:
-            continue
-        if skip:
-            continue
+    for script, skip, *sources, configure, depends in BUILT_IN.built_in(builds, version, dropped):
         name = Path(script).stem.split("-", 1)[1]
         url, commit, revision = sources[0], sources[1], sources[2]
-        pairs = [(url, commit, revision), (sources[3], sources[4], ""), (sources[5], sources[6], "")]
-        for url, commit, revision in pairs:
+        named = [(name, url, commit, revision), (name, sources[3], sources[4], ""), (name, sources[5], sources[6], "")]
+        for path in SUBMODULES.get(url, []):
+            named.append((f"{Path(path).name} (in {name})", *submodule(url, commit, path), ""))
+        for name, url, commit, revision in named:
             key = (url.removesuffix(".git"), commit or revision)
             if url and url not in NOT_LIBRARIES and key not in seen:
                 seen.add(key)
@@ -334,17 +378,20 @@ def main():
     pin = (ROOT / "scripts" / "ffmpeg-pin.psd1").read_text(encoding="utf-8")
     tag = re.search(r"^\s*Tag\s*=\s*'([^']+)'", pin, re.MULTILINE).group(1)
     file_name = re.search(r"^\s*FileName\s*=\s*'([^']+)'", pin, re.MULTILINE).group(1)
-    version = re.search(r"-shared-([0-9.]+)\.zip$", file_name).group(1)
+    version = re.search(r"-shared-([0-9.]+)-dusk\.zip$", file_name).group(1)
+    source = (ROOT / "scripts" / "ffmpeg-source.txt").read_text(encoding="utf-8")
+    scripts = re.search(r"^btbn ([0-9a-f]{40})$", source, re.MULTILINE).group(1)
+    dropped = BUILT_IN.dropped_options()
     temp = tempfile.mkdtemp(prefix="dusk-ffmpeg-licenses-")
     try:
-        archive = get(f"https://codeload.github.com/BtbN/FFmpeg-Builds/tar.gz/refs/tags/{tag}")
+        archive = get(f"https://codeload.github.com/BtbN/FFmpeg-Builds/tar.gz/{scripts}")
         with tarfile.open(fileobj=io.BytesIO(archive)) as tar:
             tar.extractall(temp, filter="data")
         builds = next(Path(temp).iterdir())
-        libraries = components(builds, version)
+        libraries = components(builds, version, dropped)
         crates = rust_crates(libraries, temp)
     except NETWORK_ERRORS as error:
-        sys.exit(f"Could not fetch BtbN's build scripts for {tag}, or the Rust libraries' sources: {error}")
+        sys.exit(f"Could not fetch BtbN's build scripts at {scripts}, or the Rust libraries' sources: {error}")
     except subprocess.CalledProcessError as error:
         sys.exit(command_failed(error))
     finally:
@@ -365,26 +412,29 @@ def main():
     if missing:
         sys.exit("No license file found for: " + "; ".join(missing))
 
+    rust = sorted(name for name, url, _, _ in libraries if url in RUST_LIBRARIES)
     out = [
         "Libraries in FFmpeg",
         "",
         "dusk.exe and dusq.exe use five libraries of FFmpeg (FFmpeg.txt). The build Dusk ships,",
-        f"{file_name} from release {tag} of BtbN's FFmpeg-Builds,",
-        "has the libraries below built into those DLLs, each under its own license. Each is named",
-        "with the repository and the commit it was built from, as BtbN's build scripts for that",
-        "release give them. Every library those scripts build into this FFmpeg is listed, some used",
-        "only by parts of FFmpeg that Dusk does not ship, rather than risk leaving one out.",
-        "Libraries that ship the same text are listed together above it. The Rust crates inside",
-        "two of them, rav1e and librsvg, follow the libraries.",
+        f"{file_name} from release {tag} of Dusk's repository,",
+        "is Dusk's own, compiled in BtbN's FFmpeg-Builds image, and has the libraries below built",
+        "into those DLLs, each under its own license. Each is named with the repository and the",
+        f"commit it was built from, as BtbN's build scripts at commit {scripts[:12]} give them: the",
+        "libraries Dusk's build turns on, and every library those depend on. Some serve only parts",
+        "of FFmpeg that Dusk does not ship; they are listed rather than risk leaving one out. Their",
+        "sources are published beside the build as ffmpeg-libraries-source.tar.xz. Libraries that",
+        "ship the same text are listed together above it. The Rust crates inside",
+        f"{' and '.join(rust)} follow the libraries.",
         "",
     ]
     out += NOTICES.grouped(groups)
     out += [
         "",
-        "Rust crates in rav1e and librsvg",
+        f"Rust crates in {' and '.join(rust)}",
         "",
-        "rav1e and librsvg are written in Rust, and the Rust crates below are built into the DLLs",
-        "with them: every crate their builds for Windows depend on, as cargo resolves those builds",
+        f"{' and '.join(rust)} {'are' if len(rust) > 1 else 'is'} written in Rust, and the Rust crates below are built into the DLLs",
+        "with it: every crate its builds for Windows depend on, as cargo resolves those builds",
         "at the commits above, each under the license named beside it; where a crate offers a",
         "choice, its every text is given. Crates that ship the same text are listed together above",
         "it.",
