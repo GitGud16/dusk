@@ -34,6 +34,9 @@ mod kind {
     pub const FRAME: u8 = b'V';
     /// Sound mixed through the frame before it: interleaved stereo 32-bit floats.
     pub const SOUND: u8 = b'A';
+    /// The last frame came: finish the file. Input that ends without it means Dusk is gone,
+    /// and the unfinished file is removed.
+    pub const END: u8 = b'E';
 }
 
 /// Writes one message of `kind` made of `parts`, one after another.
@@ -273,17 +276,35 @@ fn serve(input: &mut impl Read, output: &mut impl Write) -> Result<(), String> {
     let (width, height) = writer.size();
     let ready = format!("ready {width} {height} {}", writer.encoder());
     say(output, &ready).map_err(lost)?;
+    let written = write_all(input, &mut writer, (width, height))
+        .and_then(|()| writer.finish().map_err(|error| error.to_string()));
+    if let Err(error) = written {
+        // Dusk removes it too, when it is still there to.
+        let _ = std::fs::remove_file(&part);
+        return Err(error);
+    }
+    say(output, "done").map_err(lost)
+}
+
+/// Encodes the frames and sound Dusk sends, up to its end message.
+fn write_all(
+    input: &mut impl Read,
+    writer: &mut Writer,
+    (width, height): (u32, u32),
+) -> Result<(), String> {
+    let lost = |error: std::io::Error| format!("Dusk's messages were cut off ({error})");
+    let unexpected = || "Dusk sent a message the helper does not know".to_owned();
     let luma = width as usize * height as usize;
-    while let Some((kind, bytes)) = read_message(input).map_err(lost)? {
-        match kind {
-            kind::FRAME if bytes.len() == luma + luma / 2 => {
+    loop {
+        match read_message(input).map_err(lost)? {
+            Some((kind::FRAME, bytes)) if bytes.len() == luma + luma / 2 => {
                 let mut luma_bytes = bytes;
                 let chroma = luma_bytes.split_off(luma);
                 writer
                     .write_video(&nv12(width, height, luma_bytes, chroma))
                     .map_err(|error| error.to_string())?;
             }
-            kind::SOUND if bytes.len().is_multiple_of(4) => {
+            Some((kind::SOUND, bytes)) if bytes.len().is_multiple_of(4) => {
                 let samples: Vec<f32> = bytes
                     .as_chunks::<4>()
                     .0
@@ -294,11 +315,17 @@ fn serve(input: &mut impl Read, output: &mut impl Write) -> Result<(), String> {
                     .write_audio(&samples)
                     .map_err(|error| error.to_string())?;
             }
-            _ => return Err(unexpected()),
+            Some((kind::END, _)) => return Ok(()),
+            Some(_) => return Err(unexpected()),
+            None => {
+                return Err(
+                    "Dusk stopped before the end of the export, so its unfinished file is \
+                     removed; export again"
+                        .to_owned(),
+                );
+            }
         }
     }
-    writer.finish().map_err(|error| error.to_string())?;
-    say(output, "done").map_err(lost)
 }
 
 /// An NV12 frame as Dusk draws them for an encoder: limited-range BT.709, chroma sited left.
@@ -375,6 +402,7 @@ mod client {
         Job(String),
         Frame(Picture),
         Sound(Vec<f32>),
+        End,
     }
 
     fn write_item(input: &mut impl Write, message: &Message) -> std::io::Result<()> {
@@ -392,6 +420,7 @@ mod client {
                     .collect();
                 write_message(input, kind::SOUND, &[&bytes])
             }
+            Message::End => write_message(input, kind::END, &[]),
         }
     }
 
@@ -404,9 +433,12 @@ mod client {
         Error(String),
     }
 
-    /// The helper's line `line`, when it is one meant for Dusk.
+    /// The helper's line `line`, when it is one meant for Dusk. What a test harness or an
+    /// encoder wrote without ending its line may come before it, so it is found wherever
+    /// it starts.
     fn heard(line: &str) -> Option<Said> {
-        let said = line.strip_prefix(SAYS)?.strip_prefix(' ')?;
+        let marker = format!("{SAYS} ");
+        let said = &line[line.find(&marker)? + marker.len()..];
         let (word, rest) = said.split_once(' ').unwrap_or((said, ""));
         match word {
             "ready" => {
@@ -430,6 +462,9 @@ mod client {
 
     /// How long a probe may take.
     const PROBE_PATIENCE: Duration = Duration::from_secs(30);
+
+    /// How long an encoder may take to open; hardware encoders take a second or two.
+    const READY_PATIENCE: Duration = Duration::from_secs(60);
 
     /// A helper running: messages go in through its standard input, what it says comes back
     /// on a channel. Dropping it before [`finish`](Self::finish) stops it.
@@ -541,6 +576,7 @@ mod client {
                 Message::Job(job.to_text()),
             ];
             let mut encoding = HelperEncoding::spawn(helper, first)?;
+            let deadline = Instant::now() + READY_PATIENCE;
             loop {
                 match encoding.said.recv_timeout(WAIT_STEP) {
                     Ok(Said::Ready(size, encoder)) => {
@@ -555,8 +591,8 @@ mod client {
                     Err(RecvTimeoutError::Timeout) if cancel.load(Ordering::Relaxed) => {
                         return Ok(Started::Cancelled);
                     }
-                    Err(RecvTimeoutError::Timeout) => {}
-                    Err(RecvTimeoutError::Disconnected) => return Err(encoding.failure()),
+                    Err(RecvTimeoutError::Timeout) if Instant::now() < deadline => {}
+                    Err(_) => return Err(encoding.failure()),
                 }
             }
         }
@@ -591,6 +627,9 @@ mod client {
         /// Lets the helper finish the file: `true` once it says it has, `false` when `cancel`
         /// was set first.
         pub(crate) fn finish(mut self, cancel: &AtomicBool) -> Result<bool, EngineError> {
+            if !self.feed(Message::End, cancel)? {
+                return Ok(false);
+            }
             self.feeder.close();
             loop {
                 match self.said.recv_timeout(WAIT_STEP) {
@@ -604,15 +643,13 @@ mod client {
                     Err(RecvTimeoutError::Disconnected) => return Err(self.failure()),
                 }
             }
-            // The file is finished; the helper ends by itself.
-            loop {
-                match self.child.try_wait() {
-                    Ok(Some(_)) => return Ok(true),
-                    Ok(None) if cancel.load(Ordering::Relaxed) => return Ok(false),
-                    Ok(None) => thread::sleep(WAIT_STEP),
-                    Err(_) => return Ok(true),
-                }
+            // The file is finished and closed; the helper ends by itself, and one that hangs
+            // on the way out is stopped (dropping it waits for that), the file kept.
+            let deadline = Instant::now() + ENDING_PATIENCE;
+            while Instant::now() < deadline && matches!(self.child.try_wait(), Ok(None)) {
+                thread::sleep(WAIT_STEP);
             }
+            Ok(true)
         }
 
         /// Why the helper stopped taking messages or ended early: it is ending, so this gives
@@ -645,9 +682,9 @@ mod client {
                 .file_name()
                 .map_or_else(|| "dusq".into(), |name| name.to_string_lossy());
             let why = if errors.is_empty() {
-                format!("it ended with {ended}")
+                ended
             } else {
-                errors.join(" ")
+                format!("{ended}: {}", errors.join(" "))
             };
             EngineError::HelperFailed {
                 message: format!(
@@ -695,7 +732,8 @@ mod client {
                 break;
             };
             let line = line.trim();
-            if !line.is_empty() {
+            // SVT-AV1 prints its settings there as it opens.
+            if !line.is_empty() && !line.contains("[info]") {
                 last.push(line.to_owned());
                 if last.len() > ERROR_LINES {
                     last.remove(0);
@@ -710,9 +748,17 @@ mod client {
     /// helper's and goes when it ends; in this process without one, or when the helper
     /// cannot say. It opens real encoding sessions, so it belongs off the UI thread.
     pub fn probe_encoders(helper: Option<&Helper>) -> Vec<&'static Encoder> {
-        helper
-            .and_then(|helper| probe_in(helper).ok())
-            .unwrap_or_else(|| available_encoders().to_vec())
+        if let Some(helper) = helper {
+            match probe_in(helper) {
+                Ok(found) => return found,
+                // A development build's stale dusq, say; exports through it say what is wrong.
+                Err(error) => eprintln!(
+                    "Dusk's encoder probe in {} failed ({error}); probing here instead",
+                    helper.program.display()
+                ),
+            }
+        }
+        available_encoders().to_vec()
     }
 
     fn probe_in(helper: &Helper) -> Result<Vec<&'static Encoder>, EngineError> {
@@ -743,6 +789,11 @@ mod client {
                 Some(Said::Ready((1920, 1080), "h264_amf".to_owned()))
             );
             assert_eq!(heard("dusk-helper done"), Some(Said::Done));
+            // What came before it on the line, as a test harness or an encoder may leave.
+            assert_eq!(
+                heard("test serve_as_the_helper ... dusk-helper ready 64 48 libopenh264"),
+                Some(Said::Ready((64, 48), "libopenh264".to_owned()))
+            );
             assert_eq!(
                 heard("dusk-helper error no encoder for H.264 could be opened"),
                 Some(Said::Error(
@@ -838,6 +889,54 @@ mod tests {
     fn a_path_goes_over_the_pipe_unchanged() {
         let path = Path::new("C:/Users/ünïcødé/clip edit.mp4.part");
         assert_eq!(path_from(&path_bytes(path)).as_deref(), Some(path));
+    }
+
+    /// Serves a three-frame 640x480 H.264 export into a part file of its own, with or without
+    /// the end message; whether it went well, what it said, and whether the file is there.
+    fn served(name: &str, end: bool) -> (bool, String, bool) {
+        let dir = std::env::temp_dir().join("dusk-helper-tests");
+        std::fs::create_dir_all(&dir).unwrap();
+        let part = dir.join(name);
+        let _ = std::fs::remove_file(&part);
+        let job = HelperJob {
+            container: Container::Mp4,
+            codec: VideoCodec::H264,
+            size: (640, 480),
+            rate: (30, 1),
+            quality: Quality::HIGH,
+            audio: None,
+        };
+        let mut input = Vec::new();
+        write_message(&mut input, kind::OUTPUT, &[&path_bytes(&part)]).unwrap();
+        write_message(&mut input, kind::JOB, &[job.to_text().as_bytes()]).unwrap();
+        let (luma, chroma) = (vec![16; 640 * 480], vec![128; 640 * 480 / 2]);
+        for _ in 0..3 {
+            write_message(&mut input, kind::FRAME, &[&luma, &chroma]).unwrap();
+        }
+        if end {
+            write_message(&mut input, kind::END, &[]).unwrap();
+        }
+        let mut said = Vec::new();
+        let served = serve_helper(Cursor::new(input), &mut said);
+        let exists = part.exists();
+        let _ = std::fs::remove_file(&part);
+        (served, String::from_utf8(said).unwrap(), exists)
+    }
+
+    #[test]
+    fn the_end_message_finishes_the_file_and_without_it_the_file_goes() {
+        let (finished, said, exists) = served("ended.mp4.part", true);
+        assert!(finished, "{said}");
+        assert!(said.ends_with("dusk-helper done\n"), "{said}");
+        assert!(exists);
+        // Input that stops without it: Dusk was closed or crashed mid-export.
+        let (finished, said, exists) = served("cut.mp4.part", false);
+        assert!(!finished);
+        assert!(
+            said.contains("dusk-helper error Dusk stopped before the end of the export"),
+            "{said}"
+        );
+        assert!(!exists);
     }
 
     #[test]
