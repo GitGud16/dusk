@@ -12,7 +12,7 @@ use std::sync::Arc;
 use dusk_core::{Frame, Project};
 use dusk_engine::{
     AudioCodec, AudioFormat, Encoder, EngineError, ExportFormat, ExportSettings, ExternalEncoder,
-    available_encoders, external_encoders, has_picture, has_sound,
+    Helper, external_encoders, has_picture, has_sound, probe_encoders,
 };
 use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
 
@@ -106,7 +106,8 @@ impl App {
                 let spawned = std::thread::Builder::new()
                     .name("dusk encoder probe".to_owned())
                     .spawn(|| {
-                        let found = available_encoders().to_vec();
+                        // In the helper, so the sessions it opens keep nothing in Dusk.
+                        let found = probe_encoders(Helper::beside_this_program().as_ref());
                         let _ = slint::invoke_from_event_loop(move || {
                             with_app(|app| app.encoders_probed(found));
                         });

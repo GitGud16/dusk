@@ -22,9 +22,9 @@ The machines:
 | Clip editor | no frame memory of its own; its window about 60 MB once opened | 295 MB open, 730 MB playing, 693–695 MB after (M3) | 200 MB open; opened after playback, its window 55 MB, 622 MB playing in it, 628 MB playing in the main window beside it, 587 MB after (M7) |
 | Frame cache | default 384 MB, 128 to 4096 MB in Settings; a smaller cap frees what lies above it at once | at 128 MB: 235, 421 and 376 MB idle, playing and after; 384 → 128 MB freed 269 MB within 3 s (M5) | not measured |
 | dusq | under the app's playback budget for the same size class | 158 MB at 1080p, 446 MB 4K H.264, 351 MB 4K 10-bit HEVC, 974 MB 8K HEVC (M4) | through `h264_qsv`: 246 MB at 1080p, 557 MB 4K H.264, 683 MB 4K 10-bit HEVC, 906 MB 8K HEVC (M7) |
-| During export | the playback budget plus the encoder's line | compressing a 2.1 GB 4K phone video to 25 MB: 531 MB at most (M4) | not measured in the app |
+| During export | Dusk: the playback budget; the encoder: its line, in the helper's own process | a 10 s 4K export through the helper (`h264_amf`, `hevc_amf` or SVT-AV1): Dusk 532–552 MB at most, back to about 140 MB after (M7); compressing a 2.1 GB 4K phone video to 25 MB: 531 MB at most (M4, before the helper) | not measured in the app |
 
-The encoder lines, from the peak private bytes an encoder adds while an export feeds it (`dusk-media`'s `encoder_memory`, grainy pictures at High):
+The encoder lines, from the peak private bytes an encoder adds while an export feeds it (`dusk-media`'s `encoder_memory`, grainy pictures at High). Since M7 an encoder runs in Dusk's helper, `dusq`, which peaks near its encoder's figure: 137 MB through `h264_amf` and 138 MB through `hevc_amf` for a 4K export, 994 MB through SVT-AV1, and 188 MB for the encoder probe, once a session.
 
 | Encoder | Line | Desktop, 1080p / 4K | Laptop, 1080p / 4K |
 |---|---|---|---|
@@ -38,7 +38,7 @@ The encoder lines, from the peak private bytes an encoder adds while an export f
 | VP9 | 350 MB at 1080p, 1.1 GB at 4K | 332 / 1,082 MB (M4) | 331 / 1,081 MB (M7) |
 | SVT-AV1 | 550 MB at 1080p, 1.1 GB at 4K | 526 / 1,008 MB (M4) | 526 / 1,048 MB (M7) |
 
-The hardware encoders keep some memory after their session closes, which the next session reuses, so it does not grow export after export but stays until Dusk quits: AMF about 25 MB at 1080p and 60 MB at 4K, `h264_qsv` about 70 and 235 MB, `hevc_qsv` about 145 and 375 MB.
+The hardware encoders keep some memory after their session closes, which the next session reuses, so it does not grow export after export but stays until its process ends: AMF about 25 MB at 1080p and 60 MB at 4K, `h264_qsv` about 70 and 235 MB, `hevc_qsv` about 145 and 375 MB. Since M7 that process is the helper, which ends with the export, so Dusk keeps none of it.
 
 What these figures assume:
 
@@ -46,7 +46,7 @@ What these figures assume:
 - Memory never grows with project length or session length.
 - The decoder budget holds at most 2 video decoders and 4 audio decoders in the 1080p class, and one larger source in a single pool of up to about 550 MB (ARCHITECTURE.md, "Decoder pool"). The reverse-playback buffer and an export's frames in flight live inside the cache cap.
 - The preview's working set is what it keeps for the next playback rather than freeing: three output frames and two upload buffers (about 15 MB for a 1080p source in a 1280-wide preview) and the UI's copies (DECISIONS.md, "The compositor keeps its GPU memory").
-- Playback and the pop-out preview pause while exporting, and export decoders follow the pool rules. An export through the user's own `ffmpeg.exe` has no encoder line in Dusk: that encoder runs in its own process.
+- Playback and the pop-out preview pause while exporting, and export decoders follow the pool rules. An export through the helper or through the user's own `ffmpeg.exe` has no encoder line in Dusk: that encoder runs in its own process. Sound alone is still encoded in Dusk's.
 - Known exception, outside Dusk: on AMD's Vulkan driver, each moment both windows redraw together leaves about 0.4–1.5 MB behind for good (ARCHITECTURE.md, "Known issues").
 
 ### Size and start

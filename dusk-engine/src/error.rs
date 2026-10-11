@@ -85,6 +85,24 @@ pub enum EngineError {
         /// What it said last, or how it ended.
         message: String,
     },
+    /// Dusk's helper, `dusq`, which encodes video exports, could not be started.
+    #[error(
+        "Dusk could not start its encoder, {}: {source}. Reinstall Dusk to put it back",
+        path.display()
+    )]
+    HelperStart {
+        /// The helper.
+        path: PathBuf,
+        /// What the system said.
+        #[source]
+        source: std::io::Error,
+    },
+    /// Dusk's helper could not encode the export: what it said, which says what to do.
+    #[error("{message}")]
+    HelperFailed {
+        /// The helper's own message, or how it ended.
+        message: String,
+    },
 }
 
 /// `bytes` in megabytes with one decimal, rounded up, so the size said is never below it.

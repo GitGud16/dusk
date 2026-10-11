@@ -38,7 +38,7 @@ dusk-render/  wgpu compositor; receives decoded frames as input      (leaf)
 dusk-audio/   mixer, resampler, output device, playback clock        (leaf)
 dusk-engine/  frame cache, decoder pool, scheduler, export pipeline  (worker threads)
 dusk-app/     the `dusk.exe` binary: Slint windows, view models, undo stack, shortcuts, settings
-dusk-cli/     the `dusq` binary: compress, extract-audio; builds dusk-engine without its `gpu` feature (no wgpu, no Slint)
+dusk-cli/     the `dusq` binary: compress, extract-audio, and Dusk's export helper; builds dusk-engine without its `gpu` feature (no wgpu, no Slint)
 docs/         design docs (above)
 ```
 

@@ -14,9 +14,12 @@ mod error;
 mod export;
 #[cfg(feature = "gpu")]
 mod external;
+mod helper;
 mod info;
 #[cfg(feature = "gpu")]
 mod mixer;
+#[cfg(feature = "gpu")]
+mod pipe;
 #[cfg(feature = "gpu")]
 mod placement;
 mod settings;
@@ -43,6 +46,9 @@ pub use error::EngineError;
 pub use export::{ExportEvent, ExportJob};
 #[cfg(feature = "gpu")]
 pub use external::{ExternalEncoder, external_encoders};
+pub use helper::{HELPER_COMMAND, serve_helper};
+#[cfg(feature = "gpu")]
+pub use helper::{Helper, probe_encoders};
 pub use info::media_info;
 pub use settings::{ExportFormat, ExportSettings, export_size, has_picture, has_sound};
 pub use size::{SizePlan, SizeRefusal, corrected, plan_for_size};

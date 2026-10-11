@@ -21,6 +21,7 @@ use dusk_render::{Compositor, Gpu, ToYuv};
 use crate::EngineError;
 use crate::engine::{EngineEvent, Report};
 use crate::external::{Encoding, ExternalEncoder, ExternalJob};
+use crate::helper::{Helper, HelperEncoding, HelperJob, Started};
 use crate::info::still_size;
 use crate::mixer::Mixer;
 use crate::placement::placement_at;
@@ -84,6 +85,8 @@ pub(crate) struct ExportPlan {
     pub size: Option<u64>,
     /// A user's own `ffmpeg` to encode the video with, in place of Dusk's encoders.
     pub external: Option<ExternalEncoder>,
+    /// Dusk's helper, which encodes the video with Dusk's encoders in a process of its own.
+    pub helper: Option<Helper>,
 }
 
 /// Starts exporting `project` to `path` on a new thread, which ends after reporting the
@@ -132,9 +135,12 @@ fn export(
     report: &Report,
 ) -> ExportEvent {
     let part = part_path(path);
-    let external = plan.external.as_ref();
+    let encoders = Encoders {
+        external: plan.external.as_ref(),
+        helper: plan.helper.as_ref(),
+    };
     let settings = &plan.settings;
-    let mut outcome = write_file(gpu, project, &part, settings, external, cancel, report);
+    let mut outcome = write_file(gpu, project, &part, settings, encoders, cancel, report);
     if let (Ok(Some(_)), Some(target), Quality::Bitrate(bit_rate)) =
         (&outcome, plan.size, settings.quality)
     {
@@ -145,7 +151,7 @@ fn export(
                 quality: Quality::Bitrate(lower),
                 ..*settings
             };
-            outcome = write_file(gpu, project, &part, &again, external, cancel, report);
+            outcome = write_file(gpu, project, &part, &again, encoders, cancel, report);
         }
     }
     let renamed = match outcome {
@@ -174,18 +180,28 @@ fn export(
     }
 }
 
-/// Writes the sequence to `part` in `settings`' format, the video through `external` when
-/// given; the encoder used, or `None` when cancelled.
+/// Who encodes an export's video other than Dusk's own process.
+#[derive(Clone, Copy)]
+struct Encoders<'a> {
+    /// A user's own `ffmpeg`, with an encoder Dusk does not ship.
+    external: Option<&'a ExternalEncoder>,
+    /// Dusk's helper, with Dusk's encoders.
+    helper: Option<&'a Helper>,
+}
+
+/// Writes the sequence to `part` in `settings`' format, the video through a user's own
+/// `ffmpeg` when one is given, else through Dusk's helper when there is one; the encoder used,
+/// or `None` when cancelled.
 fn write_file(
     gpu: &Gpu,
     project: &Arc<Project>,
     part: &Path,
     settings: &ExportSettings,
-    external: Option<&ExternalEncoder>,
+    encoders: Encoders,
     cancel: &AtomicBool,
     report: &Report,
 ) -> Result<Option<String>, EngineError> {
-    match (settings.format, external) {
+    match (settings.format, encoders.external) {
         (
             ExportFormat::Video {
                 container, audio, ..
@@ -204,9 +220,15 @@ fn write_file(
                 audio,
             },
             None,
-        ) => write(
-            gpu, project, part, container, codec, audio, settings, cancel, report,
-        ),
+        ) => match encoders.helper {
+            Some(helper) => {
+                let format = (container, codec, audio);
+                write_in_helper(gpu, project, part, format, settings, helper, cancel, report)
+            }
+            None => write(
+                gpu, project, part, container, codec, audio, settings, cancel, report,
+            ),
+        },
         (ExportFormat::Sound(format), _) => {
             write_sound(project, part, format, settings, cancel, report)
         }
@@ -261,6 +283,72 @@ fn write(
     }
     let encoder = writer.encoder().to_owned();
     writer.finish()?;
+    Ok(Some(encoder))
+}
+
+/// Writes the whole sequence to `part` as a video file through Dusk's helper
+/// (docs/ARCHITECTURE.md, "Export"): every frame is drawn here as for [`write`], at the size
+/// the helper's encoder takes, and handed to the helper with the sound mixed through it. The
+/// encoder used, or `None` when cancelled.
+#[allow(clippy::too_many_arguments)]
+fn write_in_helper(
+    gpu: &Gpu,
+    project: &Arc<Project>,
+    part: &Path,
+    (container, codec, audio): (Container, VideoCodec, AudioCodec),
+    settings: &ExportSettings,
+    helper: &Helper,
+    cancel: &AtomicBool,
+    report: &Report,
+) -> Result<Option<String>, EngineError> {
+    let sequence = project.sequence();
+    let (rate, end) = (sequence.frame_rate(), sequence.end());
+    if end <= Frame(0) {
+        return Err(EngineError::Empty);
+    }
+    let sound = has_sound(project);
+    let job = HelperJob {
+        container,
+        codec,
+        size: export_size(sequence.resolution(), settings.short_side),
+        rate: (rate.num(), rate.den()),
+        quality: settings.quality,
+        audio: sound.then(|| settings.audio(audio)),
+    };
+    // Dropping it on the way out stops the helper.
+    let (mut encoding, size, encoder) = match HelperEncoding::start(helper, part, job, cancel)? {
+        Started::Ready {
+            encoding,
+            size,
+            encoder,
+        } => (*encoding, size, encoder),
+        Started::Cancelled => return Ok(None),
+    };
+    let mut frames = Frames::new(gpu, size);
+    let mut mix = sound.then(|| Mix::new(project));
+    let total = end.0 as u64;
+    let mut reported = Instant::now();
+    for frame in 0..end.0 {
+        if cancel.load(Ordering::Relaxed) {
+            return Ok(None);
+        }
+        if !encoding.frame(frames.draw(project, Frame(frame))?, cancel)? {
+            return Ok(None);
+        }
+        if let Some(mix) = mix.as_mut()
+            && !encoding.sound(mix.through(Frame(frame))?.to_vec(), cancel)?
+        {
+            return Ok(None);
+        }
+        let done = frame as u64 + 1;
+        if done == total || reported.elapsed() >= PROGRESS_INTERVAL {
+            reported = Instant::now();
+            report(EngineEvent::Export(ExportEvent::Progress { done, total }));
+        }
+    }
+    if !encoding.finish(cancel)? {
+        return Ok(None);
+    }
     Ok(Some(encoder))
 }
 

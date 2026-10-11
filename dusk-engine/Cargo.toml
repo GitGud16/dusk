@@ -22,6 +22,10 @@ crossbeam-channel = { workspace = true, optional = true }
 thiserror.workspace = true
 
 [[example]]
+name = "export_memory"
+required-features = ["gpu"]
+
+[[example]]
 name = "memory_probe"
 required-features = ["gpu"]
 
