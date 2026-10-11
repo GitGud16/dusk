@@ -1,7 +1,9 @@
 # Test data
 
-Synthetic files generated with the pinned FFmpeg build (`scripts/ffmpeg-pin.psd1`); no
-third-party content, so they fall under the repository's MIT license.
+Synthetic files generated with BtbN's LGPL FFmpeg 8.1 build, which Dusk pinned until M7; no
+third-party content, so they fall under the repository's MIT license. Dusk's own build keeps
+only the encoders Dusk uses, so regenerating them needs a full build such as BtbN's
+(`ffmpeg-n8.1.3-14-g330caae0c1-win64-lgpl-shared-8.1.zip` from github.com/BtbN/FFmpeg-Builds).
 
 ## `sample-h264-aac.mp4`
 

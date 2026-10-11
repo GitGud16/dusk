@@ -4,11 +4,13 @@ beside FFmpeg's own LGPL. Run it again whenever scripts/ffmpeg-pin.psd1 moves:
 
     python scripts/ffmpeg-licenses.py
 
-It downloads BtbN's FFmpeg-Builds scripts at the pinned release tag, asks them which libraries
+Dusk builds its own FFmpeg in BtbN's FFmpeg-Builds image (scripts/ffmpeg-build.sh). This
+downloads BtbN's scripts at the commit scripts/ffmpeg-source.txt names, asks them which libraries
 the win64 LGPL shared build of the pinned FFmpeg version contains (scripts/btbn-components.sh,
-which uses the scripts' own logic), and fetches each library's license files at the commit
-BtbN built from that library's own repository. Libraries sharing one text are listed together
-above it. Two of them, rav1e and librsvg, are written in Rust: for those it checks out their
+which uses the scripts' own logic), leaves out those Dusk's build drops
+(scripts/ffmpeg-options.txt), and fetches each library's license files at the commit BtbN built
+from that library's own repository. Libraries sharing one text are listed together
+above it. Those written in Rust (librsvg; rav1e, which Dusk's build drops): for those it checks out their
 Cargo files and Rust sources at that commit, lets cargo resolve their builds for Windows into a
 CARGO_HOME of its own (fetching their crates, some tens of MB, removed afterwards), and lists
 the crates' licenses as scripts/third-party-notices.py does Dusk's. Needs the network, Git's
@@ -298,8 +300,9 @@ def bash():
     return "bash"
 
 
-def components(builds, version):
-    """(name, url, commit, revision) of every library the build contains, from BtbN's scripts."""
+def components(builds, version, dropped):
+    """(name, url, commit, revision) of every library the build contains, from BtbN's scripts,
+    but for those whose configure options are all among `dropped`."""
     lister = ROOT / "scripts" / "btbn-components.sh"
     run = subprocess.run(
         [bash(), lister.as_posix(), builds.as_posix(), "win64", "lgpl-shared", version],
@@ -311,7 +314,10 @@ def components(builds, version):
     rows = [line.split("\t") for line in listing.splitlines() if line.strip()]
     enabled = {row[0] for row in rows}
     found, seen = [], set()
-    for script, skip, *sources in rows:
+    for script, skip, *sources, configure in rows:
+        options = configure.split()
+        if options and all(option in dropped for option in options):
+            continue
         # A folder of scripts builds one library and what only it uses; when its last script is
         # off (libcurl in FFmpeg 8.1), nothing of it reaches FFmpeg.
         folder = builds / Path(script).parent
@@ -334,17 +340,21 @@ def main():
     pin = (ROOT / "scripts" / "ffmpeg-pin.psd1").read_text(encoding="utf-8")
     tag = re.search(r"^\s*Tag\s*=\s*'([^']+)'", pin, re.MULTILINE).group(1)
     file_name = re.search(r"^\s*FileName\s*=\s*'([^']+)'", pin, re.MULTILINE).group(1)
-    version = re.search(r"-shared-([0-9.]+)\.zip$", file_name).group(1)
+    version = re.search(r"-shared-([0-9.]+)-dusk\.zip$", file_name).group(1)
+    source = (ROOT / "scripts" / "ffmpeg-source.txt").read_text(encoding="utf-8")
+    scripts = re.search(r"^btbn ([0-9a-f]{40})$", source, re.MULTILINE).group(1)
+    options = (ROOT / "scripts" / "ffmpeg-options.txt").read_text(encoding="utf-8")
+    dropped = set(re.findall(r"^drop (\S+)$", options, re.MULTILINE))
     temp = tempfile.mkdtemp(prefix="dusk-ffmpeg-licenses-")
     try:
-        archive = get(f"https://codeload.github.com/BtbN/FFmpeg-Builds/tar.gz/refs/tags/{tag}")
+        archive = get(f"https://codeload.github.com/BtbN/FFmpeg-Builds/tar.gz/{scripts}")
         with tarfile.open(fileobj=io.BytesIO(archive)) as tar:
             tar.extractall(temp, filter="data")
         builds = next(Path(temp).iterdir())
-        libraries = components(builds, version)
+        libraries = components(builds, version, dropped)
         crates = rust_crates(libraries, temp)
     except NETWORK_ERRORS as error:
-        sys.exit(f"Could not fetch BtbN's build scripts for {tag}, or the Rust libraries' sources: {error}")
+        sys.exit(f"Could not fetch BtbN's build scripts at {scripts}, or the Rust libraries' sources: {error}")
     except subprocess.CalledProcessError as error:
         sys.exit(command_failed(error))
     finally:
@@ -365,26 +375,28 @@ def main():
     if missing:
         sys.exit("No license file found for: " + "; ".join(missing))
 
+    rust = sorted(name for name, url, _, _ in libraries if url in RUST_LIBRARIES)
     out = [
         "Libraries in FFmpeg",
         "",
         "dusk.exe and dusq.exe use five libraries of FFmpeg (FFmpeg.txt). The build Dusk ships,",
-        f"{file_name} from release {tag} of BtbN's FFmpeg-Builds,",
-        "has the libraries below built into those DLLs, each under its own license. Each is named",
-        "with the repository and the commit it was built from, as BtbN's build scripts for that",
-        "release give them. Every library those scripts build into this FFmpeg is listed, some used",
-        "only by parts of FFmpeg that Dusk does not ship, rather than risk leaving one out.",
-        "Libraries that ship the same text are listed together above it. The Rust crates inside",
-        "two of them, rav1e and librsvg, follow the libraries.",
+        f"{file_name} from release {tag} of Dusk's repository,",
+        "is Dusk's own, compiled in BtbN's FFmpeg-Builds image, and has the libraries below built",
+        "into those DLLs, each under its own license. Each is named with the repository and the",
+        f"commit it was built from, as BtbN's build scripts at commit {scripts[:12]} give them. Every",
+        "library those scripts build into this FFmpeg is listed, but for those Dusk's build leaves",
+        "out; some are used only by parts of FFmpeg that Dusk does not ship, rather than risk",
+        "leaving one out. Libraries that ship the same text are listed together above it. The Rust",
+        f"crates inside {' and '.join(rust)} follow the libraries.",
         "",
     ]
     out += NOTICES.grouped(groups)
     out += [
         "",
-        "Rust crates in rav1e and librsvg",
+        f"Rust crates in {' and '.join(rust)}",
         "",
-        "rav1e and librsvg are written in Rust, and the Rust crates below are built into the DLLs",
-        "with them: every crate their builds for Windows depend on, as cargo resolves those builds",
+        f"{' and '.join(rust)} {'are' if len(rust) > 1 else 'is'} written in Rust, and the Rust crates below are built into the DLLs",
+        "with it: every crate its builds for Windows depend on, as cargo resolves those builds",
         "at the commits above, each under the license named beside it; where a crate offers a",
         "choice, its every text is given. Crates that ship the same text are listed together above",
         "it.",
