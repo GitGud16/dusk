@@ -7,7 +7,7 @@ The tables give each target and the latest figure measured against it on each ma
 The machines:
 
 - **Desktop**: Ryzen 5 2600X (6 cores), Radeon RX 6750 XT on Vulkan, Windows 11. The development machine for M0 to M6.
-- **Laptop**: Core i7-13620H (6 performance and 4 efficient cores), its Intel UHD Graphics (Xe-LP, the Iris Xe class) on Vulkan, 16 GB of RAM, Windows 10, in Windows' Balanced plan; on mains power, except the 4K playback runs, which were on battery.
+- **Laptop**: Core i7-13620H (6 performance and 4 efficient cores), its Intel UHD Graphics (Xe-LP, the Iris Xe class) on Vulkan, 16 GB of RAM, Windows 10, on mains power in Windows' Balanced plan.
 
 ## 1. Lightweight (top priority)
 
@@ -18,7 +18,7 @@ The machines:
 | Idle | under ~250 MB with a 1080p project open and nothing playing | 233 MB (M6); the empty window 200 MB (M1) | 124–126 MB; the empty window 119 MB (M7) |
 | During 1080p playback | idle + frame cache cap + 300 MB decoders + 64 MB thumbnails: about 800 MB for 8-bit footage and 950 MB for 10-bit at the default cache | 681 MB at most (M6); 703 MB around the cuts of three clips with music (M2) | 560 MB at most at 30 fps, 563 MB at 60 fps (M7) |
 | After playback stops | within 10 s: idle + frame cache cap + the preview's working set | 644 MB (M6) | 518–520 MB (M7) |
-| 4K sources | one video decoder, no lookahead; playback under ~1.2 GB | the decoder 150 MB (H.264) to 200 MB (10-bit HEVC) (M1) | the decoder 145 MB (H.264) to 276 MB (10-bit HEVC); playing 721 MB (H.264) and 901 MB (10-bit HEVC) at most (M7) |
+| 4K sources | one video decoder, no lookahead; playback under ~1.2 GB | the decoder 150 MB (H.264) to 200 MB (10-bit HEVC) (M1) | the decoder 145 MB (H.264) to 276 MB (10-bit HEVC); playing 725 MB (H.264) and 902 MB (10-bit HEVC) at most (M7) |
 | Clip editor | no frame memory of its own; its window about 60 MB once opened | 295 MB open, 730 MB playing, 693–695 MB after (M3) | 200 MB open; opened after playback, its window 55 MB, 622 MB playing in it, 628 MB playing in the main window beside it, 587 MB after (M7) |
 | Frame cache | default 384 MB, 128 to 4096 MB in Settings; a smaller cap frees what lies above it at once | at 128 MB: 235, 421 and 376 MB idle, playing and after; 384 → 128 MB freed 269 MB within 3 s (M5) | not measured |
 | dusq | under the app's playback budget for the same size class | 158 MB at 1080p, 446 MB 4K H.264, 351 MB 4K 10-bit HEVC, 974 MB 8K HEVC (M4) | through `h264_qsv`: 246 MB at 1080p, 557 MB 4K H.264, 683 MB 4K 10-bit HEVC, 906 MB 8K HEVC (M7) |
@@ -72,7 +72,7 @@ What these figures assume:
 | 1080p30 playback | every frame shown | none skipped in 5 minutes (M1) | 2 of 8,962 skipped in 5 minutes (M7) |
 | 1080p60 playback | every frame shown | all but 3 of 1196 (M1) | all but 7 of 3,529 (M7) |
 | 1080p60 in the preview (`DUSK_STATS`) | 60 frames a second drawn | 57–60, 0.05 ms of UI time a frame (M1) | 54–60 (57.8 on average), 0.02 ms of UI time a frame (M7) |
-| 4K playback | usable | not recorded | H.264: 28–30 frames a second in the app. 10-bit HEVC: 28–34; at 60 fps, faster than this CPU decodes it, 28–43 with the picture up to 2 s behind the sound (M7; DECISIONS.md, "Falling behind while playing"). 1080p 10-bit HEVC plays whole |
+| 4K playback | usable | not recorded | H.264: 29–30 frames a second in the app. 10-bit HEVC: 18–31 (23–29 on average); at 60 fps, faster than this CPU decodes it, 29–43 with the picture up to 2 s behind the sound (M7; DECISIONS.md, "Falling behind while playing"). 1080p 10-bit HEVC plays whole |
 
 ## 3. Non-destructive
 - Source media is never modified or copied.

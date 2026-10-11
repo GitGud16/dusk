@@ -13,9 +13,9 @@ use std::time::{Duration, Instant};
 
 use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, TryRecvError};
 use dusk_audio::PlaybackClock;
-use dusk_core::time::{frame_at, frame_to_media};
+use dusk_core::time::{frame_at, frame_to_media, source_span};
 use dusk_core::{
-    Clip, ClipId, Frame, MediaId, MediaInfo, MediaKind, MediaTime, Picture, Project, Rational,
+    ClipId, Frame, MediaId, MediaInfo, MediaKind, MediaTime, Picture, Project, Rational,
 };
 use dusk_media::{Acceleration, DecodedFrame, Following, LARGE_FRAME, Step, Toward, VideoDecoder};
 use dusk_render::{Compositor, Gpu, fit_size};
@@ -100,7 +100,7 @@ pub(crate) fn spawn(
 /// What the preview shows at a frame.
 enum Shown {
     Picture(Arc<Picture>),
-    /// An earlier frame of its clip: decoding is behind the playback clock.
+    /// An earlier picture of its clip: decoding is behind the playback clock.
     Late(Arc<Picture>),
     Black,
     /// Not known without decoding.
@@ -116,9 +116,9 @@ enum Fetch {
     Nearest,
     /// Decode it.
     Decode,
-    /// Decode at most this many frames toward it, and take the frame reached if that is not
-    /// yet it, for playing forwards (docs/ARCHITECTURE.md, "Playback").
-    Toward(usize),
+    /// Decode toward it, and take the first frame decoded that is further behind it than this
+    /// in its source, for playing forwards (docs/ARCHITECTURE.md, "Playback").
+    Toward(MediaTime),
     /// Decode its group of pictures from the keyframe and cache every frame of it, for
     /// playing backwards.
     Gop,
@@ -136,29 +136,29 @@ fn reverse_window(time: MediaTime, frame_bytes: usize, cap: usize, frame: MediaT
 }
 
 /// How frames are fetched while playing at `rate`, the playback factor times the clip's
-/// speed, from a source with `density` frames to each frame of the sequence
-/// (docs/ARCHITECTURE.md, "Playback"): every frame forwards up to 8x, as many at a time as one
-/// frame of playback covers, every frame backwards from a group-of-pictures buffer up to 2x,
-/// and only keyframes beyond either.
-fn playback_fetch(rate: f64, density: f64) -> Fetch {
+/// speed, decoding on without drawing while within `near` of the clock (docs/ARCHITECTURE.md,
+/// "Playback"): every frame forwards up to 8x, every frame backwards from a group-of-pictures
+/// buffer up to 2x, and only keyframes beyond either.
+fn playback_fetch(rate: f64, near: MediaTime) -> Fetch {
     if rate > 8.0 || rate < -2.0 {
         Fetch::Keyframe
     } else if rate > 0.0 {
-        // Small: the rate is at most 8 and the density a ratio of frame rates.
-        Fetch::Toward(((rate * density).ceil() as usize).max(1))
+        Fetch::Toward(near)
     } else {
         Fetch::Gop
     }
 }
 
-/// How many frames of the source of `clip` there are to each frame of a sequence at
-/// `sequence_rate`; 1 for a still or a source without a frame rate.
-fn density(project: &Project, clip: &Clip, sequence_rate: Rational) -> f64 {
-    let per_second = |rate: Rational| f64::from(rate.num()) / f64::from(rate.den().max(1));
-    project
-        .media_ref(clip.media_id)
-        .and_then(|media| media.info.frame_rate)
-        .map_or(1.0, |rate| per_second(rate) / per_second(sequence_rate))
+/// How many frames of playback behind the clock the decoder may be and still catch up before
+/// drawing, at 1x; the playback factor multiplies it, as the clock moves that much faster.
+const CATCH_UP: i64 = 2;
+
+/// How far behind the clock, in the source of a clip at `speed` on a sequence at `rate`
+/// played at `factor`, the decoder catches up before drawing.
+fn catch_up(rate: Rational, speed: f64, factor: f64) -> MediaTime {
+    // Small: the factor is at most 8 here.
+    let frames = (CATCH_UP as f64 * factor.abs().max(1.0)).ceil() as i64;
+    source_span(Frame(frames), speed, rate)
 }
 
 struct OpenDecoder {
@@ -488,15 +488,19 @@ impl VideoThread {
             return self.tend_upcoming(preview, &project);
         }
         let sequence = project.sequence();
-        let clip = sequence.visible_video_at(frame);
-        let speed = clip.map_or(1.0, |clip| clip.speed);
-        let density = clip.map_or(1.0, |clip| density(&project, clip, sequence.frame_rate()));
-        let fetch = playback_fetch(factor * speed, density);
-        // A frame from before the clock is shown as not exact, so the next round goes on
-        // toward the clock and pausing shows the exact frame.
+        let speed = sequence
+            .visible_video_at(frame)
+            .map_or(1.0, |clip| clip.speed);
+        let near = catch_up(sequence.frame_rate(), speed, factor);
+        let fetch = playback_fetch(factor * speed, near);
+        // A picture from before the clock is drawn for the clock's frame, as not exact, so the
+        // next round goes on toward the clock and pausing shows the exact frame; a frame is
+        // drawn late once at most, so it is drawn twice at most, late and then exact.
         let late = match self.shown_at(preview, frame, fetch) {
             Ok(Shown::Late(picture)) => {
-                self.present(preview, frame, Shown::Picture(picture), false);
+                if self.view(preview).target != Some(frame) {
+                    self.present(preview, frame, Shown::Picture(picture), false);
+                }
                 true
             }
             Ok(shown) => {
@@ -782,7 +786,7 @@ impl VideoThread {
                 .nearest(media, time)
                 .map_or(Shown::Unknown, Shown::Picture)),
             Fetch::Decode => self.decode(&project, media, time),
-            Fetch::Toward(budget) => self.decode_toward(&project, media, time, budget),
+            Fetch::Toward(near) => self.decode_toward(&project, media, time, near),
             Fetch::Gop => self.decode_gop(&project, media, time),
             Fetch::Keyframe => self.decode_keyframe(&project, media, time),
         }
@@ -857,18 +861,18 @@ impl VideoThread {
         Ok(Shown::Picture(picture))
     }
 
-    /// Decodes at most `budget` frames of `media` toward `time` into the cache: the frame
-    /// shown at `time` if they get there, else the last of them, late.
+    /// Decodes `media` toward `time` into the cache: the frame shown at `time`, or the first
+    /// frame decoded that is further than `near` behind it, late.
     fn decode_toward(
         &mut self,
         project: &Project,
         media: MediaId,
         time: MediaTime,
-        budget: usize,
+        near: MediaTime,
     ) -> Result<Shown, EngineError> {
         let index = self.decoder(project, media)?;
         let decoder = &mut self.decoders[index].decoder;
-        let (decoded, late) = match decoder.frame_toward(time, budget)? {
+        let (decoded, late) = match decoder.frame_toward(time, near)? {
             Toward::There(Some(decoded)) => (decoded, false),
             // Before the first frame of the stream.
             Toward::There(None) => return Ok(Shown::Black),
@@ -1111,42 +1115,25 @@ mod tests {
             (-4.0, "keyframes"),
         ];
         for (rate, expected) in cases {
-            assert_eq!(kind(playback_fetch(rate, 1.0)), expected, "at {rate}x");
+            assert_eq!(
+                kind(playback_fetch(rate, MediaTime(66_667))),
+                expected,
+                "at {rate}x"
+            );
         }
     }
 
     #[test]
-    fn playing_forwards_decodes_as_many_frames_as_a_step_covers_before_drawing() {
-        let budget = |rate: f64, density: f64| match playback_fetch(rate, density) {
-            Fetch::Toward(budget) => budget,
-            _ => panic!("{rate}x does not decode every frame"),
-        };
-        assert_eq!(budget(0.1, 1.0), 1);
-        assert_eq!(budget(1.0, 1.0), 1);
-        assert_eq!(budget(1.5, 1.0), 2);
-        assert_eq!(budget(8.0, 1.0), 8);
-        // 60 fps in a 30 fps sequence: two source frames to each frame played.
-        assert_eq!(budget(1.0, 2.0), 2);
-        // 24 fps in a 30 fps sequence: never more than one.
-        assert_eq!(budget(1.0, 0.8), 1);
-    }
-
-    #[test]
-    fn a_clip_has_as_many_source_frames_to_a_sequence_frame_as_its_rates_say() {
-        use dusk_core::import;
-        let sample = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../testdata/sample-h264-aac.mp4");
-        let info = crate::media_info(&sample).expect("the sample probes");
-        // The sample is 30 fps; a 60 fps sequence shows each of its frames twice.
-        let mut project = Project::new(Rational::new(60, 1).unwrap(), (320, 240));
-        import(&project, sample, info, Frame(0))
-            .apply(&mut project)
-            .expect("the sample imports");
-        let clip = project
-            .sequence()
-            .visible_video_at(Frame(0))
-            .expect("the clip is in view");
-        let sequence_rate = project.sequence().frame_rate();
-        assert!((density(&project, clip, sequence_rate) - 0.5).abs() < 1e-9);
+    fn the_decoder_catches_up_before_drawing_while_two_frames_of_playback_behind() {
+        let thirty = Rational::new(30, 1).unwrap();
+        // Two frames of the sequence, in the clip's source.
+        assert_eq!(catch_up(thirty, 1.0, 1.0), MediaTime(66_667));
+        assert_eq!(catch_up(thirty, 2.0, 1.0), MediaTime(133_334));
+        // Faster playback moves the clock further between two rounds; slower does not shrink
+        // it below two frames.
+        assert_eq!(catch_up(thirty, 1.0, 4.0), MediaTime(266_667));
+        assert_eq!(catch_up(thirty, 1.0, 0.25), MediaTime(66_667));
+        let near = MediaTime(50_000);
+        assert!(matches!(playback_fetch(1.0, near), Fetch::Toward(n) if n == near));
     }
 }

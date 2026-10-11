@@ -183,29 +183,28 @@ impl VideoDecoder {
         }
     }
 
-    /// The frame shown at `time`, as [`frame_at`](Self::frame_at) gives it, if decoding at
-    /// most `budget` frames gets there; otherwise the last of those frames, for playback that
-    /// decoding cannot keep up with to show every frame it decodes, late, rather than decode
-    /// all the way to the clock between two pictures (docs/ARCHITECTURE.md, "Playback").
-    pub fn frame_toward(&mut self, time: MediaTime, budget: usize) -> Result<Toward, MediaError> {
+    /// The frame shown at `time`, as [`frame_at`](Self::frame_at) gives it, decoding on to it
+    /// while the frames on the way are within `near` of it; the first frame decoded that is
+    /// further behind is returned instead. Playback that decoding cannot keep up with so shows
+    /// every frame it decodes, late, rather than decode all the way to the clock between two
+    /// pictures, while a decoder only a frame or two behind catches up at once
+    /// (docs/ARCHITECTURE.md, "Playback").
+    pub fn frame_toward(&mut self, time: MediaTime, near: MediaTime) -> Result<Toward, MediaError> {
         self.seek_unless_near(time)?;
-        for _ in 0..budget.max(1) {
-            if let Step::Done(frame) = self.step_to(time)? {
-                return Ok(Toward::There(frame));
-            }
-        }
-        // The frame decoded last starts before `time`, so frames may be left between them: that
-        // one is the latest so far.
-        if self.ahead.as_ref().is_some_and(|(next, _)| *next < time) {
-            self.shown = self.ahead.take();
-            if let Some(frame) = self.copy_shown()? {
-                return Ok(Toward::Behind(frame));
-            }
-        }
-        // Otherwise nothing is left to decode before `time`.
         loop {
             if let Step::Done(frame) = self.step_to(time)? {
                 return Ok(Toward::There(frame));
+            }
+            // The frame just decoded is too far behind to decode on past without showing it.
+            if self
+                .ahead
+                .as_ref()
+                .is_some_and(|(next, _)| next.0 < time.0 - near.0)
+            {
+                self.shown = self.ahead.take();
+                if let Some(frame) = self.copy_shown()? {
+                    return Ok(Toward::Behind(frame));
+                }
             }
         }
     }

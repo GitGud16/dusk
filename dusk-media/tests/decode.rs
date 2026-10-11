@@ -88,29 +88,40 @@ fn nothing_is_shown_before_the_first_frame() {
     assert!(decoder().frame_at(MediaTime(-1)).unwrap().is_none());
 }
 
-#[test]
-fn a_frame_beyond_the_budget_is_reached_a_few_frames_at_a_time() {
+/// The frames `frame_toward` gives on its way to frame 20 of the sample, `near` microseconds
+/// being close enough to decode on without showing them, and the frame it ends at.
+fn on_the_way_to_frame_20(near: i64) -> (Vec<MediaTime>, MediaTime) {
     let mut decoder = decoder();
-    let mut reached = Vec::new();
-    let there = loop {
+    let mut late = Vec::new();
+    loop {
         match decoder
-            .frame_toward(frame_time(20), 3)
+            .frame_toward(frame_time(20), MediaTime(near))
             .expect("decoding works")
         {
-            Toward::Behind(frame) => reached.push(frame.time),
-            Toward::There(frame) => break frame.expect("a frame is shown").time,
+            Toward::Behind(frame) => late.push(frame.time),
+            Toward::There(frame) => return (late, frame.expect("a frame is shown").time),
         }
-    };
-    // Three frames decoded each time, the last of them shown late.
-    assert_eq!(reached, [2, 5, 8, 11, 14, 17].map(frame_time));
+    }
+}
+
+#[test]
+fn every_frame_further_behind_than_near_comes_late() {
+    // Nothing is near: each frame on the way is shown, late, until the one asked for.
+    let (late, there) = on_the_way_to_frame_20(0);
+    assert_eq!(late, (0..20).map(frame_time).collect::<Vec<_>>());
+    assert_eq!(there, frame_time(20));
+    // Three frames (0.1 s): from frame 17 on, the decoder goes on to frame 20 without
+    // stopping.
+    let (late, there) = on_the_way_to_frame_20(100_000);
+    assert_eq!(late, (0..17).map(frame_time).collect::<Vec<_>>());
     assert_eq!(there, frame_time(20));
 }
 
 #[test]
-fn a_frame_within_the_budget_is_there_at_once() {
+fn a_frame_near_enough_is_there_at_once() {
     let mut decoder = decoder();
     match decoder
-        .frame_toward(frame_time(20), 21)
+        .frame_toward(frame_time(20), MediaTime::SECOND)
         .expect("decoding works")
     {
         Toward::There(frame) => assert_eq!(frame.expect("a frame").time, frame_time(20)),
