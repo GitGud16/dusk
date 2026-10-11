@@ -1,0 +1,64 @@
+# How Dusk's own FFmpeg differs from BtbN's win64 LGPL shared 8.1 build (docs/ROADMAP.md, M7;
+# docs/DECISIONS.md, "An FFmpeg of Dusk's own"). scripts/ffmpeg-build.sh reads this file.
+#
+# "drop" lines name options of BtbN's configure line to leave out: libraries that serve only
+# what Dusk does not use. "add" lines are options added after BtbN's, so they win.
+# Every decoder and demuxer stays, so Dusk still imports what FFmpeg can read, but for the
+# three wrappers below whose formats FFmpeg's own decoders read too, and the demuxers that
+# need a network.
+
+# Encoders Dusk does not use.
+drop --enable-librav1e
+drop --enable-libtheora
+drop --enable-libwebp
+drop --enable-libtwolame
+drop --enable-libvvenc
+# Decoder wrappers whose formats FFmpeg's own decoders read: AV1 (dav1d and FFmpeg's av1),
+# AMR (amrnb, amrwb) and Vorbis (vorbis). libaom and libvorbis are encoders too.
+drop --enable-libaom
+drop --enable-libopencore-amrnb
+drop --enable-libopencore-amrwb
+drop --enable-libvorbis
+# The network: protocols, and the TLS and number libraries only they use.
+drop --enable-libbluray
+drop --enable-librist
+drop --enable-libsrt
+drop --enable-libssh
+drop --enable-libzmq
+drop --enable-schannel
+drop --enable-gmp
+# Filters (Dusk ships no libavfilter) and devices (no libavdevice), and what only they use.
+drop --enable-libvmaf
+drop --enable-fontconfig
+drop --enable-libharfbuzz
+drop --enable-libfreetype
+drop --enable-libfribidi
+drop --enable-libass
+drop --enable-libplacebo
+drop --enable-libshaderc
+drop --enable-vulkan
+drop --enable-opencl
+drop --enable-cuda-llvm
+drop --enable-libzimg
+drop --enable-lv2
+drop --enable-chromaprint
+drop --enable-openal
+drop --enable-sdl2
+drop --enable-vaapi
+
+add --disable-network
+add --disable-protocols
+add --enable-protocol=file,pipe
+add --disable-indevs
+add --disable-outdevs
+add --disable-ffplay
+# The encoders Dusk writes with: the export's, the hardware wrappers in the encoder order,
+# and those of later milestones (subtitles in M13, GIF and images in M15).
+add --disable-encoders
+add --enable-encoder=libopenh264,libkvazaar,libsvtav1,libvpx_vp9,aac,libopus,libmp3lame,pcm_s16le
+add --enable-encoder=h264_nvenc,hevc_nvenc,av1_nvenc,h264_qsv,hevc_qsv,av1_qsv,h264_amf,hevc_amf,av1_amf
+add --enable-encoder=mov_text,srt,subrip,webvtt,ass,ssa,png,mjpeg,gif
+# The muxers it writes: the export's containers and sound files, and M13's and M15's.
+add --disable-muxers
+add --enable-muxer=mp4,mov,matroska,webm,ipod,opus,ogg,mp3,wav
+add --enable-muxer=srt,webvtt,ass,gif,image2
