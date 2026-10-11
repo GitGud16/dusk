@@ -20,6 +20,7 @@ use crate::cache::DEFAULT_CAP;
 use crate::compress::{CompressTarget, compress_project, compress_settings};
 use crate::export::{self, ExportJob, ExportPlan};
 use crate::external::ExternalEncoder;
+use crate::helper::Helper;
 use crate::settings::{ExportFormat, ExportSettings, has_sound};
 use crate::sound::{self, SoundRequest};
 use crate::thumbnail::{self, Thumbnail, ThumbnailJob};
@@ -98,6 +99,10 @@ pub struct EngineOptions {
     pub cache_cap: usize,
     /// How long an unused decoder stays open.
     pub decoder_idle: Duration,
+    /// The program that encodes video exports, so that what a hardware encoder keeps
+    /// after its session closes goes back to the system when the export ends
+    /// (docs/ARCHITECTURE.md, "Export"). Without one, exports encode in this process.
+    pub helper: Option<Helper>,
 }
 
 impl Default for EngineOptions {
@@ -106,6 +111,7 @@ impl Default for EngineOptions {
             sound: true,
             cache_cap: DEFAULT_CAP,
             decoder_idle: DECODER_IDLE,
+            helper: None,
         }
     }
 }
@@ -158,6 +164,8 @@ pub struct Engine {
     thumbnails: Sender<ThumbnailJob>,
     /// The last export started, so dropping the engine can stop it and clean up after it.
     export: Mutex<Option<(ExportJob, JoinHandle<()>)>>,
+    /// The program that encodes video exports, if any.
+    helper: Option<Helper>,
 }
 
 impl Engine {
@@ -202,6 +210,7 @@ impl Engine {
             exporting,
             thumbnails,
             export: Mutex::new(None),
+            helper: options.helper,
         })
     }
 
@@ -330,6 +339,7 @@ impl Engine {
             settings,
             size: None,
             external: None,
+            helper: self.helper.clone(),
         };
         self.start_export(project, path, plan)
     }
@@ -351,6 +361,7 @@ impl Engine {
             settings,
             size: None,
             external: Some(external),
+            helper: None,
         };
         self.start_export(project, path, plan)
     }
@@ -373,6 +384,7 @@ impl Engine {
             settings,
             size,
             external: None,
+            helper: self.helper.clone(),
         };
         self.start_export(Arc::new(project), path, plan)
     }

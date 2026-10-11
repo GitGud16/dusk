@@ -33,7 +33,7 @@ mod timeline;
 use std::path::PathBuf;
 
 use anyhow::anyhow;
-use dusk_engine::{Engine, EngineOptions, Gpu};
+use dusk_engine::{Engine, EngineOptions, Gpu, Helper};
 use slint::{CloseRequestResponse, ComponentHandle};
 
 use crate::app::{App, with_app};
@@ -66,6 +66,9 @@ fn main() -> anyhow::Result<()> {
     let (keymap, keymap_problems) = settings::read_keymap(settings_dir.as_deref());
     let options = EngineOptions {
         cache_cap: user_settings.cache_bytes(),
+        // Video exports encode in dusq beside dusk.exe, which the installer always ships; a
+        // development build that has not built it encodes here (docs/ARCHITECTURE.md, "Export").
+        helper: Helper::beside_this_program(),
         ..EngineOptions::default()
     };
     let engine = Engine::new(gpu, options, app::engine_events())?;

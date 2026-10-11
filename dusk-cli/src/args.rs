@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-use dusk_engine::{AudioFormat, Container, Quality, VideoCodec};
+use dusk_engine::{AudioFormat, Container, HELPER_COMMAND, Quality, VideoCodec};
 
 /// What dusq was asked to do.
 #[derive(Clone, Debug, PartialEq)]
@@ -15,6 +15,9 @@ pub enum Command {
     Compress(Compress),
     /// Take the sound of a file out into a file of its own.
     ExtractAudio(Extract),
+    /// Encode one of Dusk's exports, as Dusk's helper (docs/ARCHITECTURE.md, "Export"): a
+    /// command for Dusk alone, which the usage does not list.
+    Helper,
 }
 
 /// `dusq compress`.
@@ -90,6 +93,7 @@ pub fn parse(args: &[String]) -> Result<Command, String> {
     let compressing = match command.as_str() {
         "-h" | "--help" | "help" => return Ok(Command::Help),
         "-V" | "--version" => return Ok(Command::Version),
+        helper if helper == HELPER_COMMAND => return Ok(Command::Helper),
         "compress" => true,
         "extract-audio" => false,
         other => {
@@ -416,6 +420,12 @@ mod tests {
             Ok(Command::ExtractAudio(extract)) => extract,
             other => panic!("{line}: {other:?}"),
         }
+    }
+
+    #[test]
+    fn dusk_starts_dusq_as_its_helper_by_a_command_the_usage_does_not_list() {
+        assert_eq!(parse_line("encode-for-dusk"), Ok(Command::Helper));
+        assert!(!USAGE.contains(HELPER_COMMAND));
     }
 
     #[test]

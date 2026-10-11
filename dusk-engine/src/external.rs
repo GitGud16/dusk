@@ -6,16 +6,16 @@
 use std::ffi::OsString;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use crossbeam_channel::{SendTimeoutError, Sender};
 use dusk_core::Picture;
 use dusk_media::{AudioCodec, AudioSettings, Container, EXTERNAL_ENCODERS, Encoder, VideoCodec};
 
 use crate::EngineError;
+use crate::pipe::{Fed, Feeder, WAIT_STEP, command};
 
 /// An encoder in a user's own `ffmpeg` program.
 #[derive(Clone, Debug)]
@@ -106,19 +106,6 @@ fn found_in(listing: &str) -> Option<Vec<&'static Encoder>> {
         })
         .collect();
     Some(found)
-}
-
-/// A command that runs `program` without a console window of its own: it is a console
-/// program, and Dusk is not.
-fn command(program: &Path) -> Command {
-    let mut command = Command::new(program);
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        command.creation_flags(CREATE_NO_WINDOW);
-    }
-    command
 }
 
 /// What an external encoder is asked to make.
@@ -239,89 +226,13 @@ pub(crate) fn external_args(encoder: &ExternalEncoder, job: &ExternalJob) -> Vec
 /// How many of the program's last lines of errors are kept, to say why it stopped.
 const ERROR_LINES: usize = 4;
 
-/// How often a wait on the program looks at the cancel flag.
-const WAIT_STEP: Duration = Duration::from_millis(20);
-
 /// How long a program that stopped taking frames gets to end by itself.
 const ENDING_PATIENCE: Duration = Duration::from_secs(2);
 
-/// What became of a frame handed to a [`Feeder`].
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Fed {
-    /// It is on its way to the program.
-    Taken,
-    /// The export was cancelled while the program took no frames.
-    Cancelled,
-    /// The program stopped taking frames.
-    Stopped,
-}
-
-/// Writes frames into a program's input on a thread of its own, so the export never waits
-/// on the program longer than it takes to notice a cancel, even when the program stops
-/// reading without ending.
-struct Feeder {
-    frames: Option<Sender<Picture>>,
-    thread: Option<JoinHandle<()>>,
-}
-
-impl Feeder {
-    /// Starts writing the frames it is fed into `input`, NV12 planes one after another.
-    fn start(mut input: impl Write + Send + 'static) -> Result<Feeder, EngineError> {
-        // One frame waits while the one before it is written.
-        let (frames, waiting) = crossbeam_channel::bounded::<Picture>(1);
-        let thread = thread::Builder::new()
-            .name("dusk ffmpeg frames".to_owned())
-            .spawn(move || {
-                for picture in waiting {
-                    let written = input
-                        .write_all(&picture.luma)
-                        .and_then(|()| input.write_all(&picture.chroma));
-                    if written.is_err() {
-                        // Dropping the receiver tells the export.
-                        return;
-                    }
-                }
-                // Dropping the input tells the program the last frame came.
-            })
-            .map_err(EngineError::Thread)?;
-        Ok(Feeder {
-            frames: Some(frames),
-            thread: Some(thread),
-        })
-    }
-
-    /// Hands `picture` over, waiting while the program is busy unless `cancel` is set.
-    fn feed(&self, picture: Picture, cancel: &AtomicBool) -> Fed {
-        let Some(frames) = &self.frames else {
-            return Fed::Stopped;
-        };
-        let mut picture = picture;
-        loop {
-            match frames.send_timeout(picture, WAIT_STEP) {
-                Ok(()) => return Fed::Taken,
-                Err(SendTimeoutError::Timeout(back)) if !cancel.load(Ordering::Relaxed) => {
-                    picture = back;
-                }
-                Err(SendTimeoutError::Timeout(_)) => return Fed::Cancelled,
-                Err(SendTimeoutError::Disconnected(_)) => return Fed::Stopped,
-            }
-        }
-    }
-
-    /// No more frames: the thread writes the one waiting, if the program takes it, and lets
-    /// go of the input.
-    fn close(&mut self) {
-        self.frames = None;
-    }
-
-    /// Closes and waits for the thread, which ends once the program takes the last frame or
-    /// is gone.
-    fn join(&mut self) {
-        self.close();
-        if let Some(thread) = self.thread.take() {
-            let _ = thread.join();
-        }
-    }
+/// Writes an NV12 frame as `-pix_fmt nv12` takes it: its luma, then its chroma.
+fn write_picture(input: &mut impl Write, picture: &Picture) -> std::io::Result<()> {
+    input.write_all(&picture.luma)?;
+    input.write_all(&picture.chroma)
 }
 
 /// A user's `ffmpeg` encoding: frames go in through its standard input, how many it has
@@ -329,7 +240,7 @@ impl Feeder {
 /// stops the program.
 pub(crate) struct Encoding {
     child: Child,
-    feeder: Feeder,
+    feeder: Feeder<Picture>,
     progress: Option<JoinHandle<()>>,
     errors: Option<JoinHandle<Vec<String>>>,
 }
@@ -397,7 +308,7 @@ impl Encoding {
                 last
             });
         let feeder = match child.stdin.take() {
-            Some(stdin) => Feeder::start(stdin),
+            Some(stdin) => Feeder::start(stdin, write_picture),
             None => Err(EngineError::ExternalFailed {
                 message: "it took no frames".to_owned(),
             }),
@@ -514,8 +425,6 @@ fn failed(errors: Vec<String>, ended: &str) -> EngineError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicBool, Ordering};
-    use std::sync::{Arc, Mutex};
 
     use dusk_core::color::{Primaries, Transfer};
     use dusk_core::{ChromaSiting, ColorMatrix, ColorRange, PictureLayout};
@@ -538,88 +447,16 @@ mod tests {
         }
     }
 
-    /// A program's input that keeps what it is given.
-    #[derive(Clone, Default)]
-    struct Kept(Arc<Mutex<Vec<u8>>>);
-
-    impl Write for Kept {
-        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-            self.0.lock().unwrap().extend_from_slice(bytes);
-            Ok(bytes.len())
-        }
-
-        fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
-        }
-    }
-
     #[test]
-    fn frames_reach_the_program_whole_and_in_order() {
-        let kept = Kept::default();
-        let mut feeder = Feeder::start(kept.clone()).unwrap();
-        let cancel = AtomicBool::new(false);
-        assert_eq!(feeder.feed(picture(10), &cancel), Fed::Taken);
-        assert_eq!(feeder.feed(picture(20), &cancel), Fed::Taken);
-        feeder.join();
+    fn a_frame_reaches_the_program_as_luma_then_chroma() {
+        let mut written = Vec::new();
+        write_picture(&mut written, &picture(10)).unwrap();
+        write_picture(&mut written, &picture(20)).unwrap();
         let mut expected = vec![10; 8];
         expected.extend([11; 4]);
         expected.extend([20; 8]);
         expected.extend([21; 4]);
-        assert_eq!(*kept.0.lock().unwrap(), expected);
-    }
-
-    /// A program's input that takes nothing until it is let go.
-    struct Stuck(Arc<AtomicBool>);
-
-    impl Write for Stuck {
-        fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
-            while !self.0.load(Ordering::Relaxed) {
-                thread::sleep(Duration::from_millis(5));
-            }
-            Err(std::io::ErrorKind::BrokenPipe.into())
-        }
-
-        fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
-        }
-    }
-
-    #[test]
-    fn a_cancel_is_heard_while_the_program_takes_no_frames() {
-        let let_go = Arc::new(AtomicBool::new(false));
-        let mut feeder = Feeder::start(Stuck(Arc::clone(&let_go))).unwrap();
-        let cancel = AtomicBool::new(false);
-        // One frame is being written and one waits; the next cannot be handed over.
-        assert_eq!(feeder.feed(picture(1), &cancel), Fed::Taken);
-        assert_eq!(feeder.feed(picture(2), &cancel), Fed::Taken);
-        cancel.store(true, Ordering::Relaxed);
-        let asked = Instant::now();
-        assert_eq!(feeder.feed(picture(3), &cancel), Fed::Cancelled);
-        assert!(asked.elapsed() < Duration::from_secs(1));
-        let_go.store(true, Ordering::Relaxed);
-        feeder.join();
-    }
-
-    /// A program's input that is closed.
-    struct Closed;
-
-    impl Write for Closed {
-        fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
-            Err(std::io::ErrorKind::BrokenPipe.into())
-        }
-
-        fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
-        }
-    }
-
-    #[test]
-    fn a_program_that_stops_taking_frames_is_noticed() {
-        let mut feeder = Feeder::start(Closed).unwrap();
-        let cancel = AtomicBool::new(false);
-        let fed: Vec<Fed> = (0..4).map(|n| feeder.feed(picture(n), &cancel)).collect();
-        assert!(fed.contains(&Fed::Stopped), "{fed:?}");
-        feeder.join();
+        assert_eq!(written, expected);
     }
 
     const LISTING: &str = "Encoders:

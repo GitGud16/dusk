@@ -62,6 +62,24 @@ The cost: a source too heavy for the CPU shows its picture behind the sound, up 
 
 More decoder threads were tried too. On the 4K 10-bit clip, 2, 4, 6 and 8 threads decoded 27, 38, 47 and 40 frames a second at 201, 275, 366 and 441 MB, the core placement mattering more than the count, so the thread rule stays.
 
+### Exports in a helper process (M7)
+
+On the laptop, a hardware encoder kept memory after its session closed, as long as its process lived: `hevc_qsv` about 375 MB after a 4K export ("The laptop at M7"). Dusk cannot make a driver give it back, but the system frees everything a process held when it ends, so video exports moved into `dusq`, started for each export. Choices made on the way:
+
+- **`dusq` is the helper**, with a command of its own, since it already links FFmpeg's encoders and no wgpu; the installer ships nothing new. Its `--help` does not list the command, which is for Dusk alone.
+- **The sound goes through the pipe** with the frames, each frame's mix after its picture, as Dusk's own writer interleaves them. The route the user's own `ffmpeg` takes, a WAV mixed first beside the part file, would put about 690 MB an hour of 16-bit stereo on the disk before the first frame, and a file of interleaved messages comes out as one written in Dusk's process (the engine's test compares the two, frame for frame).
+- **The part file's path goes over the pipe** as the system's own path bytes (UTF-16 on Windows), so no file name is changed on the way, whatever characters it holds; the command line stays the same for every export.
+- **The helper says what it is ready for**: the size and encoder it opened after the fall-through, before Dusk draws a frame, since the encoder decides the size.
+- **The engine's tests run the real process** without needing `dusq` built: the test program starts itself again, with an argument that has its first test serve as the helper.
+
+Measured on the desktop with a 10 s 4K H.264 clip with sound, exported at its own size, after one small export that sets up what every first export sets up once in a process (27 to 61 MB that stays: the export pass's GPU pipelines, the decoders' tables):
+
+- Through `h264_amf` or `hevc_amf` in Dusk's process: Dusk at most 621–637 MB while exporting, about 132–136 MB after. Through the helper: Dusk at most 532–552 MB, about 140 MB after, within 1 or 2 MB of where it was before, export after export; the helper peaked at 137 and 138 MB and ended.
+- Through SVT-AV1: Dusk at most 1,482–1,490 MB in its own process, 532–544 MB with the helper, which peaked at 994 MB. Once in each run through the helper, Dusk still held about 250 MB more 3 s after an export, and was back at 140 MB a moment later; it never grew from one export to the next.
+- The encoder probe left 8 or 9 MB in Dusk's process, and nothing with the helper, whose probe peaked at 188 MB.
+
+On this AMD desktop the encoders kept little after their sessions anyway, so the helper's gain here is the peak: about 90 MB less in Dusk through AMF, about 950 MB less through SVT-AV1. The laptop, whose QSV encoders kept 70 to 375 MB, is where it gives memory back for good; that check is a hands-on one.
+
 ### Stills keep their source's chroma siting (M4)
 
 A still entry used to be resampled to left-sited chroma before the compositor resampled it again, which blurred the colored edges of every JPEG. The equivalence test found it. Entries now keep their source's siting (JPEG's is centered), which `Picture` carries and the compositor reads, video frames included.
