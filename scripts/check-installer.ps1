@@ -13,8 +13,12 @@
 
 .PARAMETER Setup
     The installer to check; by default this version's in target\installer.
+
+.PARAMETER Signed
+    Also checks that the installer and the two programs it installs carry valid signatures, as
+    a signed release's do (docs/RELEASE.md, "Signing").
 #>
-param([string]$Setup = '')
+param([string]$Setup = '', [switch]$Signed)
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 $stage = Join-Path $root 'target\release-stage\Dusk'
@@ -43,6 +47,13 @@ New-Item -ItemType Directory -Force -Path $work | Out-Null
 $log = Join-Path $work 'install.log'
 
 'Download {0}: {1:N1} MB' -f (Split-Path -Leaf $Setup), ((Get-Item -LiteralPath $Setup).Length / 1e6)
+function Test-Signature([string]$File) {
+    $signature = Get-AuthenticodeSignature -LiteralPath $File
+    if ($signature.Status -ne 'Valid') { throw "$File is not validly signed: $($signature.Status), $($signature.StatusMessage)" }
+    'Signed {0}: {1}' -f (Split-Path -Leaf $File), $signature.SignerCertificate.Subject
+}
+# The installer's own signature, before it runs.
+if ($Signed) { Test-Signature $Setup }
 $p = Start-Process -FilePath $Setup -Wait -PassThru -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/DIR=`"$dir`"", "/LOG=`"$log`""
 if ($p.ExitCode -ne 0) {
     Get-Content -LiteralPath $log -Tail 30 -ErrorAction SilentlyContinue
@@ -54,6 +65,11 @@ $uninstaller = Join-Path $dir 'unins000.exe'
 $dusk = $null
 $uninstalled = $false
 try {
+    # The programs it installed, inside the try so that a failure still uninstalls them.
+    if ($Signed) {
+        foreach ($file in (Join-Path $dir 'dusk.exe'), (Join-Path $dir 'dusq.exe')) { Test-Signature $file }
+    }
+
     # Every staged file, as staged.
     $wrong = @()
     foreach ($file in Get-ChildItem -LiteralPath $stage -Recurse -File) {
