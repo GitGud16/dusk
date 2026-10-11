@@ -143,7 +143,9 @@ It was configured with:
 $config
 
 The libraries those options name are built into the DLLs where FFmpeg uses them, each
-under its own license; FFmpeg-libraries.txt has their license texts.
+under its own license; FFmpeg-libraries.txt has their license texts. Their sources, as the
+build downloaded them, with BtbN's scripts that say how each was built, are published beside
+the build as ffmpeg-libraries-source.tar.xz.
 "@ | Set-Content -LiteralPath (Join-Path $licenses 'FFmpeg.txt') -Encoding UTF8
 
 $installed = (Get-ChildItem -LiteralPath $stage -Recurse -File | Measure-Object -Property Length -Sum).Sum

@@ -46,6 +46,9 @@ drop --enable-openal
 drop --enable-sdl2
 drop --enable-vaapi
 
+# FFmpeg's configure finds these by itself, so dropping BtbN's options is not enough.
+add --disable-vaapi
+add --disable-vulkan
 add --disable-network
 add --disable-protocols
 add --enable-protocol=file,pipe
@@ -57,7 +60,9 @@ add --disable-ffplay
 add --disable-encoders
 add --enable-encoder=libopenh264,libkvazaar,libsvtav1,libvpx_vp9,aac,libopus,libmp3lame,pcm_s16le
 add --enable-encoder=h264_nvenc,hevc_nvenc,av1_nvenc,h264_qsv,hevc_qsv,av1_qsv,h264_amf,hevc_amf,av1_amf
-add --enable-encoder=mov_text,srt,subrip,webvtt,ass,ssa,png,mjpeg,gif
+# FFmpeg names the MP4 subtitle encoder movtext; an unknown name is silently ignored, so the
+# build checks every name it asks for against what configure enabled.
+add --enable-encoder=movtext,srt,subrip,webvtt,ass,ssa,png,mjpeg,gif
 # The muxers it writes: the export's containers and sound files, and M13's and M15's.
 add --disable-muxers
 add --enable-muxer=mp4,mov,matroska,webm,ipod,opus,ogg,mp3,wav

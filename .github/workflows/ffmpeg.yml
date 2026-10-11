@@ -2,13 +2,19 @@ name: FFmpeg
 
 # Builds Dusk's own FFmpeg (scripts/ffmpeg-build.sh; docs/SETUP.md, "Building Dusk's FFmpeg")
 # from what scripts/ffmpeg-source.txt names, whenever the build's files change or when started
-# by hand, and keeps the zip, FFmpeg's source and the lists of what it holds as an artifact.
+# by hand, and keeps the zip, FFmpeg's source, the sources of the libraries built into it
+# (scripts/ffmpeg-sources.sh) and the lists of what it holds as an artifact.
 # Publishing it as a release of Dusk's repository, which the pin then names, is the
 # maintainer's step.
 on:
   push:
+    # Tags too would start a build on every release, path filters or not.
+    branches: ['**']
     paths:
       - scripts/ffmpeg-build.sh
+      - scripts/ffmpeg-sources.sh
+      - scripts/ffmpeg-licenses.py
+      - scripts/btbn-components.sh
       - scripts/ffmpeg-options.txt
       - scripts/ffmpeg-source.txt
       - .github/workflows/ffmpeg.yml
@@ -44,6 +50,11 @@ jobs:
           FFMPEG_COMMIT: ${{ steps.source.outputs.ffmpeg }}
           IMAGE_DIGEST: ${{ steps.source.outputs.image }}
         run: bash scripts/ffmpeg-build.sh "$FFMPEG_COMMIT" "$IMAGE_DIGEST" btbn out
+
+      - name: The libraries' sources
+        env:
+          IMAGE_DIGEST: ${{ steps.source.outputs.image }}
+        run: bash scripts/ffmpeg-sources.sh "$IMAGE_DIGEST" btbn out
 
       - uses: actions/upload-artifact@v4
         with:

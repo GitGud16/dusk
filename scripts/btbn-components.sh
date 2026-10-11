@@ -1,8 +1,8 @@
 #!/bin/bash
 # Lists the components BtbN's FFmpeg-Builds scripts build for one target, variant and addins,
 # using the scripts' own logic (generate.sh's dependency walk and each script's
-# ffbuild_enabled): one tab-separated line a script, with where its source comes from and the
-# configure options it gives FFmpeg.
+# ffbuild_enabled): one tab-separated line a script, with where its source comes from, the
+# configure options it gives FFmpeg and the stages it depends on.
 #   btbn-components.sh <FFmpeg-Builds checkout> win64 lgpl-shared 8.1
 # A step that fails stops it, inside command substitutions too, so a listing is never short.
 set -e
@@ -78,10 +78,11 @@ for DEP in $DEPS; do
             source "$SCRIPT"
             ffbuild_enabled || exit 0
             CONFIGURE="$(ffbuild_configure | tr '\n' ' ')"
-            printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$SCRIPT" "${SCRIPT_SKIP:-}" \
+            DEPENDS="$(ffbuild_depends | tr '\n' ' ')"
+            printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$SCRIPT" "${SCRIPT_SKIP:-}" \
                 "${SCRIPT_REPO:-}" "${SCRIPT_COMMIT:-}" "${SCRIPT_REV:-}" \
                 "${SCRIPT_REPO2:-}" "${SCRIPT_COMMIT2:-}" "${SCRIPT_REPO3:-}" "${SCRIPT_COMMIT3:-}" \
-                "$CONFIGURE"
+                "$CONFIGURE" "$DEPENDS"
         )
     done
 done

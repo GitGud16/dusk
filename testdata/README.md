@@ -1,14 +1,19 @@
 # Test data
 
-Synthetic files generated with BtbN's LGPL FFmpeg 8.1 build, which Dusk pinned until M7; no
-third-party content, so they fall under the repository's MIT license. Dusk's own build keeps
-only the encoders Dusk uses, so regenerating them needs a full build such as BtbN's
-(`ffmpeg-n8.1.3-14-g330caae0c1-win64-lgpl-shared-8.1.zip` from github.com/BtbN/FFmpeg-Builds).
+Synthetic files generated with BtbN's LGPL FFmpeg 8.1 build
+(`ffmpeg-n8.1.3-14-g330caae0c1-win64-lgpl-shared-8.1`, which Dusk pinned until M7 and BtbN has
+since deleted); no third-party content, so they fall under the repository's MIT license.
+
+Dusk's own FFmpeg reads every one of them but cannot write them: every recipe below starts
+from the `lavfi` input, which went with FFmpeg's devices, and some use encoders it leaves out.
+To regenerate one, put a full FFmpeg 8.1 build's `bin` folder first on the path instead of
+running `scripts\dev-env.ps1`, such as one of BtbN's LGPL 8.1 builds
+(github.com/BtbN/FFmpeg-Builds/releases).
 
 ## `sample-h264-aac.mp4`
 
 One second of FFmpeg's `testsrc2` pattern (320x240, 30 fps, H.264 via `libopenh264`) and a
-440 Hz tone (48 kHz mono, AAC). Regenerate from a shell that ran `scripts\dev-env.ps1`:
+440 Hz tone (48 kHz mono, AAC). Regenerate with a full build (above):
 
 ```powershell
 ffmpeg -hide_banner -y -f lavfi -i "testsrc2=size=320x240:rate=30:duration=1" -f lavfi -i "sine=frequency=440:sample_rate=48000:duration=1" -c:v libopenh264 -b:v 300k -g 30 -pix_fmt yuv420p -c:a aac -b:a 64k -ac 1 -shortest -movflags +faststart -map_metadata -1 -fflags +bitexact -flags:v +bitexact -flags:a +bitexact testdata/sample-h264-aac.mp4

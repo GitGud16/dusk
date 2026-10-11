@@ -8,7 +8,7 @@ Dusk builds its own FFmpeg in BtbN's FFmpeg-Builds image (scripts/ffmpeg-build.s
 downloads BtbN's scripts at the commit scripts/ffmpeg-source.txt names, asks them which libraries
 the win64 LGPL shared build of the pinned FFmpeg version contains (scripts/btbn-components.sh,
 which uses the scripts' own logic), leaves out those Dusk's build drops
-(scripts/ffmpeg-options.txt), and fetches each library's license files at the commit BtbN built
+(scripts/ffmpeg-options.txt) unless a library it keeps depends on them, and fetches each library's license files at the commit BtbN built
 from that library's own repository. Libraries sharing one text are listed together
 above it. Those written in Rust (librsvg; rav1e, which Dusk's build drops): for those it checks out their
 Cargo files and Rust sources at that commit, lets cargo resolve their builds for Windows into a
@@ -300,9 +300,19 @@ def bash():
     return "bash"
 
 
-def components(builds, version, dropped):
-    """(name, url, commit, revision) of every library the build contains, from BtbN's scripts,
-    but for those whose configure options are all among `dropped`."""
+def stage(script):
+    """The stage a script of BtbN's belongs to, by the name other scripts depend on it by: a
+    folder of scripts is one stage."""
+    path = Path(script)
+    unit = path.parent if path.parent.name != "scripts.d" else path.with_suffix("")
+    return unit.name.split("-", 1)[1]
+
+
+def built_in(builds, version, dropped):
+    """The rows of scripts/btbn-components.sh for every script whose library the build contains:
+    the stages that give FFmpeg an option `dropped` does not hold, and every stage those depend
+    on, dropped or not, since a library linked into one Dusk keeps is in the DLLs too (librsvg
+    brings fontconfig, HarfBuzz and FriBidi; libopenmpt brings libvorbis)."""
     lister = ROOT / "scripts" / "btbn-components.sh"
     run = subprocess.run(
         [bash(), lister.as_posix(), builds.as_posix(), "win64", "lgpl-shared", version],
@@ -313,18 +323,39 @@ def components(builds, version, dropped):
     listing = run.stdout
     rows = [line.split("\t") for line in listing.splitlines() if line.strip()]
     enabled = {row[0] for row in rows}
-    found, seen = [], set()
-    for script, skip, *sources, configure in rows:
-        options = configure.split()
-        if options and all(option in dropped for option in options):
-            continue
+    stages = {}
+    for row in rows:
         # A folder of scripts builds one library and what only it uses; when its last script is
         # off (libcurl in FFmpeg 8.1), nothing of it reaches FFmpeg.
-        folder = builds / Path(script).parent
+        folder = builds / Path(row[0]).parent
         if folder.name != "scripts.d" and sorted(folder.glob("??-*.sh"))[-1].relative_to(builds).as_posix() not in enabled:
             continue
-        if skip:
+        stages.setdefault(stage(row[0]), []).append(row)
+    wanted = [
+        name for name, scripts in stages.items()
+        if any(option not in dropped for row in scripts for option in row[9].split())
+    ]
+    kept = set()
+    while wanted:
+        name = wanted.pop()
+        # A stage BtbN does not build for this target (xorg-macros) is in no row.
+        if name in kept or name not in stages:
             continue
+        kept.add(name)
+        wanted.extend(dependency for row in stages[name] for dependency in row[10].split())
+    return [row for row in rows if stage(row[0]) in kept and not row[1]]
+
+
+def dropped_options():
+    """The options of BtbN's that Dusk's build drops (scripts/ffmpeg-options.txt)."""
+    options = (ROOT / "scripts" / "ffmpeg-options.txt").read_text(encoding="utf-8")
+    return set(re.findall(r"^drop (\S+)$", options, re.MULTILINE))
+
+
+def components(builds, version, dropped):
+    """(name, url, commit, revision) of every library the build contains, from BtbN's scripts."""
+    found, seen = [], set()
+    for script, skip, *sources, configure, depends in built_in(builds, version, dropped):
         name = Path(script).stem.split("-", 1)[1]
         url, commit, revision = sources[0], sources[1], sources[2]
         pairs = [(url, commit, revision), (sources[3], sources[4], ""), (sources[5], sources[6], "")]
@@ -343,9 +374,8 @@ def main():
     version = re.search(r"-shared-([0-9.]+)-dusk\.zip$", file_name).group(1)
     source = (ROOT / "scripts" / "ffmpeg-source.txt").read_text(encoding="utf-8")
     scripts = re.search(r"^btbn ([0-9a-f]{40})$", source, re.MULTILINE).group(1)
-    options = (ROOT / "scripts" / "ffmpeg-options.txt").read_text(encoding="utf-8")
-    dropped = set(re.findall(r"^drop (\S+)$", options, re.MULTILINE))
-    temp = tempfile.mkdtemp(prefix="dusk-ffmpeg-licenses-")
+    dropped = dropped_options()
+    temp =tempfile.mkdtemp(prefix="dusk-ffmpeg-licenses-")
     try:
         archive = get(f"https://codeload.github.com/BtbN/FFmpeg-Builds/tar.gz/{scripts}")
         with tarfile.open(fileobj=io.BytesIO(archive)) as tar:
@@ -411,4 +441,10 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    if sys.argv[1:2] == ["--scripts"]:
+        # For scripts/ffmpeg-sources.sh: --scripts <BtbN scripts checkout> <FFmpeg version>
+        # prints the scripts whose libraries the build contains, one a line.
+        for row in built_in(Path(sys.argv[2]), sys.argv[3], dropped_options()):
+            print(row[0])
+    else:
+        main()

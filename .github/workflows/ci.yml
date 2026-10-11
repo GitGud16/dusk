@@ -14,9 +14,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # A daily BtbN build is deleted upstream after about two weeks, and the pin moves along
-      # until it rests on a month-end build (docs/SETUP.md); the cache keeps CI working between
-      # moves.
+      # The pinned build is a release asset of this repository (docs/SETUP.md); the cache spares
+      # every run the download.
       - name: Cache the pinned FFmpeg zip
         uses: actions/cache@v4
         with:
