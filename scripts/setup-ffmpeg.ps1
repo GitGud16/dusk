@@ -95,7 +95,7 @@ if (-not $Force -and (Test-Marker)) {
             Invoke-WebRequest -Uri $pin.Url -OutFile $part -UseBasicParsing
         } catch {
             if (Test-Path -LiteralPath $part) { Remove-Item -LiteralPath $part -Force }
-            throw "Download failed: $($_.Exception.Message.TrimEnd('.')). Check the connection and try again, or pass a copy of $($pin.FileName) with -ZipPath (see docs/SETUP.md)."
+            throw "Could not download $($pin.Url): $($_.Exception.Message.TrimEnd('.')). A 404 means release $($pin.Tag) is not published yet: pass the zip from the FFmpeg workflow's dusk-ffmpeg artifact with -ZipPath (see docs/SETUP.md). Otherwise check the connection and try again."
         }
         if (-not (Test-ZipFile $part)) {
             Remove-Item -LiteralPath $part -Force

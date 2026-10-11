@@ -21,13 +21,16 @@ image="ghcr.io/btbn/ffmpeg-builds/win64-lgpl-shared-8.1@${digest}"
 
 drops=$(grep '^drop ' "$here/ffmpeg-options.txt" | cut -d' ' -f2 | tr '\n' ' ')
 adds=$(grep '^add ' "$here/ffmpeg-options.txt" | cut -d' ' -f2- | tr '\n' ' ')
-# Every encoder, muxer and protocol the options ask for by name, as configure's lists name them.
+# Every component the options ask for by name, as configure's lists name them.
 wanted=""
 for option in $adds; do
     case "$option" in
-    --enable-encoder=*) kind=encoder ;;
-    --enable-muxer=*) kind=muxer ;;
-    --enable-protocol=*) kind=protocol ;;
+    --enable-encoder=* | --enable-decoder=* | --enable-muxer=* | --enable-demuxer=* | \
+        --enable-protocol=* | --enable-parser=* | --enable-bsf=*)
+        kind="${option%%=*}"
+        kind="${kind#--enable-}"
+        ;;
+    --enable-*=*) echo "The build cannot check $option; add its kind to scripts/ffmpeg-build.sh" >&2; exit 1 ;;
     *) continue ;;
     esac
     list="${option#*=}"
@@ -67,10 +70,12 @@ echo "\$kept $adds" >/ffbuild/configure-options.txt
     --extra-ldflags="\$FF_LDFLAGS" --extra-ldexeflags="\$FF_LDEXEFLAGS" \\
     --cc="\$CC" --cxx="\$CXX" --ar="\$AR" --ranlib="\$RANLIB" --nm="\$NM" \\
     --extra-version=dusk || { cat ffbuild/config.log; exit 1; }
-# configure passes over a name it does not know without a word (mov_text for movtext), and
-# leaves out a component whose library is missing, so each one asked for must be in its lists.
+# configure passes over a name it does not know without a word (mov_text, where its list
+# says movtext), and leaves out a component whose library is missing, so each one asked for
+# must be in its lists.
 for symbol in $wanted; do
-    grep -qw "\$symbol" libavcodec/codec_list.c libavformat/muxer_list.c libavformat/protocol_list.c ||
+    grep -qw "\$symbol" libavcodec/codec_list.c libavcodec/parser_list.c libavcodec/bsf_list.c \
+        libavformat/demuxer_list.c libavformat/muxer_list.c libavformat/protocol_list.c ||
         { echo "configure did not enable \$symbol; check its name in scripts/ffmpeg-options.txt" >&2; exit 1; }
 done
 make -j\$(nproc)

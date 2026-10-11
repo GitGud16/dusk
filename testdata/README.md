@@ -1,11 +1,13 @@
 # Test data
 
 Synthetic files generated with BtbN's LGPL FFmpeg 8.1 build
-(`ffmpeg-n8.1.3-14-g330caae0c1-win64-lgpl-shared-8.1`, which Dusk pinned until M7 and BtbN has
-since deleted); no third-party content, so they fall under the repository's MIT license.
+(`ffmpeg-n8.1.3-14-g330caae0c1-win64-lgpl-shared-8.1`, which Dusk pinned until M7; BtbN keeps a
+daily build only about two weeks); no third-party content, so they fall under the repository's
+MIT license.
 
-Dusk's own FFmpeg reads every one of them but cannot write them: every recipe below starts
-from the `lavfi` input, which went with FFmpeg's devices, and some use encoders it leaves out.
+Dusk's own FFmpeg reads every one of them but cannot write most of them: most recipes below
+start from the `lavfi` input, which went with FFmpeg's devices, and some need an encoder or a
+muxer it leaves out (OpenCORE AMR, the raw `hevc` muxer).
 To regenerate one, put a full FFmpeg 8.1 build's `bin` folder first on the path instead of
 running `scripts\dev-env.ps1`, such as one of BtbN's LGPL 8.1 builds
 (github.com/BtbN/FFmpeg-Builds/releases).

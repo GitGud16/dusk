@@ -77,6 +77,13 @@ for DEP in $DEPS; do
             source util/dl_functions.sh
             source "$SCRIPT"
             ffbuild_enabled || exit 0
+            # BtbN's scripts may name up to nine sources, in git or Mercurial; this lists three.
+            for VAR in SCRIPT_HGREV{,2,3} SCRIPT_REV{2,3} SCRIPT_{REPO,REV,HGREV}{4..9}; do
+                if [[ -n "${!VAR:-}" ]]; then
+                    echo "$SCRIPT sets $VAR, which btbn-components.sh does not list" >&2
+                    exit 1
+                fi
+            done
             CONFIGURE="$(ffbuild_configure | tr '\n' ' ')"
             DEPENDS="$(ffbuild_depends | tr '\n' ' ')"
             printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$SCRIPT" "${SCRIPT_SKIP:-}" \

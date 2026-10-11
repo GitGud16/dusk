@@ -5,17 +5,16 @@ beside FFmpeg's own LGPL. Run it again whenever scripts/ffmpeg-pin.psd1 moves:
     python scripts/ffmpeg-licenses.py
 
 Dusk builds its own FFmpeg in BtbN's FFmpeg-Builds image (scripts/ffmpeg-build.sh). This
-downloads BtbN's scripts at the commit scripts/ffmpeg-source.txt names, asks them which libraries
-the win64 LGPL shared build of the pinned FFmpeg version contains (scripts/btbn-components.sh,
-which uses the scripts' own logic), leaves out those Dusk's build drops
-(scripts/ffmpeg-options.txt) unless a library it keeps depends on them, and fetches each library's license files at the commit BtbN built
-from that library's own repository. Libraries sharing one text are listed together
-above it. Those written in Rust (librsvg; rav1e, which Dusk's build drops): for those it checks out their
-Cargo files and Rust sources at that commit, lets cargo resolve their builds for Windows into a
-CARGO_HOME of its own (fetching their crates, some tens of MB, removed afterwards), and lists
-the crates' licenses as scripts/third-party-notices.py does Dusk's. Needs the network, Git's
-bash, cargo and an authenticated `gh` (for GitHub's API); Python's standard library otherwise.
-It fails, naming them, when it finds no license text for a library or a crate.
+downloads BtbN's scripts at the commit scripts/ffmpeg-source.txt names, asks
+scripts/ffmpeg-built-in.py which libraries the build contains (with the scripts' own logic,
+through scripts/btbn-components.sh), and fetches each library's license files at the commit
+BtbN built from that library's own repository. Libraries sharing one text are listed together
+above it. For a library written in Rust (librsvg) it checks out the Cargo files and Rust
+sources at that commit, lets cargo resolve its build for Windows into a CARGO_HOME of its own
+(fetching its crates, some tens of MB, removed afterwards), and lists the crates' licenses as
+scripts/third-party-notices.py does Dusk's. Needs the network, Git's bash, cargo and an
+authenticated `gh` (for GitHub's API); Python's standard library otherwise. It fails, naming
+them, when it finds no license text for a library or a crate.
 """
 
 import base64
@@ -51,6 +50,13 @@ EXTRA_FILES = {
     # The threads library every DLL links.
     "https://git.code.sf.net/p/mingw-w64/mingw-w64.git": ["mingw-w64-libraries/winpthreads/COPYING"],
 }
+# Submodules compiled into a library, which the library's own license files do not cover: their
+# paths in the library's repository on GitHub, whose contents API names each one's repository
+# and commit.
+SUBMODULES = {
+    # libjxl's SIMD library, the one submodule BtbN's script checks out for it.
+    "https://github.com/libjxl/libjxl.git": ["third_party/highway"],
+}
 # Libraries whose license is the notice at the top of a source file, which is quoted alone.
 NOTICE_IN = {
     "https://github.com/FFmpeg/nv-codec-headers.git": "include/ffnvcodec/nvEncodeAPI.h",
@@ -77,6 +83,17 @@ def load_notices():
 
 
 NOTICES = load_notices()
+
+
+def load_built_in():
+    """scripts/ffmpeg-built-in.py, which says which libraries the build contains."""
+    spec = importlib.util.spec_from_file_location("built_in", ROOT / "scripts" / "ffmpeg-built-in.py")
+    built_in = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(built_in)
+    return built_in
+
+
+BUILT_IN = load_built_in()
 
 
 def get(url, tries=3):
@@ -288,78 +305,25 @@ def rust_crates(libraries, temp):
     return groups
 
 
-def bash():
-    """Git's bash on Windows, where the bash.exe found first is WSL's; bash elsewhere."""
-    git = shutil.which("git")
-    if sys.platform == "win32" and git:
-        # git.exe sits in Git's cmd, bin or mingw64\bin folder.
-        for folder in list(Path(git).parents)[:3]:
-            for candidate in ("bin/bash.exe", "usr/bin/bash.exe"):
-                if (folder / candidate).exists():
-                    return str(folder / candidate)
-    return "bash"
-
-
-def stage(script):
-    """The stage a script of BtbN's belongs to, by the name other scripts depend on it by: a
-    folder of scripts is one stage."""
-    path = Path(script)
-    unit = path.parent if path.parent.name != "scripts.d" else path.with_suffix("")
-    return unit.name.split("-", 1)[1]
-
-
-def built_in(builds, version, dropped):
-    """The rows of scripts/btbn-components.sh for every script whose library the build contains:
-    the stages that give FFmpeg an option `dropped` does not hold, and every stage those depend
-    on, dropped or not, since a library linked into one Dusk keeps is in the DLLs too (librsvg
-    brings fontconfig, HarfBuzz and FriBidi; libopenmpt brings libvorbis)."""
-    lister = ROOT / "scripts" / "btbn-components.sh"
-    run = subprocess.run(
-        [bash(), lister.as_posix(), builds.as_posix(), "win64", "lgpl-shared", version],
-        capture_output=True, text=True, encoding="utf-8",
-    )
-    if run.returncode != 0:
-        sys.exit(f"Listing BtbN's components failed: {run.stderr.strip()}")
-    listing = run.stdout
-    rows = [line.split("\t") for line in listing.splitlines() if line.strip()]
-    enabled = {row[0] for row in rows}
-    stages = {}
-    for row in rows:
-        # A folder of scripts builds one library and what only it uses; when its last script is
-        # off (libcurl in FFmpeg 8.1), nothing of it reaches FFmpeg.
-        folder = builds / Path(row[0]).parent
-        if folder.name != "scripts.d" and sorted(folder.glob("??-*.sh"))[-1].relative_to(builds).as_posix() not in enabled:
-            continue
-        stages.setdefault(stage(row[0]), []).append(row)
-    wanted = [
-        name for name, scripts in stages.items()
-        if any(option not in dropped for row in scripts for option in row[9].split())
-    ]
-    kept = set()
-    while wanted:
-        name = wanted.pop()
-        # A stage BtbN does not build for this target (xorg-macros) is in no row.
-        if name in kept or name not in stages:
-            continue
-        kept.add(name)
-        wanted.extend(dependency for row in stages[name] for dependency in row[10].split())
-    return [row for row in rows if stage(row[0]) in kept and not row[1]]
-
-
-def dropped_options():
-    """The options of BtbN's that Dusk's build drops (scripts/ffmpeg-options.txt)."""
-    options = (ROOT / "scripts" / "ffmpeg-options.txt").read_text(encoding="utf-8")
-    return set(re.findall(r"^drop (\S+)$", options, re.MULTILINE))
+def submodule(url, commit, path):
+    """The repository and commit of the submodule at `path` of the GitHub repository `url`, at
+    `commit`."""
+    owner, repo = re.match(r"https://github\.com/([^/]+)/([^/]+?)(?:\.git)?/?$", url).groups()
+    item = json.loads(gh(f"repos/{owner}/{repo}/contents/{urllib.parse.quote(path)}?ref={urllib.parse.quote(commit)}"))
+    return item["submodule_git_url"], item["sha"]
 
 
 def components(builds, version, dropped):
-    """(name, url, commit, revision) of every library the build contains, from BtbN's scripts."""
+    """(name, url, commit, revision) of every library the build contains, from BtbN's scripts,
+    and of the submodules compiled into them (SUBMODULES)."""
     found, seen = [], set()
-    for script, skip, *sources, configure, depends in built_in(builds, version, dropped):
+    for script, skip, *sources, configure, depends in BUILT_IN.built_in(builds, version, dropped):
         name = Path(script).stem.split("-", 1)[1]
         url, commit, revision = sources[0], sources[1], sources[2]
-        pairs = [(url, commit, revision), (sources[3], sources[4], ""), (sources[5], sources[6], "")]
-        for url, commit, revision in pairs:
+        named = [(name, url, commit, revision), (name, sources[3], sources[4], ""), (name, sources[5], sources[6], "")]
+        for path in SUBMODULES.get(url, []):
+            named.append((f"{Path(path).name} (in {name})", *submodule(url, commit, path), ""))
+        for name, url, commit, revision in named:
             key = (url.removesuffix(".git"), commit or revision)
             if url and url not in NOT_LIBRARIES and key not in seen:
                 seen.add(key)
@@ -374,8 +338,8 @@ def main():
     version = re.search(r"-shared-([0-9.]+)-dusk\.zip$", file_name).group(1)
     source = (ROOT / "scripts" / "ffmpeg-source.txt").read_text(encoding="utf-8")
     scripts = re.search(r"^btbn ([0-9a-f]{40})$", source, re.MULTILINE).group(1)
-    dropped = dropped_options()
-    temp =tempfile.mkdtemp(prefix="dusk-ffmpeg-licenses-")
+    dropped = BUILT_IN.dropped_options()
+    temp = tempfile.mkdtemp(prefix="dusk-ffmpeg-licenses-")
     try:
         archive = get(f"https://codeload.github.com/BtbN/FFmpeg-Builds/tar.gz/{scripts}")
         with tarfile.open(fileobj=io.BytesIO(archive)) as tar:
@@ -442,10 +406,4 @@ def main():
 
 
 if __name__ == "__main__":
-    if sys.argv[1:2] == ["--scripts"]:
-        # For scripts/ffmpeg-sources.sh: --scripts <BtbN scripts checkout> <FFmpeg version>
-        # prints the scripts whose libraries the build contains, one a line.
-        for row in built_in(Path(sys.argv[2]), sys.argv[3], dropped_options()):
-            print(row[0])
-    else:
-        main()
+    main()

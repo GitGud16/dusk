@@ -60,8 +60,9 @@ add --disable-ffplay
 add --disable-encoders
 add --enable-encoder=libopenh264,libkvazaar,libsvtav1,libvpx_vp9,aac,libopus,libmp3lame,pcm_s16le
 add --enable-encoder=h264_nvenc,hevc_nvenc,av1_nvenc,h264_qsv,hevc_qsv,av1_qsv,h264_amf,hevc_amf,av1_amf
-# FFmpeg names the MP4 subtitle encoder movtext; an unknown name is silently ignored, so the
-# build checks every name it asks for against what configure enabled.
+# configure lists the MP4 subtitle encoder as movtext (its name in use is mov_text). It passes
+# over a name it does not know without a word, so the build checks every name asked for here
+# against what configure enabled.
 add --enable-encoder=movtext,srt,subrip,webvtt,ass,ssa,png,mjpeg,gif
 # The muxers it writes: the export's containers and sound files, and M13's and M15's.
 add --disable-muxers
