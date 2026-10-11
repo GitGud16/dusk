@@ -13,8 +13,12 @@
 
 .PARAMETER Setup
     The installer to check; by default this version's in target\installer.
+
+.PARAMETER Signed
+    Also checks that the installer and the two programs it installs carry valid signatures, as
+    a signed release's do (docs/RELEASE.md, "Signing").
 #>
-param([string]$Setup = '')
+param([string]$Setup = '', [switch]$Signed)
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 $stage = Join-Path $root 'target\release-stage\Dusk'
@@ -51,6 +55,13 @@ if ($p.ExitCode -ne 0) {
 $files = @(Get-ChildItem -LiteralPath $dir -Recurse -File)
 'Installed {0}: {1:N1} MB in {2} files' -f $dir, (($files | Measure-Object -Property Length -Sum).Sum / 1e6), $files.Count
 $uninstaller = Join-Path $dir 'unins000.exe'
+if ($Signed) {
+    foreach ($file in $Setup, (Join-Path $dir 'dusk.exe'), (Join-Path $dir 'dusq.exe')) {
+        $signature = Get-AuthenticodeSignature -LiteralPath $file
+        if ($signature.Status -ne 'Valid') { throw "$file is not validly signed: $($signature.Status), $($signature.StatusMessage)" }
+        'Signed {0}: {1}' -f (Split-Path -Leaf $file), $signature.SignerCertificate.Subject
+    }
+}
 $dusk = $null
 $uninstalled = $false
 try {

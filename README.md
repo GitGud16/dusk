@@ -9,7 +9,7 @@ Dusk is a free, open-source video editor for Windows, built in Rust. It is light
 ## Install
 
 1. Download `dusk-0.1.0-setup.exe` from the [releases page](https://github.com/GitGud16/dusk/releases).
-2. Run it. The installer is not signed, so Windows may say "Windows protected your PC": choose **More info**, then **Run anyway**.
+2. Run it. The installer is not signed yet ([code signing policy](docs/CODE-SIGNING.md)), so Windows may say "Windows protected your PC": choose **More info**, then **Run anyway**.
 3. It installs for you alone, without administrator rights, puts Dusk in the Start menu and can open `.dusk` projects. Uninstalling it from Windows' settings leaves your projects and settings alone.
 
 Dusk needs Windows 10 or 11 (64-bit) and a graphics driver with Vulkan or Direct3D 12, which every graphics card of the last ten years has.
