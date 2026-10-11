@@ -2,18 +2,23 @@ name: Release
 
 # Pushing a tag such as v0.1.0 builds the installer and drafts a release with it, for the
 # maintainer to write the notes for and publish (docs/RELEASE.md, "Building and checking it").
+# Once the repository has SignPath's variables and token (docs/RELEASE.md, "Signing"), the two
+# programs and the installer are signed on the way, each after the maintainer approves the
+# request in SignPath.
 on:
   push:
     tags: ['v*']
 
 permissions:
   contents: write
+  actions: read
 
 jobs:
   draft:
     runs-on: windows-2025
     env:
       CARGO_TERM_COLOR: always
+      SIGNING: ${{ vars.SIGNPATH_ORGANIZATION_ID != '' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -43,13 +48,70 @@ jobs:
             choco install innosetup --no-progress -y
           }
 
+      - name: Build both programs
+        shell: pwsh
+        run: |
+          . ./scripts/dev-env.ps1
+          cargo build -p dusk-app --release
+          if ($LASTEXITCODE -ne 0) { throw 'Building dusk.exe failed.' }
+          # dusq on its own, so it builds without the gpu feature.
+          cargo build -p dusk-cli --release
+          if ($LASTEXITCODE -ne 0) { throw 'Building dusq.exe failed.' }
+
+      - name: Hand the programs to SignPath
+        id: programs
+        if: env.SIGNING == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: programs
+          path: |
+            target/release/dusk.exe
+            target/release/dusq.exe
+
+      - name: Sign the programs
+        if: env.SIGNING == 'true'
+        uses: signpath/github-action-submit-signing-request@v3
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
+          artifact-configuration-slug: programs
+          github-artifact-id: ${{ steps.programs.outputs.artifact-id }}
+          wait-for-completion: true
+          wait-for-completion-timeout-in-seconds: 3600
+          output-artifact-directory: target/release
+
       - name: Build the installer
         shell: pwsh
-        run: ./scripts/build-release.ps1
+        run: ./scripts/build-release.ps1 -NoBuild
+
+      - name: Hand the installer to SignPath
+        id: installer
+        if: env.SIGNING == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: installer
+          path: target/installer/dusk-${{ env.VERSION }}-setup.exe
+
+      - name: Sign the installer
+        if: env.SIGNING == 'true'
+        uses: signpath/github-action-submit-signing-request@v3
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
+          artifact-configuration-slug: installer
+          github-artifact-id: ${{ steps.installer.outputs.artifact-id }}
+          wait-for-completion: true
+          wait-for-completion-timeout-in-seconds: 3600
+          output-artifact-directory: target/installer
 
       - name: Install it, run both programs, uninstall it
         shell: pwsh
-        run: ./scripts/check-installer.ps1
+        run: |
+          if ($env:SIGNING -eq 'true') { ./scripts/check-installer.ps1 -Signed } else { ./scripts/check-installer.ps1 }
 
       - name: Draft the release
         shell: pwsh
