@@ -95,7 +95,7 @@ if (-not $Force -and (Test-Marker)) {
             Invoke-WebRequest -Uri $pin.Url -OutFile $part -UseBasicParsing
         } catch {
             if (Test-Path -LiteralPath $part) { Remove-Item -LiteralPath $part -Force }
-            throw "Download failed: $($_.Exception.Message). Check the connection and try again, or pass a copy of $($pin.FileName) with -ZipPath (see docs/SETUP.md)."
+            throw "Download failed: $($_.Exception.Message.TrimEnd('.')). Check the connection and try again, or pass a copy of $($pin.FileName) with -ZipPath (see docs/SETUP.md)."
         }
         if (-not (Test-ZipFile $part)) {
             Remove-Item -LiteralPath $part -Force
