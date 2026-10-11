@@ -57,6 +57,12 @@ SUBMODULES = {
     # libjxl's SIMD library, the one submodule BtbN's script checks out for it.
     "https://github.com/libjxl/libjxl.git": ["third_party/highway"],
 }
+# Where git itself reads a repository whose web pages are down: Savannah's web front is out at
+# times while its git protocol host answers, the host BtbN's script clones libiconv from. A
+# commit is the same content wherever it is read.
+GIT_MIRRORS = {
+    "https://git.savannah.gnu.org/git/libiconv.git": "git://git.git.savannah.gnu.org/libiconv.git",
+}
 # Libraries whose license is the notice at the top of a source file, which is quoted alone.
 NOTICE_IN = {
     "https://github.com/FFmpeg/nv-codec-headers.git": "include/ffnvcodec/nvEncodeAPI.h",
@@ -237,10 +243,47 @@ def repository(url, commit, revision):
     return GitLab(url, commit)
 
 
+class GitClone:
+    """A repository read through git: a clone without file contents in `folder`, whose files
+    git fetches as they are read."""
+
+    def __init__(self, url, commit, folder):
+        self.folder, self.commit = folder, commit
+        subprocess.run(
+            ["git", "clone", "--quiet", "--filter=blob:none", "--no-checkout", url, str(folder)],
+            check=True, capture_output=True,
+        )
+
+    def git(self, *args):
+        return subprocess.run(["git", "-C", str(self.folder), *args], check=True, capture_output=True).stdout
+
+    def entries(self, folder=""):
+        listing = text(self.git("ls-tree", f"{self.commit}:{folder}" if folder else self.commit))
+        # Each line is "<mode> <type> <object>\t<name>".
+        return [(line.split("\t", 1)[1], line.split()[1] == "tree") for line in listing.splitlines()]
+
+    def read(self, path):
+        return text(self.git("show", f"{self.commit}:{path}"))
+
+
 def license_files(url, commit, revision):
     """The license files of the repository at `url`, at `commit` (or Subversion `revision`):
-    (path, text) pairs."""
-    repo = repository(url, commit, revision)
+    (path, text) pairs, read through git from GIT_MIRRORS when the repository's web pages fail."""
+    try:
+        return repository_licenses(repository(url, commit, revision), url)
+    except NETWORK_ERRORS as error:
+        if url not in GIT_MIRRORS:
+            raise
+        print(f"{url} failed ({error}); reading {GIT_MIRRORS[url]} through git")
+        folder = Path(tempfile.mkdtemp(prefix="dusk-ffmpeg-licenses-git-"))
+        try:
+            return repository_licenses(GitClone(GIT_MIRRORS[url], commit, folder / "repository"), url)
+        finally:
+            remove(folder)
+
+
+def repository_licenses(repo, url):
+    """The license files of `repo`, the repository at `url`: (path, text) pairs."""
     files, folders = license_names(repo.entries())
     paths = list(files)
     for folder in folders:
