@@ -236,6 +236,10 @@ impl App {
                 _ => {}
             },
         }
+        // The list that waited behind the question opens now, before any key pressed after
+        // the answer is handled: the window's own notice that its dialogs closed comes a turn
+        // of the event loop later, after keys already queued.
+        self.missing_list_waited();
     }
 
     /// Asks about changes in the clip editor not applied and unsaved changes before `next`,

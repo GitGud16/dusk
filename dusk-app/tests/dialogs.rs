@@ -10,8 +10,8 @@ use std::path::{Path, PathBuf};
 use dusk_core::{Frame, Project, import};
 
 use common::{
-    VK_ESCAPE, VK_RETURN, VK_TAB, close, menu, press, sample, start, state_dir, type_key,
-    wait_for_clean_exit, wait_for_title, wait_for_window,
+    VK_ESCAPE, VK_RETURN, VK_TAB, close, menu, press, press_at_once, sample, start, state_dir,
+    type_key, wait_for_clean_exit, wait_for_title, wait_for_window,
 };
 
 /// A project file `<name>.dusk` in `dir` with the sample at frame 0, and a second clip after it
@@ -86,11 +86,16 @@ fn the_missing_list_waits_for_the_question_and_then_opens() {
         title == "waiting — Dusk"
     });
     std::thread::sleep(std::time::Duration::from_millis(1500));
-    // Not now: the list that waited behind the question opens, and takes the keys.
-    press(window, VK_ESCAPE, None);
-    std::thread::sleep(std::time::Duration::from_millis(500));
-    type_key(window, 'd');
-    type_key(window, 'e');
+    // Not now: the list that waited behind the question opens, and takes the keys. They follow
+    // the answer at once, so they are queued before anything the answer leaves for later.
+    press_at_once(
+        window,
+        &[
+            (VK_ESCAPE, None),
+            (u32::from(b'D'), Some('d')),
+            (u32::from(b'E'), Some('e')),
+        ],
+    );
     std::thread::sleep(std::time::Duration::from_millis(1000));
     let listed = !common::title_of(window).contains('*');
     // Once it is closed, the same keys edit; a slow runner can take a while to say so.

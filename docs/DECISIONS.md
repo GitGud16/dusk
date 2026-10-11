@@ -166,6 +166,10 @@ F1 is where people look for help, so it opens the shortcut list beside `?`, and 
 
 An id given to new media after an import was undone used to show the old file's frames, since the engine knew frames by media id alone. The engine now remembers which file each media's frames and decoder came from, the bin's thumbnails likewise belong to the file they were made from, and either preview names the file each time it asks for a frame, so the clip editor, still drafting from the project as it was before such an undo, cannot put another file's frames in the cache under that id.
 
+### The waiting list opens with the answer (M7)
+
+The list that waited behind a question opened a turn of the event loop after the answer: the window noticed its dialogs had closed through a property's change handler, which then queued the opening with `invoke_from_event_loop`, so as not to call into the app while it was still answering. Keys already queued were handled first. CI's runner, busy drawing with WARP, showed it once in `the_missing_list_waits_for_the_question_and_then_opens`: the keys pressed after Escape edited the timeline instead of going to the list. The test now posts the answer and the keys at once, which failed three runs in three without the change, and the answer opens the waiting list itself.
+
 ## Error messages
 
 ### The M6 message pass (M6)
