@@ -413,11 +413,12 @@ def main():
         f"{file_name} from release {tag} of Dusk's repository,",
         "is Dusk's own, compiled in BtbN's FFmpeg-Builds image, and has the libraries below built",
         "into those DLLs, each under its own license. Each is named with the repository and the",
-        f"commit it was built from, as BtbN's build scripts at commit {scripts[:12]} give them. Every",
-        "library those scripts build into this FFmpeg is listed, but for those Dusk's build leaves",
-        "out; some are used only by parts of FFmpeg that Dusk does not ship, rather than risk",
-        "leaving one out. Libraries that ship the same text are listed together above it. The Rust",
-        f"crates inside {' and '.join(rust)} follow the libraries.",
+        f"commit it was built from, as BtbN's build scripts at commit {scripts[:12]} give them: the",
+        "libraries Dusk's build turns on, and every library those depend on. Some serve only parts",
+        "of FFmpeg that Dusk does not ship; they are listed rather than risk leaving one out. Their",
+        "sources are published beside the build as ffmpeg-libraries-source.tar.xz. Libraries that",
+        "ship the same text are listed together above it. The Rust crates inside",
+        f"{' and '.join(rust)} follow the libraries.",
         "",
     ]
     out += NOTICES.grouped(groups)
