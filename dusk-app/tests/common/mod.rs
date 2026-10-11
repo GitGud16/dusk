@@ -157,9 +157,9 @@ pub fn menu(window: isize, item: &str) {
     sleep(Duration::from_millis(100));
 }
 
-/// Presses and lets go of the key `vk` in `window`, typing `typed` as a letter key does.
-/// Posted keys reach Dusk as typed ones do, but they cannot hold Shift, Ctrl or Alt down.
-pub fn press(window: isize, vk: u32, typed: Option<char>) {
+/// The `lParam` of a key's down and up messages: its scan code, and whether it is an
+/// extended key.
+fn key_params(vk: u32) -> (isize, isize) {
     // SAFETY: a pure lookup in the keyboard layout.
     let scan = unsafe { MapVirtualKeyW(vk, 0) };
     // The arrows, Home, End and Delete sit apart from the number pad's keys.
@@ -169,7 +169,11 @@ pub fn press(window: isize, vk: u32, typed: Option<char>) {
         0
     };
     let down = 1 | (isize::try_from(scan).unwrap_or(0) << 16) | extended;
-    let up = down | 0xC000_0000;
+    (down, down | 0xC000_0000)
+}
+
+/// Posts the press of `vk` and, for a letter key, the letter it types.
+fn post_down(window: isize, vk: u32, typed: Option<char>, down: isize) {
     // SAFETY: posting messages to a window handle is safe even if the window is gone.
     unsafe {
         PostMessageW(window, WM_KEYDOWN, vk as usize, down);
@@ -177,9 +181,28 @@ pub fn press(window: isize, vk: u32, typed: Option<char>) {
             PostMessageW(window, WM_CHAR, typed as usize, down);
         }
     }
+}
+
+/// Presses and lets go of the key `vk` in `window`, typing `typed` as a letter key does.
+/// Posted keys reach Dusk as typed ones do, but they cannot hold Shift, Ctrl or Alt down.
+pub fn press(window: isize, vk: u32, typed: Option<char>) {
+    let (down, up) = key_params(vk);
+    post_down(window, vk, typed, down);
     sleep(Duration::from_millis(30));
-    // SAFETY: as above.
+    // SAFETY: posting messages to a window handle is safe even if the window is gone.
     unsafe { PostMessageW(window, WM_KEYUP, vk as usize, up) };
+    sleep(Duration::from_millis(30));
+}
+
+/// Presses `keys` one after another without a pause, so that all of them are queued before
+/// Dusk handles the first, as when its window is busy while someone types.
+pub fn press_at_once(window: isize, keys: &[(u32, Option<char>)]) {
+    for &(vk, typed) in keys {
+        let (down, up) = key_params(vk);
+        post_down(window, vk, typed, down);
+        // SAFETY: as in `post_down`.
+        unsafe { PostMessageW(window, WM_KEYUP, vk as usize, up) };
+    }
     sleep(Duration::from_millis(30));
 }
 
